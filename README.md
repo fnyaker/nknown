@@ -97,3 +97,25 @@ nknown parser train vulkan xlm-roberta-base/ fr_gsd-ud-train.conllu fr_gsd-ud-de
 nknown eval fr.lex fr_gsd-ud-test.conllu vulkan:parser-fr/
 nknown analyze fr.lex "Les rues calmes de Paris." parser-fr/
 ```
+
+## Mesures multilingues (UD, test)
+
+Un seul analyseur neuronal pour français, anglais, russe et chinois (`parser-multi`, 3 passes sur
+48 838 phrases mêlant les quatre langues, ~1 h 45 sur Radeon 780M). Il fait aussi bien que le
+modèle français seul sur le français : partager le modèle ne coûte rien.
+
+| Corpus | Tagueur (couche 2) | UPOS (couche 3) | `amod` rappel / précision | UAS / LAS |
+|---|---|---|---|---|
+| French-GSD | 97,6 % | 98,3 % | 94,8 % / 95,4 % | 95,1 % / 92,4 % |
+| English-EWT | 95,3 % | 97,6 % | 92,9 % / 92,9 % | 94,9 % / 93,0 % |
+| Russian-GSD | 96,3 % | 97,8 % | 95,2 % / 98,0 % | 93,6 % / 90,2 % |
+| Russian-Taiga | 96,8 % | 96,5 % | 94,0 % / 96,6 % | 89,2 % / 85,1 % |
+| Chinese-GSDSimp | 92,6 % | 96,4 % | 65,8 % / 70,2 % | 87,9 % / 84,7 % |
+
+Le chinois a peu d'adjectifs `amod` (190 dans le test) : beaucoup de qualifiants y sont des noms
+ou des relatives en 的, annotés autrement.
+
+```sh
+nknown parser train vulkan xlm-roberta-base/ multi-ud-train.conllu multi-ud-dev.conllu parser-multi/ 3 --langs=fra,eng,rus,zho
+nknown eval data/ en_ewt-ud-test.conllu vulkan:data/parser-multi   # langue tirée du nom du corpus
+```
