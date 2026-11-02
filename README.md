@@ -39,10 +39,18 @@ Le Wiktionary (CC BY-SA 3.0/4.0) et Lexique 3.83 (CC BY-SA 4.0) sont sous licenc
 
 ## Mesures (UD French-GSD, test)
 
-| | Couche 1 seule | + tagueur |
-|---|---|---|
-| Catégories (UPOS) | 81,0 % (dev) | **97,6 %** |
-| Adjectifs `amod` : rappel / précision | 67,4 % / 86,8 % (dev) | **83,7 % / 87,3 %** |
+| | Couche 1 seule | + tagueur (couche 2) | + analyseur neuronal (couche 3) |
+|---|---|---|---|
+| Catégories (UPOS) | 81,0 % (dev) | 97,6 % | **98,3 %** |
+| Adjectifs `amod` : rappel / précision | 67,4 % / 86,8 % (dev) | 83,7 % / 87,3 % | **94,6 % / 94,4 %** |
+| Dépendances UAS / LAS | — | — | **95,1 % / 92,4 %** |
 
-La précision des adjectifs est sous-estimée : les attributs (« Paris est calme ») ne sont pas
-des `amod` dans UD mais comptent ici comme rattachements.
+Couche 3 : XLM-RoBERTa base affiné 3 passes sur French-GSD, ~35 min sur Radeon 780M (Vulkan).
+Résultats identiques avec le moteur CPU (candle) et le moteur GPU (burn/Vulkan).
+
+```sh
+# entraînement sur GPU (ou sans « vulkan » : sur CPU, ~2× plus lent)
+nknown parser train vulkan xlm-roberta-base/ fr_gsd-ud-train.conllu fr_gsd-ud-dev.conllu parser-fr/ 3
+nknown eval fr.lex fr_gsd-ud-test.conllu vulkan:parser-fr/
+nknown analyze fr.lex "Les rues calmes de Paris." parser-fr/
+```
