@@ -3,13 +3,14 @@
 
 use std::ops::Range;
 
-/// Positions en octets des mots de `text`. L'apostrophe sépare (« l'actu » → « l », « actu »),
-/// le trait d'union lie (« porte-monnaie »).
+/// Positions en octets des mots de `text`. Le trait d'union et l'apostrophe restent dans
+/// le mot (« porte-monnaie », « aujourd'hui », « l'actu ») : séparer les élisions demande
+/// le lexique, c'est le rôle du pipeline.
 pub fn words(text: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
     for (i, c) in text.char_indices() {
-        let in_word = c.is_alphanumeric() || (c == '-' && start.is_some());
+        let in_word = c.is_alphanumeric() || (start.is_some() && is_joiner(c));
         match (in_word, start) {
             (true, None) => start = Some(i),
             (false, Some(s)) => {
@@ -25,6 +26,11 @@ pub fn words(text: &str) -> Vec<Range<usize>> {
     out
 }
 
+/// Caractères qui prolongent un mot commencé.
+pub fn is_joiner(c: char) -> bool {
+    matches!(c, '-' | '\'' | '\u{2019}')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,8 +42,14 @@ mod tests {
     #[test]
     fn splits_french() {
         assert_eq!(
-            split("L'actu de Paris, porte-monnaie !"),
-            ["L", "actu", "de", "Paris", "porte-monnaie"]
+            split("L'actu de Paris, porte-monnaie, aujourd\u{2019}hui !"),
+            [
+                "L'actu",
+                "de",
+                "Paris",
+                "porte-monnaie",
+                "aujourd\u{2019}hui"
+            ]
         );
     }
 }

@@ -5,7 +5,11 @@ use std::ops::Range;
 use crate::lang::Lang;
 
 /// Catégories grammaticales Universal Dependencies (UPOS).
+///
+/// `#[repr(u8)]` : la valeur numérique sert d'encodage dans les fichiers compilés,
+/// ne pas réordonner les variantes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum Pos {
     Adj,
     Adp,
@@ -25,6 +29,33 @@ pub enum Pos {
     Verb,
     /// Inconnu.
     X,
+}
+
+impl Pos {
+    /// Toutes les variantes, dans l'ordre de leur valeur numérique.
+    pub const ALL: [Pos; 17] = [
+        Pos::Adj,
+        Pos::Adp,
+        Pos::Adv,
+        Pos::Aux,
+        Pos::Cconj,
+        Pos::Det,
+        Pos::Intj,
+        Pos::Noun,
+        Pos::Num,
+        Pos::Part,
+        Pos::Pron,
+        Pos::Propn,
+        Pos::Punct,
+        Pos::Sconj,
+        Pos::Sym,
+        Pos::Verb,
+        Pos::X,
+    ];
+
+    pub fn from_u8(b: u8) -> Option<Pos> {
+        Pos::ALL.get(usize::from(b)).copied()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,4 +102,18 @@ pub struct Analysis {
 pub trait Analyzer {
     fn supports(&self, lang: Lang) -> bool;
     fn analyze(&self, lang: Lang, text: &str) -> Analysis;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pos_encoding_is_stable() {
+        for (i, p) in Pos::ALL.iter().enumerate() {
+            assert_eq!(*p as usize, i);
+            assert_eq!(Pos::from_u8(*p as u8), Some(*p));
+        }
+        assert_eq!(Pos::from_u8(17), None);
+    }
 }

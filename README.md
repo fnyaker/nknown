@@ -17,5 +17,11 @@ dans un graphe pondéré interrogeable (`actu paris`, ...).
 ## Utilisation
 
 ```sh
-cargo run -p nknown-cli -- ingest <dossier>
+# Lexique français depuis le dump Wiktextract (https://kaikki.org/dictionary/French/)
+nknown lexicon build kaikki.org-dictionary-French.jsonl fr fr.lex
+nknown lexicon lookup fr.lex livres "l'" aujourd'hui
+
+nknown ingest <dossier> [fr.lex]
 ```
+
+Les données du Wiktionary sont sous licence CC BY-SA : un lexique compilé en hérite.

@@ -3,11 +3,12 @@
 //! 2. tagueur perceptron + rattachement des adjectifs par accord ;
 //! 3. analyseur neuronal optionnel (candle).
 //!
-//! Seule une version provisoire de la couche 1 existe pour l'instant.
+//! Seule la couche 1 existe pour l'instant.
 
 pub mod lexicon;
 pub mod pipeline;
 pub mod tokenize;
+pub mod wiktextract;
 
-pub use lexicon::{LexEntry, Lexicon};
+pub use lexicon::{LexEntry, Lexicon, LexiconBuilder, LexiconError};
 pub use pipeline::Pipeline;
