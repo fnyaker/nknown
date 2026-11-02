@@ -18,7 +18,8 @@ const USAGE: &str = "\
 usage :
   nknown ingest <dossier> [lexique.lex]
   nknown index <base.redb> <lexique.lex> <source> [modèle]...
-  nknown search <base.redb> <lexique.lex> <requête> [nombre]
+  nknown search <base.redb> <lexique.lex> <requête> [nombre] [--explain]
+  nknown rank <base.redb>                         (autorité des documents, PageRank)
   nknown watch <base.redb> <lexique.lex> <source> <intervalle> [modèle]...   (ex. 30m, 2h)
   nknown lexicon build <sortie.lex> <ressource>...
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
@@ -48,8 +49,16 @@ fn main() -> ExitCode {
         ["watch", base, lexicon, spec, every, models @ ..] => {
             watch(base, lexicon, spec, every, models)
         }
-        ["search", base, lexicon, query] => search(base, lexicon, query, "5"),
-        ["search", base, lexicon, query, limit] => search(base, lexicon, query, limit),
+        ["search", base, lexicon, query, rest @ ..] if rest.len() <= 2 => {
+            let explain = rest.contains(&"--explain");
+            let limit = rest
+                .iter()
+                .find(|a| **a != "--explain")
+                .copied()
+                .unwrap_or("5");
+            search(base, lexicon, query, limit, explain)
+        }
+        ["rank", base] => rank(base),
         ["ingest", dir] => ingest(dir, None),
         ["ingest", dir, lexicon] => ingest(dir, Some(lexicon)),
         ["lexicon", "build", out, sources @ ..] if !sources.is_empty() => {
@@ -410,6 +419,13 @@ fn watch(base: &str, lexicon: &str, spec: &str, every: &str, models: &[&str]) ->
         if let Err(e) = collect(&mut engine, &pipeline, spec) {
             eprintln!("collecte interrompue : {e}");
         }
+        match engine.compute_authority() {
+            Ok(s) => println!(
+                "autorité recalculée : {} documents, {} paires",
+                s.docs, s.links
+            ),
+            Err(e) => eprintln!("autorité : {e}"),
+        }
         std::thread::sleep(std::time::Duration::from_secs(secs.max(60)));
     }
 }
@@ -561,7 +577,21 @@ fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
     nknown_engine::Query { terms, intent }
 }
 
-fn search(base: &str, lexicon: &str, query: &str, limit: &str) -> Res {
+fn rank(base: &str) -> Res {
+    let start = Instant::now();
+    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?);
+    let s = engine.compute_authority()?;
+    println!(
+        "autorité : {} documents, {} paires reliées, maximum {:.2} (moyenne 1) [{:.1?}]",
+        s.docs,
+        s.links,
+        s.max,
+        start.elapsed()
+    );
+    Ok(())
+}
+
+fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) -> Res {
     use nknown_core::time::Timestamp;
     use nknown_engine::{Engine, RedbStorage};
     let limit: usize = limit
@@ -574,8 +604,27 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str) -> Res {
         println!("intention : {}", i.name);
     }
     let start = Instant::now();
-    let hits = engine.search(&q, Timestamp::now(), limit)?;
-    println!("{} résultat(s) [{:.1?}]", hits.len(), start.elapsed());
+    let result = engine.search_explained(&q, Timestamp::now(), limit)?;
+    let hits = result.hits;
+    println!(
+        "{} résultat(s) sur {} passages candidats [{:.1?}]",
+        hits.len(),
+        result.candidates,
+        start.elapsed()
+    );
+    if explain {
+        let t = result.thresholds;
+        let mut line = format!(
+            "seuils : couverture^{}, coupure {:.0} % du meilleur, doublons ≥ {:.0} %",
+            t.coverage_exponent,
+            t.cutoff * 100.0,
+            t.duplicate * 100.0
+        );
+        if let (Some(hl), Some(w)) = (t.half_life_days, t.burst_window_days) {
+            line.push_str(&format!(", demi-vie {hl:.1} j, emballement sur {w:.1} j"));
+        }
+        println!("{line}");
+    }
     for h in hits {
         let (y, m, d) = Timestamp(h.doc.date).ymd();
         let title = h.doc.title.as_deref().unwrap_or("(sans titre)");
@@ -591,6 +640,21 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str) -> Res {
         }
         println!("{info}");
         println!("  {}", snippet(&h.text, &h.matched, 220));
+        if explain {
+            let p = h.parts;
+            println!(
+                "  score = texte {:.2} × couverture {:.2} × qualif {:.2} × titre {:.2} × nature {:.2} × fraîcheur {:.2} × emballement {:.2} × graphe {:.2} × autorité {:.2}",
+                p.text,
+                p.coverage,
+                p.qualified,
+                p.title,
+                p.nature,
+                p.freshness,
+                p.burst,
+                p.graph,
+                p.authority
+            );
+        }
         for r in h.related.iter().take(3) {
             let (y, m, d) = Timestamp(r.date).ymd();
             println!(

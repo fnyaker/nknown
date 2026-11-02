@@ -14,6 +14,7 @@
 //! | `q` | passage, nom, adjectif | — : index inverse de `Q` (suppression d'un passage) |
 //! | `X` | source, 0, identifiant externe | doc u64, empreinte u64, date i64 : contenu déjà vu |
 //! | `C` | source | date u64 de la dernière collecte (point de reprise) |
+//! | `A` | id du document | autorité f32 (PageRank, moyenne 1) |
 //!
 //! Identifiants : un seul compteur pour tous les nœuds (documents, passages, lemmes).
 
@@ -35,6 +36,7 @@ pub const QUALIFIED: u8 = b'Q';
 pub const QUALIFIED_REV: u8 = b'q';
 pub const SEEN: u8 = b'X';
 pub const CHECKPOINT: u8 = b'C';
+pub const AUTHORITY: u8 = b'A';
 
 pub const NEXT_ID: &str = "next_id";
 pub const PASSAGES: &str = "passages";

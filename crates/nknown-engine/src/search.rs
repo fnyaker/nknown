@@ -7,7 +7,12 @@
 //!   × bonus de qualification (un adjectif de la requête qualifie un nom de la requête
 //!     dans le passage : « paris dangereux » ≠ « paris … dangereux »)
 //!   × titre (part des mots de la requête présents dans le titre du document)
-//!   × adéquation à l'intention (nature de la source) et fraîcheur, si la requête en a une.
+//!   × adéquation à l'intention (nature de la source) et fraîcheur, si la requête en a une
+//!   × emballement, soutien des résultats voisins (graphe), autorité du document.
+//!
+//! Plusieurs seuils sont dynamiques (exigence de couverture, demi-vie, coupure, fusion des
+//! doublons) : ils dépendent des candidats de la requête. [`SearchResult::thresholds`] les
+//! donne, [`Hit::parts`] détaille chaque score.
 
 use std::collections::{HashMap, HashSet};
 
@@ -79,11 +84,84 @@ pub struct Related {
     pub similarity: f32,
 }
 
+/// Facteurs du score d'un résultat : le score est leur produit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScoreParts {
+    /// Pertinence textuelle (BM25 des mots trouvés).
+    pub text: f64,
+    /// Part des mots trouvés, à l'exposant dynamique.
+    pub coverage: f64,
+    /// Adjectifs de la requête qualifiant des noms de la requête dans le passage.
+    pub qualified: f64,
+    /// Mots de la requête dans le titre.
+    pub title: f64,
+    /// Adéquation de la nature du document (et du type de passage) à l'intention.
+    pub nature: f64,
+    pub freshness: f64,
+    /// Reprise du sujet par d'autres sources récentes.
+    pub burst: f64,
+    /// Soutien des résultats voisins (propagation sur les liens de similarité).
+    pub graph: f64,
+    /// Centralité du document dans le graphe (PageRank, `Engine::compute_authority`).
+    pub authority: f64,
+}
+
+impl Default for ScoreParts {
+    fn default() -> Self {
+        Self {
+            text: 0.0,
+            coverage: 1.0,
+            qualified: 1.0,
+            title: 1.0,
+            nature: 1.0,
+            freshness: 1.0,
+            burst: 1.0,
+            graph: 1.0,
+            authority: 1.0,
+        }
+    }
+}
+
+impl ScoreParts {
+    pub fn total(&self) -> f64 {
+        self.text
+            * self.coverage
+            * self.qualified
+            * self.title
+            * self.nature
+            * self.freshness
+            * self.burst
+            * self.graph
+            * self.authority
+    }
+}
+
+/// Seuils effectivement appliqués à une recherche (certains dépendent des candidats).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Thresholds {
+    pub coverage_exponent: i32,
+    pub half_life_days: Option<f64>,
+    pub burst_window_days: Option<f64>,
+    /// Part du meilleur score en dessous de laquelle un résultat est écarté.
+    pub cutoff: f64,
+    /// Similarité au-delà de laquelle deux résultats sont regroupés.
+    pub duplicate: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SearchResult {
+    pub hits: Vec<Hit>,
+    /// Passages candidats avant classement.
+    pub candidates: usize,
+    pub thresholds: Thresholds,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub passage: NodeId,
     pub doc_id: NodeId,
     pub score: f64,
+    pub parts: ScoreParts,
     pub text: String,
     pub doc: DocRecord,
     /// Mots de la requête trouvés dans le passage.
@@ -106,8 +184,13 @@ const TITLE_BOOST: f64 = 0.6;
 const DUPLICATE_SIMILARITY: f32 = 0.5;
 /// Emballement : voisins d'autres sources assez proches et assez récents.
 const BURST_SIMILARITY: f32 = 0.35;
-const BURST_WINDOW_SECS: i64 = 3 * 86_400;
+/// Fenêtre minimale de l'emballement (élargie avec la demi-vie dynamique).
+const BURST_WINDOW_DAYS: f64 = 3.0;
 const BURST_BONUS: f64 = 0.25;
+/// Propagation : bonus maximal reçu des résultats voisins.
+const GRAPH_WEIGHT: f64 = 0.3;
+/// Autorité : poids du logarithme de la centralité (moyenne 1).
+const AUTHORITY_WEIGHT: f64 = 0.15;
 
 /// Un lemme candidat d'un mot de la requête.
 struct Reading {
@@ -119,11 +202,36 @@ struct Reading {
     share: f64,
 }
 
+fn age_days(now: Timestamp, date: i64) -> f64 {
+    ((now.0 - date) as f64 / 86_400.0).max(0.0)
+}
+
+/// Un passage candidat et ses facteurs propres, avant les seuils dynamiques.
+struct Candidate {
+    pid: NodeId,
+    text: f64,
+    matched: Vec<usize>,
+    pairs: Vec<(usize, usize)>,
+    in_title: usize,
+    passage: PassageRecord,
+    doc: DocRecord,
+}
+
 impl<S: Storage> Engine<S> {
     pub fn search(&self, q: &Query, now: Timestamp, limit: usize) -> Result<Vec<Hit>> {
+        Ok(self.search_explained(q, now, limit)?.hits)
+    }
+
+    /// Recherche avec le détail : seuils effectivement appliqués, nombre de candidats.
+    pub fn search_explained(
+        &self,
+        q: &Query,
+        now: Timestamp,
+        limit: usize,
+    ) -> Result<SearchResult> {
         let n = schema::u64_value(self.get(&schema::meta_key(schema::PASSAGES))?) as f64;
         if n == 0.0 || q.terms.is_empty() {
-            return Ok(Vec::new());
+            return Ok(SearchResult::default());
         }
         let avg_len = (schema::u64_value(self.get(&schema::meta_key(schema::TOTAL_LEN))?) as f64
             / n)
@@ -251,16 +359,10 @@ impl<S: Storage> Engine<S> {
             }
         }
 
+        // ---- Facteurs propres à chaque passage.
         let mut docs: HashMap<u64, DocRecord> = title_docs;
-        let mut hits = Vec::new();
+        let mut cands: Vec<Candidate> = Vec::new();
         for (pid, scores) in per_passage {
-            let matched: Vec<usize> = (0..scores.len()).filter(|&t| scores[t] > 0.0).collect();
-            let coverage = matched.len() as f64 / q.terms.len() as f64;
-            let pairs = qualified.get(&pid).cloned().unwrap_or_default();
-            let mut score = scores.iter().sum::<f64>()
-                * coverage.powi(2)
-                * QUALIFIED_BONUS.powi(pairs.len() as i32);
-
             let Some(passage) = self.passage(pid)? else {
                 continue;
             };
@@ -274,43 +376,96 @@ impl<S: Storage> Engine<S> {
                     d
                 }
             };
-            // Mots de la requête présents dans le titre du document : le sujet du document,
-            // pas une mention en passant.
+            // Mots de la requête présents dans le titre : le sujet du document.
             let in_title = readings
                 .iter()
                 .filter(|rs| rs.iter().any(|r| doc.title_lemmas.contains(&r.id.0)))
                 .count();
-            score *= 1.0 + TITLE_BOOST * in_title as f64 / q.terms.len() as f64;
+            cands.push(Candidate {
+                pid,
+                text: scores.iter().sum(),
+                matched: (0..scores.len()).filter(|&t| scores[t] > 0.0).collect(),
+                pairs: qualified.get(&pid).cloned().unwrap_or_default(),
+                in_title,
+                passage,
+                doc,
+            });
+        }
+        let candidates = cands.len();
+        if candidates == 0 {
+            return Ok(SearchResult::default());
+        }
+
+        // ---- Seuils dynamiques, déduits des candidats.
+        let terms = q.terms.len();
+        let full = cands.iter().filter(|c| c.matched.len() == terms).count();
+        // Couverture : stricte s'il y a de quoi remplir la page avec des passages qui
+        // contiennent tous les mots, indulgente sinon.
+        let coverage_exp = match () {
+            _ if terms <= 1 => 1,
+            _ if full >= limit => 3,
+            _ if full > 0 => 2,
+            _ => 1,
+        };
+        // Fraîcheur : demi-vie au moins celle de l'intention, allongée jusqu'à l'âge médian
+        // des candidats les plus pertinents (corpus lent : on ne pénalise pas tout pareil).
+        let half_life = q
+            .intent
+            .as_ref()
+            .and_then(|i| i.half_life_days)
+            .map(|base| {
+                let mut best: Vec<&Candidate> = cands.iter().collect();
+                best.sort_by(|a, b| b.text.total_cmp(&a.text));
+                let mut ages: Vec<f64> = best
+                    .iter()
+                    .take(20)
+                    .map(|c| age_days(now, c.doc.date))
+                    .collect();
+                ages.sort_by(f64::total_cmp);
+                ages[ages.len() / 2].clamp(base, base * 30.0)
+            });
+
+        // ---- Score de chaque passage.
+        let mut hits = Vec::new();
+        for c in cands {
+            let mut parts = ScoreParts {
+                text: c.text,
+                coverage: (c.matched.len() as f64 / terms as f64).powi(coverage_exp),
+                qualified: QUALIFIED_BONUS.powi(c.pairs.len() as i32),
+                title: 1.0 + TITLE_BOOST * c.in_title as f64 / terms as f64,
+                ..ScoreParts::default()
+            };
             if let Some(intent) = &q.intent {
+                let fit = NatureProfile::from_scores(c.doc.nature).weigh(&intent.nature);
+                parts.nature = 0.25 + f64::from(fit);
                 if let Some(prefer_code) = intent.prefer_code {
-                    score *= if passage.is_code == prefer_code {
+                    parts.nature *= if c.passage.is_code == prefer_code {
                         1.5
                     } else {
                         0.6
                     };
                 }
-                let fit = NatureProfile::from_scores(doc.nature).weigh(&intent.nature);
-                score *= 0.25 + f64::from(fit);
-                if let Some(half_life) = intent.half_life_days {
-                    let age_days = ((now.0 - doc.date) as f64 / 86_400.0).max(0.0);
-                    let mut fresh = 0.5f64.powf(age_days / half_life);
-                    if doc.date_confidence == 2 {
+                if let Some(hl) = half_life {
+                    let mut fresh = 0.5f64.powf(age_days(now, c.doc.date) / hl);
+                    if c.doc.date_confidence == 2 {
                         fresh *= 0.8; // date de collecte seulement : fraîcheur incertaine
                     }
-                    score *= 0.2 + 0.8 * fresh;
+                    parts.freshness = 0.2 + 0.8 * fresh;
                 }
             }
             hits.push(Hit {
-                passage: pid,
-                doc_id: NodeId(passage.doc),
-                score,
-                is_code: passage.is_code,
-                code_lang: passage.code_lang.clone(),
+                passage: c.pid,
+                doc_id: NodeId(c.passage.doc),
+                score: parts.total(),
+                parts,
+                is_code: c.passage.is_code,
+                code_lang: c.passage.code_lang.clone(),
                 related: Vec::new(),
-                text: passage.text,
-                doc,
-                matched: matched.iter().map(|&t| q.terms[t].text.clone()).collect(),
-                qualified: pairs
+                text: c.passage.text,
+                doc: c.doc,
+                matched: c.matched.iter().map(|&t| q.terms[t].text.clone()).collect(),
+                qualified: c
+                    .pairs
                     .iter()
                     .map(|&(a, b)| (q.terms[a].text.clone(), q.terms[b].text.clone()))
                     .collect(),
@@ -320,41 +475,67 @@ impl<S: Storage> Engine<S> {
         // Un résultat par document : son meilleur passage.
         let mut seen = HashSet::new();
         hits.retain(|h| seen.insert(h.doc_id));
-
-        // Voisins des meilleurs résultats ; pour « actu », un sujet repris par plusieurs
-        // sources récentes remonte (effet d'emballement).
         hits.truncate(limit * 4 + 20);
+
+        // ---- Graphe : voisins, emballement, propagation, autorité.
+        let burst_window = half_life.map_or(BURST_WINDOW_DAYS, |h| h.max(BURST_WINDOW_DAYS));
+        let base: HashMap<NodeId, f64> = hits.iter().map(|h| (h.doc_id, h.score)).collect();
+        let top_base = hits.first().map_or(1.0, |h| h.score).max(f64::EPSILON);
         for h in &mut hits {
             h.related = self.related(h.passage, h.doc_id, &mut docs)?;
-            if q.intent
-                .as_ref()
-                .is_some_and(|i| i.half_life_days.is_some())
-            {
+            if half_life.is_some() {
                 let echoes = h
                     .related
                     .iter()
                     .filter(|r| {
                         r.source != h.doc.source
                             && r.similarity >= BURST_SIMILARITY
-                            && now.0 - r.date <= BURST_WINDOW_SECS
+                            && age_days(now, r.date) <= burst_window
                     })
                     .count()
                     .min(5);
-                h.score *= 1.0 + BURST_BONUS * echoes as f64;
+                h.parts.burst = 1.0 + BURST_BONUS * echoes as f64;
             }
+            // Propagation : un passage relié à d'autres résultats pertinents en reçoit une part.
+            let support: f64 = h
+                .related
+                .iter()
+                .filter_map(|r| base.get(&r.doc_id).map(|s| f64::from(r.similarity) * s))
+                .sum();
+            h.parts.graph = 1.0 + GRAPH_WEIGHT * (support / top_base).min(1.0);
+            h.parts.authority =
+                (1.0 + AUTHORITY_WEIGHT * self.authority(h.doc_id)?.ln()).clamp(0.85, 1.3);
+            h.score = h.parts.total();
         }
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
 
-        // Quasi-doublons (même information reprise ailleurs) : regroupés sous le meilleur.
+        // ---- Coupure relative : plus il y a de candidats, plus on écarte la traîne faible.
+        let cutoff = (0.05 + 0.05 * (candidates as f64).log10()).clamp(0.05, 0.3);
+        let top = hits.first().map_or(0.0, |h| h.score);
+        hits.retain(|h| h.score >= cutoff * top);
+
+        // ---- Quasi-doublons : seuil abaissé quand les résultats sont redondants entre eux
+        // (beaucoup de reprises), pour diversifier la page.
+        let in_results: HashSet<NodeId> = hits.iter().map(|h| h.doc_id).collect();
+        let redundant = hits
+            .iter()
+            .filter(|h| {
+                h.related
+                    .iter()
+                    .any(|r| r.similarity >= 0.4 && in_results.contains(&r.doc_id))
+            })
+            .count() as f32
+            / hits.len().max(1) as f32;
+        let duplicate = (DUPLICATE_SIMILARITY - 0.1 * redundant).max(0.4);
         let mut kept: Vec<Hit> = Vec::new();
         for h in hits {
             let twin = kept.iter().position(|k| {
                 k.related
                     .iter()
-                    .any(|r| r.doc_id == h.doc_id && r.similarity >= DUPLICATE_SIMILARITY)
+                    .any(|r| r.doc_id == h.doc_id && r.similarity >= duplicate)
                     || h.related
                         .iter()
-                        .any(|r| r.doc_id == k.doc_id && r.similarity >= DUPLICATE_SIMILARITY)
+                        .any(|r| r.doc_id == k.doc_id && r.similarity >= duplicate)
             });
             match twin {
                 Some(i) => {
@@ -366,7 +547,7 @@ impl<S: Storage> Engine<S> {
                             source: h.doc.source.clone(),
                             url: h.doc.url.clone(),
                             date: h.doc.date,
-                            similarity: DUPLICATE_SIMILARITY,
+                            similarity: duplicate,
                         });
                     }
                 }
@@ -374,7 +555,17 @@ impl<S: Storage> Engine<S> {
             }
         }
         kept.truncate(limit);
-        Ok(kept)
+        Ok(SearchResult {
+            hits: kept,
+            candidates,
+            thresholds: Thresholds {
+                coverage_exponent: coverage_exp,
+                half_life_days: half_life,
+                burst_window_days: half_life.map(|_| burst_window),
+                cutoff,
+                duplicate,
+            },
+        })
     }
 
     /// Documents reliés au passage par des arêtes de similarité, du plus proche au plus loin.

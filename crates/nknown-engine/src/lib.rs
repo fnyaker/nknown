@@ -6,6 +6,7 @@
 
 pub mod graph;
 pub mod ingest;
+pub mod rank;
 pub mod schema;
 pub mod search;
 pub mod storage;
@@ -18,7 +19,10 @@ use serde::de::DeserializeOwned;
 
 pub use graph::{Edge, EdgeKind, NodeId, NodeKind};
 pub use ingest::{Document, Ingested, ItemStatus};
-pub use search::{Hit, Intent, Query, QueryTerm, Related, intent_for};
+pub use rank::RankStats;
+pub use search::{
+    Hit, Intent, Query, QueryTerm, Related, ScoreParts, SearchResult, Thresholds, intent_for,
+};
 pub use storage::{MemStorage, Op, RedbStorage, Storage};
 
 #[derive(Debug)]
@@ -811,5 +815,99 @@ mod tests {
         );
         assert_eq!(find(Lang::NONE, Code, "x"), 1);
         assert_eq!(find(Lang::FRA, Code, "x"), 0);
+    }
+
+    fn explained(
+        e: &Engine<MemStorage>,
+        words: &[(&str, &[(Pos, &str)])],
+        intent: Option<&str>,
+        limit: usize,
+    ) -> SearchResult {
+        let q = Query {
+            terms: words
+                .iter()
+                .map(|(w, rs)| QueryTerm {
+                    text: w.to_string(),
+                    readings: rs
+                        .iter()
+                        .map(|(p, l)| (Lang::FRA, schema::TermKind::Word(*p), l.to_string()))
+                        .collect(),
+                })
+                .collect(),
+            intent: intent.and_then(intent_for),
+        };
+        e.search_explained(&q, NOW, limit).unwrap()
+    }
+
+    #[test]
+    fn scores_are_the_product_of_their_parts() {
+        let e = corpus();
+        let r = explained(&e, &[PARIS], Some("actu"), 5);
+        assert!(!r.hits.is_empty());
+        for h in &r.hits {
+            assert!((h.score - h.parts.total()).abs() < 1e-9);
+            assert!(h.parts.freshness < 1.0 || h.doc.date == NOW.0);
+        }
+    }
+
+    #[test]
+    fn thresholds_follow_the_candidates() {
+        let mut e = Engine::new(MemStorage::default());
+        background(&mut e);
+        // Un seul mot : la couverture ne compte pas.
+        let r = explained(&e, &[("sujet1", &[(Pos::Noun, "sujet1")])], None, 5);
+        assert_eq!(r.thresholds.coverage_exponent, 1);
+
+        // Corpus ancien (60 jours) : pour « actu », la demi-vie s'allonge au lieu
+        // d'écraser tous les résultats pareil.
+        for i in 0..6 {
+            add_from(
+                &mut e,
+                &format!("s{i}"),
+                60,
+                &format!("Paris/NP réunion{i}/N conseil/N"),
+            );
+        }
+        let r = explained(&e, &[PARIS], Some("actu"), 5);
+        let hl = r.thresholds.half_life_days.unwrap();
+        assert!(hl > 50.0 && hl <= 90.0, "demi-vie {hl}");
+
+        // Deux mots, assez de passages qui contiennent les deux : couverture stricte.
+        let both = [PARIS, ("conseil", &[(Pos::Noun, "conseil")][..])];
+        let r = explained(&e, &both, None, 3);
+        assert_eq!(r.thresholds.coverage_exponent, 3);
+        // Plus de candidats : coupure plus haute.
+        let few = explained(&e, &[("sujet1", &[(Pos::Noun, "sujet1")])], None, 5);
+        assert!(r.thresholds.cutoff >= few.thresholds.cutoff);
+        assert!(r.candidates > few.candidates);
+    }
+
+    #[test]
+    fn central_documents_gain_authority() {
+        let mut e = Engine::new(MemStorage::default());
+        background(&mut e);
+        // Un document carrefour, proche de trois autres qui ne se ressemblent pas entre eux.
+        let hub = add_from(
+            &mut e,
+            "hub",
+            0,
+            "réseau/N métro/N tramway/N vélo/N autobus/N péage/N",
+        );
+        let a = add_from(&mut e, "a", 0, "métro/N tramway/N ligne/N station/N quai/N");
+        add_from(&mut e, "b", 0, "vélo/N autobus/N piste/N casque/N selle/N");
+        add_from(
+            &mut e,
+            "c",
+            0,
+            "péage/N réseau/N autoroute/N barrière/N radar/N",
+        );
+        let stats = e.compute_authority().unwrap();
+        assert!(stats.links >= 3, "{stats:?}");
+        assert!(e.authority(hub).unwrap() > e.authority(a).unwrap());
+        assert!(e.authority(hub).unwrap() > 1.0);
+        // Un document isolé (bruit de fond) reste sous la moyenne.
+        let r = explained(&e, &[("réseau", &[(Pos::Noun, "réseau")])], None, 5);
+        let h = r.hits.iter().find(|h| h.doc_id == hub).unwrap();
+        assert!(h.parts.authority > 1.0, "{:?}", h.parts);
     }
 }

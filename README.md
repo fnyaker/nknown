@@ -69,7 +69,15 @@ Un identifiant tapé tel quel (`read_to_string`, `HashMap::new`) est cherché ex
 Les mots présents dans le titre d'un document pèsent plus, et un titre qui correspond suffit à
 rendre le document candidat (fichier `mst.rs` pour « mst »). Les passages proches sont reliés
 entre documents : une même information reprise par plusieurs sources est regroupée (« aussi »),
-et pour `actu`, un sujet repris par plusieurs sources récentes remonte. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
+et pour `actu`, un sujet repris par plusieurs sources récentes remonte.
+
+Le score d'un résultat est le produit de facteurs nommés (texte, couverture, qualification,
+titre, nature, fraîcheur, emballement, soutien des voisins dans le graphe, autorité PageRank du
+document) ; `nknown search … --explain` les affiche avec les seuils appliqués. Plusieurs seuils
+sont dynamiques : exigence de couverture selon le nombre de passages complets, demi-vie de
+`actu` allongée si le corpus est ancien, coupure relative au meilleur score selon le nombre de
+candidats, fusion des doublons selon la redondance des résultats, liens d'un passage relatifs à
+son meilleur voisin. `nknown rank base.redb` calcule l'autorité (aussi après chaque `watch`). Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
 pondérées par leur usage dans la base.
 
 ## Mesures (UD French-GSD, test)

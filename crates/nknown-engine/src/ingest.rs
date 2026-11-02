@@ -587,6 +587,12 @@ impl<'e, S: Storage> Tx<'e, S> {
                 }
             }
             links.sort_by(|a, b| b.1.total_cmp(&a.1));
+            // Seuil relatif au meilleur voisin : un passage qui a un quasi-jumeau ne garde pas
+            // en plus des liens faibles.
+            let floor = links
+                .first()
+                .map_or(SIMILAR_MIN, |b| (b.1 * 0.5).max(SIMILAR_MIN));
+            links.retain(|l| l.1 >= floor);
             links.truncate(SIMILAR_LINKS);
             for (c, cos) in links {
                 let w = (cos as f32).to_le_bytes().to_vec();
