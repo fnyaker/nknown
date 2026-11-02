@@ -28,6 +28,8 @@ pub enum EdgeKind {
     PartOf = 5,
     /// Document → source.
     FromSource = 6,
+    /// Passage → lemme qu'il contient (sens inverse de `Occurs`).
+    Contains = 7,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,6 +53,32 @@ impl Edge {
         k[9] = self.kind as u8;
         k[10..].copy_from_slice(&self.to.0.to_be_bytes());
         k
+    }
+
+    pub fn key_of(from: NodeId, kind: EdgeKind, to: NodeId) -> [u8; 18] {
+        Edge {
+            from,
+            to,
+            kind,
+            weight: 0.0,
+        }
+        .key()
+    }
+
+    /// Préfixe des arêtes sortantes de `from` d'un type donné.
+    pub fn prefix(from: NodeId, kind: EdgeKind) -> [u8; 10] {
+        let mut k = [0u8; 10];
+        k[0] = EDGE_KEYSPACE;
+        k[1..9].copy_from_slice(&from.0.to_be_bytes());
+        k[9] = kind as u8;
+        k
+    }
+
+    /// Destination d'une arête à partir de sa clé.
+    pub fn target(key: &[u8]) -> Option<NodeId> {
+        Some(NodeId(u64::from_be_bytes(
+            key.get(10..18)?.try_into().ok()?,
+        )))
     }
 }
 

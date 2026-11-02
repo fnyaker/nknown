@@ -16,6 +16,8 @@ use nknown_sources::LocalFiles;
 const USAGE: &str = "\
 usage :
   nknown ingest <dossier> [lexique.lex]
+  nknown index <base.redb> <lexique.lex> <dossier> [modèle]...
+  nknown search <base.redb> <lexique.lex> <requête> [nombre]
   nknown lexicon build <sortie.lex> <ressource>...
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
                    lexique <Lexique383.tsv>
@@ -34,6 +36,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
+        ["index", base, lexicon, dir, models @ ..] => index(base, lexicon, dir, models),
+        ["search", base, lexicon, query] => search(base, lexicon, query, "5"),
+        ["search", base, lexicon, query, limit] => search(base, lexicon, query, limit),
         ["ingest", dir] => ingest(dir, None),
         ["ingest", dir, lexicon] => ingest(dir, Some(lexicon)),
         ["lexicon", "build", out, sources @ ..] if !sources.is_empty() => {
@@ -324,5 +329,112 @@ fn eval(lexicon: &str, corpus: &str, models: &[&str]) -> Res {
     let pipeline = pipeline(lexicon, models)?;
     let report = eval::evaluate(&pipeline, Lang::FRA, &read_corpus(corpus)?);
     print!("{report}");
+    Ok(())
+}
+
+fn index(base: &str, lexicon: &str, dir: &str, models: &[&str]) -> Res {
+    use nknown_engine::{Document, Engine, Ingested, RedbStorage};
+    let start = Instant::now();
+    let pipeline = pipeline(lexicon, models)?;
+    let mut engine = Engine::new(RedbStorage::open(base)?);
+    let mut source = LocalFiles::new(SourceId("files".into()), dir);
+    let kind = source.kind();
+    let (mut added, mut passages, mut duplicates) = (0usize, 0usize, 0usize);
+    for item in source.fetch(None)? {
+        let item = item?;
+        let lang = item.lang_hint.unwrap_or(Lang::FRA);
+        let analysis = pipeline.analyze(lang, &item.text);
+        match engine.ingest(Document {
+            item: &item,
+            kind,
+            lang,
+            analysis: &analysis,
+        })? {
+            Ingested::Added { passages: p, .. } => {
+                added += 1;
+                passages += p;
+            }
+            Ingested::Duplicate(_) => duplicates += 1,
+        }
+    }
+    let stats = engine.stats()?;
+    println!(
+        "{added} documents ajoutés ({passages} passages), {duplicates} déjà présents [{:.1?}]",
+        start.elapsed()
+    );
+    println!(
+        "base : {} documents, {} passages, {} mots indexés",
+        stats.docs, stats.passages, stats.indexed_words
+    );
+    Ok(())
+}
+
+/// Requête → mots et lectures possibles (lexique, plus la forme brute pour les mots inconnus
+/// et les noms propres), et intention éventuelle (« actu », « info »...).
+fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
+    use nknown_engine::{QueryTerm, intent_for};
+    let mut intent = None;
+    let mut terms = Vec::new();
+    for span in tokenize::words(text) {
+        let form = &text[span];
+        if intent.is_none()
+            && let Some(i) = intent_for(form)
+        {
+            intent = Some(i);
+            continue;
+        }
+        let mut readings: Vec<(Pos, String)> = lexicon
+            .lookup(form)
+            .filter(|e| nknown_engine::ingest::is_content(e.pos))
+            .map(|e| (e.pos, e.lemma.to_owned()))
+            .collect();
+        for pos in [Pos::Propn, Pos::Noun, Pos::X] {
+            readings.push((pos, form.to_owned()));
+        }
+        readings.dedup();
+        terms.push(QueryTerm {
+            text: form.to_owned(),
+            readings,
+        });
+    }
+    nknown_engine::Query {
+        lang: Lang::FRA,
+        terms,
+        intent,
+    }
+}
+
+fn search(base: &str, lexicon: &str, query: &str, limit: &str) -> Res {
+    use nknown_core::time::Timestamp;
+    use nknown_engine::{Engine, RedbStorage};
+    let limit: usize = limit
+        .parse()
+        .map_err(|_| format!("nombre invalide : {limit}"))?;
+    let lexicon = Lexicon::load(lexicon)?;
+    let engine = Engine::new(RedbStorage::open(base)?);
+    let q = build_query(&lexicon, query);
+    if let Some(i) = &q.intent {
+        println!("intention : {}", i.name);
+    }
+    let start = Instant::now();
+    let hits = engine.search(&q, Timestamp::now(), limit)?;
+    println!("{} résultat(s) [{:.1?}]", hits.len(), start.elapsed());
+    for h in hits {
+        let (y, m, d) = Timestamp(h.doc.date).ymd();
+        let title = h.doc.title.as_deref().unwrap_or("(sans titre)");
+        println!("\n{:.3}  {y}-{m:02}-{d:02}  {title}", h.score);
+        let mut info = format!("  mots : {}", h.matched.join(", "));
+        for (adj, noun) in &h.qualified {
+            info.push_str(&format!(" ; « {adj} » qualifie « {noun} »"));
+        }
+        println!("{info}");
+        let snippet: String = h.text.chars().take(220).collect();
+        let more = if h.text.chars().count() > 220 {
+            "…"
+        } else {
+            ""
+        };
+        println!("  {}{more}", snippet.replace('\n', " "));
+    }
     Ok(())
 }

@@ -39,6 +39,14 @@ impl NatureProfile {
         self.0[n as usize] = score.clamp(0.0, 1.0);
     }
 
+    pub fn from_scores(scores: [f32; Nature::COUNT]) -> Self {
+        Self(scores.map(|s| s.clamp(0.0, 1.0)))
+    }
+
+    pub fn scores(&self) -> [f32; Nature::COUNT] {
+        self.0
+    }
+
     /// Pertinence vis-à-vis des poids d'un opérateur de requête (ex. `actu`).
     pub fn weigh(&self, weights: &NatureProfile) -> f32 {
         self.0

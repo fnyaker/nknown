@@ -11,7 +11,7 @@ dans un graphe pondéré interrogeable (`actu paris`, ...).
 | `nknown-core` | Types et traits partagés : `Source`, `RawItem`, `Analyzer`, `Lang`, `NatureProfile`, dates |
 | `nknown-sources` | Implémentations de sources (fichiers locaux ; RSS, Wikipedia à venir) |
 | `nknown-nlp` | Pipeline NLP : lexique (Wiktextract + Lexique → `fst`), tagueur perceptron, rattachement des adjectifs ; neuronal (candle) à venir |
-| `nknown-engine` | Moteur : graphe, index, scoring, au-dessus d'un `Storage` abstrait |
+| `nknown-engine` | Moteur : graphe (lemmes, passages, documents, qualifications), index BM25, intentions (`actu`, `info`…), stockage redb |
 | `nknown-cli` | Binaire `nknown` |
 
 ## Utilisation
@@ -36,6 +36,18 @@ nknown ingest <dossier> [fr.lex]
 
 Le Wiktionary (CC BY-SA 3.0/4.0) et Lexique 3.83 (CC BY-SA 4.0) sont sous licence à partage
 à l'identique : un lexique compilé en hérite.
+
+## Base de connaissances
+
+```sh
+nknown index base.redb data/fr.lex <dossier> data/fr.tag     # ou data/parser-fr (couche 3)
+nknown search base.redb data/fr.lex "actu paris"
+nknown search base.redb data/fr.lex "paris sportifs"         # bonus si « sportifs » qualifie « paris »
+```
+
+Intentions reconnues dans la requête : `actu` (événements récents), `info` (référence),
+`avis`, `tuto`, `perso`. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
+pondérées par leur usage dans la base.
 
 ## Mesures (UD French-GSD, test)
 
