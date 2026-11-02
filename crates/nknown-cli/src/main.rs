@@ -583,6 +583,15 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str) -> Res {
         }
         println!("{info}");
         println!("  {}", snippet(&h.text, &h.matched, 220));
+        for r in h.related.iter().take(3) {
+            let (y, m, d) = Timestamp(r.date).ymd();
+            println!(
+                "  ↳ aussi ({:.0} %) : {} — {} ({y}-{m:02}-{d:02})",
+                r.similarity * 100.0,
+                r.title.as_deref().unwrap_or("(sans titre)"),
+                r.source
+            );
+        }
     }
     Ok(())
 }

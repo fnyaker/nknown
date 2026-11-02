@@ -67,6 +67,17 @@ pub struct Query {
     pub intent: Option<Intent>,
 }
 
+/// Document voisin d'un résultat (passage similaire dans un autre document).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Related {
+    pub doc_id: NodeId,
+    pub title: Option<String>,
+    pub source: String,
+    pub url: Option<String>,
+    pub date: i64,
+    pub similarity: f32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub passage: NodeId,
@@ -80,11 +91,20 @@ pub struct Hit {
     pub qualified: Vec<(String, String)>,
     pub is_code: bool,
     pub code_lang: Option<String>,
+    /// Documents voisins, du plus similaire au moins similaire ; un quasi-doublon d'un
+    /// meilleur résultat n'est pas listé à part mais ajouté ici.
+    pub related: Vec<Related>,
 }
 
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
 const QUALIFIED_BONUS: f64 = 1.5;
+/// Au-delà, deux passages disent la même chose : le moins bien classé est regroupé.
+const DUPLICATE_SIMILARITY: f32 = 0.5;
+/// Emballement : voisins d'autres sources assez proches et assez récents.
+const BURST_SIMILARITY: f32 = 0.35;
+const BURST_WINDOW_SECS: i64 = 3 * 86_400;
+const BURST_BONUS: f64 = 0.25;
 
 /// Un lemme candidat d'un mot de la requête.
 struct Reading {
@@ -244,6 +264,7 @@ impl<S: Storage> Engine<S> {
                 score,
                 is_code: passage.is_code,
                 code_lang: passage.code_lang.clone(),
+                related: Vec::new(),
                 text: passage.text,
                 doc,
                 matched: matched.iter().map(|&t| q.terms[t].text.clone()).collect(),
@@ -257,8 +278,106 @@ impl<S: Storage> Engine<S> {
         // Un résultat par document : son meilleur passage.
         let mut seen = HashSet::new();
         hits.retain(|h| seen.insert(h.doc_id));
-        hits.truncate(limit);
-        Ok(hits)
+
+        // Voisins des meilleurs résultats ; pour « actu », un sujet repris par plusieurs
+        // sources récentes remonte (effet d'emballement).
+        hits.truncate(limit * 4 + 20);
+        for h in &mut hits {
+            h.related = self.related(h.passage, h.doc_id, &mut docs)?;
+            if q.intent
+                .as_ref()
+                .is_some_and(|i| i.half_life_days.is_some())
+            {
+                let echoes = h
+                    .related
+                    .iter()
+                    .filter(|r| {
+                        r.source != h.doc.source
+                            && r.similarity >= BURST_SIMILARITY
+                            && now.0 - r.date <= BURST_WINDOW_SECS
+                    })
+                    .count()
+                    .min(5);
+                h.score *= 1.0 + BURST_BONUS * echoes as f64;
+            }
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+        // Quasi-doublons (même information reprise ailleurs) : regroupés sous le meilleur.
+        let mut kept: Vec<Hit> = Vec::new();
+        for h in hits {
+            let twin = kept.iter().position(|k| {
+                k.related
+                    .iter()
+                    .any(|r| r.doc_id == h.doc_id && r.similarity >= DUPLICATE_SIMILARITY)
+                    || h.related
+                        .iter()
+                        .any(|r| r.doc_id == k.doc_id && r.similarity >= DUPLICATE_SIMILARITY)
+            });
+            match twin {
+                Some(i) => {
+                    let k = &mut kept[i];
+                    if !k.related.iter().any(|r| r.doc_id == h.doc_id) {
+                        k.related.push(Related {
+                            doc_id: h.doc_id,
+                            title: h.doc.title.clone(),
+                            source: h.doc.source.clone(),
+                            url: h.doc.url.clone(),
+                            date: h.doc.date,
+                            similarity: DUPLICATE_SIMILARITY,
+                        });
+                    }
+                }
+                None => kept.push(h),
+            }
+        }
+        kept.truncate(limit);
+        Ok(kept)
+    }
+
+    /// Documents reliés au passage par des arêtes de similarité, du plus proche au plus loin.
+    fn related(
+        &self,
+        passage: NodeId,
+        own_doc: NodeId,
+        docs: &mut HashMap<u64, DocRecord>,
+    ) -> Result<Vec<Related>> {
+        let mut out: Vec<Related> = Vec::new();
+        for (key, value) in self.scan(&Edge::prefix(passage, EdgeKind::Similar))? {
+            let Some(other) = Edge::target(&key) else {
+                continue;
+            };
+            let Some(p) = self.passage(other)? else {
+                continue;
+            };
+            if p.doc == own_doc.0 {
+                continue;
+            }
+            let doc = match docs.get(&p.doc) {
+                Some(d) => d.clone(),
+                None => {
+                    let Some(d) = self.doc(NodeId(p.doc))? else {
+                        continue;
+                    };
+                    docs.insert(p.doc, d.clone());
+                    d
+                }
+            };
+            let similarity = schema::f32_value(&value);
+            match out.iter_mut().find(|r| r.doc_id.0 == p.doc) {
+                Some(r) => r.similarity = r.similarity.max(similarity),
+                None => out.push(Related {
+                    doc_id: NodeId(p.doc),
+                    title: doc.title,
+                    source: doc.source,
+                    url: doc.url,
+                    date: doc.date,
+                    similarity,
+                }),
+            }
+        }
+        out.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
+        Ok(out)
     }
 
     pub(crate) fn passage(&self, id: NodeId) -> Result<Option<PassageRecord>> {

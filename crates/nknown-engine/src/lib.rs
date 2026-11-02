@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 
 pub use graph::{Edge, EdgeKind, NodeId, NodeKind};
 pub use ingest::{Document, Ingested, ItemStatus};
-pub use search::{Hit, Intent, Query, QueryTerm, intent_for};
+pub use search::{Hit, Intent, Query, QueryTerm, Related, intent_for};
 pub use storage::{MemStorage, Op, RedbStorage, Storage};
 
 #[derive(Debug)]
@@ -563,5 +563,134 @@ mod tests {
             NatureProfile::from_scores(story.doc.nature).get(Nature::Technical),
             0.0
         );
+    }
+
+    fn add_from(e: &mut Engine<MemStorage>, source: &str, age_days: i64, spec: &str) -> NodeId {
+        let (text, analysis) = doc(spec, &[]);
+        let mut item = RawItem::new(SourceId(source.into()), text, NOW);
+        item.title = Some(spec.split('/').next().unwrap_or_default().to_owned());
+        item.published_at = Some(Dated {
+            at: Timestamp(NOW.0 - age_days * DAY),
+            confidence: DateConfidence::Declared,
+        });
+        match e
+            .ingest(Document {
+                item: &item,
+                kind: SourceKind::Feed,
+                lang: Lang::FRA,
+                analysis: &analysis,
+                title: None,
+            })
+            .unwrap()
+        {
+            Ingested::Added { doc, .. } => doc,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Bruit de fond : sans lui, tous les termes seraient « trop fréquents » pour servir
+    /// de point d'entrée aux liens.
+    fn background(e: &mut Engine<MemStorage>) {
+        for i in 0..30 {
+            add_from(
+                e,
+                "fond",
+                400,
+                &format!("sujet{i}/N divers{i}/N thème{i}/N rubrique{i}/N chronique{i}/N"),
+            );
+        }
+    }
+
+    const BHV: &str = "BHV/NP Marais/NP redressement/N judiciaire/A magasin/N salariés/N";
+
+    fn similar_edges(e: &Engine<MemStorage>) -> usize {
+        e.scan(b"E")
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| k.len() == 18 && k[9] == EdgeKind::Similar as u8)
+            .count()
+    }
+
+    #[test]
+    fn similar_passages_are_linked() {
+        let mut e = Engine::new(MemStorage::default());
+        background(&mut e);
+        let before = similar_edges(&e);
+        let a = add_from(&mut e, "lemonde", 0, BHV);
+        let b = add_from(
+            &mut e,
+            "franceinfo",
+            0,
+            "BHV/NP Marais/NP placé/V/placer en/D redressement/N judiciaire/A magasin/N",
+        );
+        assert_eq!(similar_edges(&e) - before, 2, "un lien dans chaque sens");
+        let hits = query(&e, &[("bhv", &[(Pos::Propn, "BHV")])], None);
+        // Quasi-doublons : un seul résultat, l'autre en « aussi ».
+        assert_eq!(hits.len(), 1, "{hits:#?}");
+        let other = if hits[0].doc_id == a { b } else { a };
+        assert_eq!(hits[0].related[0].doc_id, other);
+        // Retirer un document retire ses liens.
+        e.remove(other).unwrap();
+        assert_eq!(similar_edges(&e), before);
+        assert!(
+            query(&e, &[("bhv", &[(Pos::Propn, "BHV")])], None)[0]
+                .related
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unrelated_passages_are_not_linked() {
+        let mut e = Engine::new(MemStorage::default());
+        background(&mut e);
+        let before = similar_edges(&e);
+        add_from(&mut e, "a", 0, BHV);
+        add_from(
+            &mut e,
+            "b",
+            0,
+            "tournoi/N tennis/N Bercy/NP finale/N joueur/N blessure/N",
+        );
+        assert_eq!(similar_edges(&e), before);
+    }
+
+    #[test]
+    fn widely_covered_news_gets_a_burst_bonus() {
+        let mut e = Engine::new(MemStorage::default());
+        background(&mut e);
+        // Sujet isolé, plus « pertinent » textuellement (Paris deux fois)...
+        add_from(
+            &mut e,
+            "blog",
+            0,
+            "Paris/NP Paris/NP exposition/N peinture/N galerie/N vernissage/N",
+        );
+        // ...et sujet repris par trois sources, mais avec des formulations différentes.
+        add_from(
+            &mut e,
+            "s1",
+            0,
+            "Paris/NP grève/N métro/N RATP/NP lignes/N/ligne fermées/A/fermé",
+        );
+        add_from(
+            &mut e,
+            "s2",
+            0,
+            "grève/N RATP/NP Paris/NP métro/N perturbé/A trafic/N",
+        );
+        add_from(
+            &mut e,
+            "s3",
+            1,
+            "RATP/NP grève/N métro/N Paris/NP usagers/N/usager trafic/N",
+        );
+        let paris = [PARIS];
+        let plain = query(&e, &paris, None);
+        assert!(
+            plain[0].text.contains("exposition"),
+            "sans intention : {plain:#?}"
+        );
+        let actu = query(&e, &paris, Some("actu"));
+        assert!(actu[0].text.contains("grève"), "avec actu : {actu:#?}");
     }
 }

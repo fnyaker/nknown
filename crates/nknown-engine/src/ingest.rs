@@ -108,6 +108,18 @@ pub fn nature_of(kind: SourceKind, code_tokens: usize, total: usize) -> NaturePr
     p
 }
 
+/// Liens de similarité : taille minimale d'un passage, termes servant à trouver les
+/// candidats, candidats examinés, seuil de similarité cosinus, liens gardés par passage.
+const MIN_SIMILAR_TERMS: u32 = 4;
+const SIMILAR_SEEDS: usize = 8;
+const SIMILAR_CANDIDATES: usize = 20;
+const SIMILAR_MIN: f64 = 0.25;
+const SIMILAR_LINKS: usize = 5;
+
+fn idf(n: f64, df: f64) -> f64 {
+    (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+}
+
 /// Passage maximal avant découpe aux fins de phrase.
 const MAX_PASSAGE_TOKENS: usize = 120;
 
@@ -269,6 +281,7 @@ impl<S: Storage> Engine<S> {
         let first_passage = pids.first().map_or(0, |p| p.0);
 
         let mut code_tokens = 0usize;
+        let mut passage_terms: Vec<(NodeId, HashMap<NodeId, u32>)> = Vec::new();
         for (ordinal, ((range, kind), &pid)) in ranges.iter().zip(&pids).enumerate() {
             let mut tf: HashMap<NodeId, u32> = HashMap::new();
             let mut lemma_of: HashMap<usize, NodeId> = HashMap::new();
@@ -326,7 +339,10 @@ impl<S: Storage> Engine<S> {
                 })?,
             );
             tx.add(schema::meta_key(schema::TOTAL_LEN), i64::from(len))?;
+            passage_terms.push((pid, tf));
         }
+
+        tx.link_similar(&passage_terms, replaced)?;
 
         let mut title_lemmas = Vec::new();
         for t in d.title.map(|a| a.tokens.as_slice()).unwrap_or_default() {
@@ -469,6 +485,104 @@ impl<'e, S: Storage> Tx<'e, S> {
         };
         self.lemmas.insert((kind, norm), id);
         Ok(id)
+    }
+
+    /// Relie chaque nouveau passage à ses plus proches voisins déjà indexés (autres documents),
+    /// par similarité cosinus de vecteurs TF-IDF. Candidats : passages partageant les termes
+    /// les plus distinctifs du passage (ni uniques, ni trop fréquents).
+    fn link_similar(
+        &mut self,
+        passages: &[(NodeId, HashMap<NodeId, u32>)],
+        exclude_doc: Option<NodeId>,
+    ) -> Result<()> {
+        let n = schema::u64_value(self.engine.get(&schema::meta_key(schema::PASSAGES))?) as f64;
+        if n < 2.0 {
+            return Ok(());
+        }
+        let max_df = (n * 0.05).max(5.0);
+        let mut df: HashMap<NodeId, f64> = HashMap::new();
+        let mut doc_of: HashMap<NodeId, u64> = HashMap::new();
+        for (pid, tf) in passages {
+            if tf.values().sum::<u32>() < MIN_SIMILAR_TERMS {
+                continue;
+            }
+            let mut weights: HashMap<NodeId, f64> = HashMap::new();
+            for (&t, &c) in tf {
+                let d = self.df(&mut df, t)?;
+                weights.insert(t, (1.0 + f64::from(c).ln()) * idf(n, d));
+            }
+            let norm = weights.values().map(|w| w * w).sum::<f64>().sqrt();
+            let mut seeds: Vec<(NodeId, f64)> = weights
+                .iter()
+                .filter(|&(t, _)| df.get(t).is_some_and(|&d| d >= 1.0 && d <= max_df))
+                .map(|(&t, &w)| (t, w))
+                .collect();
+            seeds.sort_by(|a, b| b.1.total_cmp(&a.1));
+            seeds.truncate(SIMILAR_SEEDS);
+
+            let mut acc: HashMap<NodeId, f64> = HashMap::new();
+            for (seed, w) in &seeds {
+                for (key, _) in self.engine.scan(&Edge::prefix(*seed, EdgeKind::Occurs))? {
+                    if let Some(c) = Edge::target(&key) {
+                        *acc.entry(c).or_default() += w;
+                    }
+                }
+            }
+            let mut candidates: Vec<(NodeId, f64)> = acc.into_iter().collect();
+            candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+            candidates.truncate(SIMILAR_CANDIDATES);
+
+            let mut links: Vec<(NodeId, f64)> = Vec::new();
+            for (c, _) in candidates {
+                let doc = match doc_of.get(&c) {
+                    Some(&d) => d,
+                    None => {
+                        let Some(rec) = self.engine.passage(c)? else {
+                            continue;
+                        };
+                        doc_of.insert(c, rec.doc);
+                        rec.doc
+                    }
+                };
+                if exclude_doc.is_some_and(|x| x.0 == doc) {
+                    continue; // ancienne version du document en cours de remplacement
+                }
+                let (mut dot, mut norm_c) = (0.0, 0.0);
+                for (key, value) in self.engine.scan(&Edge::prefix(c, EdgeKind::Contains))? {
+                    let Some(t) = Edge::target(&key) else {
+                        continue;
+                    };
+                    let d = self.df(&mut df, t)?;
+                    let w = (1.0 + f64::from(schema::f32_value(&value)).ln()) * idf(n, d);
+                    norm_c += w * w;
+                    if let Some(wp) = weights.get(&t) {
+                        dot += w * wp;
+                    }
+                }
+                let cos = dot / (norm * norm_c.sqrt()).max(f64::EPSILON);
+                if cos >= SIMILAR_MIN {
+                    links.push((c, cos));
+                }
+            }
+            links.sort_by(|a, b| b.1.total_cmp(&a.1));
+            links.truncate(SIMILAR_LINKS);
+            for (c, cos) in links {
+                let w = (cos as f32).to_le_bytes().to_vec();
+                self.put(Edge::key_of(*pid, EdgeKind::Similar, c).to_vec(), w.clone());
+                self.put(Edge::key_of(c, EdgeKind::Similar, *pid).to_vec(), w);
+            }
+        }
+        Ok(())
+    }
+
+    /// Nombre de passages (déjà indexés) contenant `t`, mis en cache.
+    fn df(&self, cache: &mut HashMap<NodeId, f64>, t: NodeId) -> Result<f64> {
+        if let Some(&d) = cache.get(&t) {
+            return Ok(d);
+        }
+        let d = schema::u64_value(self.engine.get(&schema::id_key(schema::STATS, t))?) as f64;
+        cache.insert(t, d);
+        Ok(d)
     }
 
     /// Retire un document : ses passages, leurs arêtes et qualifications, et met à jour
