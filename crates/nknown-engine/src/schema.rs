@@ -11,6 +11,9 @@
 //! | `S` | id du lemme | nombre de passages qui le contiennent (df) |
 //! | `E` | de, type, vers | poids f32 (voir [`crate::graph::Edge`]) |
 //! | `Q` | nom, adjectif, passage | — : l'adjectif qualifie le nom dans ce passage |
+//! | `q` | passage, nom, adjectif | — : index inverse de `Q` (suppression d'un passage) |
+//! | `X` | source, 0, identifiant externe | doc u64, empreinte u64, date i64 : contenu déjà vu |
+//! | `C` | source | date u64 de la dernière collecte (point de reprise) |
 //!
 //! Identifiants : un seul compteur pour tous les nœuds (documents, passages, lemmes).
 
@@ -29,6 +32,9 @@ pub const LEXEME: u8 = b'L';
 pub const NODE: u8 = b'N';
 pub const STATS: u8 = b'S';
 pub const QUALIFIED: u8 = b'Q';
+pub const QUALIFIED_REV: u8 = b'q';
+pub const SEEN: u8 = b'X';
+pub const CHECKPOINT: u8 = b'C';
 
 pub const NEXT_ID: &str = "next_id";
 pub const PASSAGES: &str = "passages";
@@ -80,6 +86,28 @@ pub fn qualified_key(noun: NodeId, adj: NodeId, passage: NodeId) -> Vec<u8> {
     k
 }
 
+pub fn qualified_rev_key(passage: NodeId, noun: NodeId, adj: NodeId) -> Vec<u8> {
+    let mut k = vec![QUALIFIED_REV];
+    k.extend_from_slice(&passage.0.to_be_bytes());
+    k.extend_from_slice(&noun.0.to_be_bytes());
+    k.extend_from_slice(&adj.0.to_be_bytes());
+    k
+}
+
+pub fn seen_key(source: &str, external_id: &str) -> Vec<u8> {
+    let mut k = vec![SEEN];
+    k.extend_from_slice(source.as_bytes());
+    k.push(0);
+    k.extend_from_slice(external_id.as_bytes());
+    k
+}
+
+pub fn checkpoint_key(source: &str) -> Vec<u8> {
+    let mut k = vec![CHECKPOINT];
+    k.extend_from_slice(source.as_bytes());
+    k
+}
+
 pub fn u64_value(v: Option<Vec<u8>>) -> u64 {
     v.and_then(|b| b.try_into().ok())
         .map_or(0, u64::from_be_bytes)
@@ -104,6 +132,12 @@ pub struct DocRecord {
     pub nature: [f32; Nature::COUNT],
     pub first_passage: u64,
     pub passages: u32,
+    /// Identifiant dans la source (lien, GUID, titre d'article), pour les mises à jour.
+    pub external_id: Option<String>,
+    /// Empreinte du contenu (source + texte).
+    pub hash: u64,
+    /// Lemmes du titre.
+    pub title_lemmas: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

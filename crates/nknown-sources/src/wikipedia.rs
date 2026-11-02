@@ -119,6 +119,53 @@ impl Source for WikipediaSource {
         }
     }
 
+    fn checkpoint_key(&self) -> String {
+        let sel = match &self.selection {
+            Selection::Titles(t) => format!("titres:{}", t.join("|")),
+            Selection::Search { query, limit } => format!("recherche:{query}:{limit}"),
+            Selection::Category { name, limit } => format!("catégorie:{name}:{limit}"),
+        };
+        format!("{}:{sel}", self.id.0)
+    }
+
+    fn fetch_new(
+        &mut self,
+        since: Option<Timestamp>,
+        known: &dyn Fn(&str) -> Option<Timestamp>,
+    ) -> Result<ItemStream<'_>, SourceError> {
+        let _ = since;
+        // Dates de révision par lots de 50 : on ne télécharge que les articles
+        // inconnus ou révisés depuis la version indexée.
+        let mut wanted = Vec::new();
+        for chunk in self.titles()?.chunks(50) {
+            let url = self.api(&format!(
+                "action=query&redirects=1&prop=revisions&rvprop=timestamp&titles={}",
+                encode_component(&chunk.join("|"))
+            ));
+            let json = self.http.get_json(&url)?;
+            for page in json["query"]["pages"].as_array().into_iter().flatten() {
+                let (Some(title), None) = (page["title"].as_str(), page.get("missing")) else {
+                    continue;
+                };
+                let revised = page["revisions"][0]["timestamp"]
+                    .as_str()
+                    .and_then(Timestamp::parse_rfc3339);
+                let indexed = known(&format!("{}:{title}", self.edition));
+                let changed = match (indexed, revised) {
+                    (Some(i), Some(r)) => r > i,
+                    _ => true,
+                };
+                if changed {
+                    wanted.push(title.to_owned());
+                }
+            }
+        }
+        let fetched_at = Timestamp::now();
+        Ok(Box::new(wanted.into_iter().filter_map(move |t| {
+            self.article(&t, None, fetched_at).transpose()
+        })))
+    }
+
     fn fetch(&mut self, since: Option<Timestamp>) -> Result<ItemStream<'_>, SourceError> {
         let titles = self.titles()?;
         let fetched_at = Timestamp::now();

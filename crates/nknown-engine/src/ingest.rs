@@ -1,6 +1,7 @@
 //! Ingestion d'un document analysé : passages, lemmes, arêtes, statistiques.
 //!
-//! Tout le document est écrit en une seule transaction.
+//! Tout le document est écrit en une seule transaction. Un contenu déjà vu sous le même
+//! identifiant externe mais modifié remplace l'ancienne version dans la même transaction.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -10,7 +11,7 @@ use nknown_core::item::RawItem;
 use nknown_core::lang::Lang;
 use nknown_core::nature::{Nature, NatureProfile};
 use nknown_core::source::SourceKind;
-use nknown_core::time::DateConfidence;
+use nknown_core::time::{DateConfidence, Timestamp};
 
 use crate::graph::{Edge, EdgeKind, NodeId};
 use crate::schema::{self, DocRecord, LemmaRecord, PassageRecord};
@@ -24,6 +25,8 @@ pub struct Document<'a> {
     pub kind: SourceKind,
     pub lang: Lang,
     pub analysis: &'a Analysis,
+    /// Analyse du titre, s'il est distinct du texte : ses lemmes pèsent plus à la recherche.
+    pub title: Option<&'a Analysis>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +35,25 @@ pub enum Ingested {
         doc: NodeId,
         passages: usize,
     },
-    /// Contenu déjà indexé (même source, même texte).
+    /// Nouvelle version d'un contenu déjà vu (même identifiant externe) : l'ancienne
+    /// est retirée de l'index.
+    Updated {
+        doc: NodeId,
+        passages: usize,
+        replaced: NodeId,
+    },
+    /// Même contenu déjà indexé.
     Duplicate(NodeId),
+}
+
+/// État d'un contenu avant analyse : évite d'analyser ce qui n'a pas changé.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemStatus {
+    New,
+    /// Déjà indexé à l'identique.
+    Unchanged(NodeId),
+    /// Déjà vu sous cet identifiant externe, avec un contenu différent.
+    Changed(NodeId),
 }
 
 /// Catégories indexées : les mots porteurs de sens. `X` = mot inconnu (sans couche 2/3).
@@ -95,15 +115,82 @@ fn fnv(data: &[u8]) -> u64 {
     })
 }
 
+fn content_hash(item: &RawItem) -> u64 {
+    fnv(format!("{}\0{}", item.source.0, item.text).as_bytes())
+}
+
+/// Valeur `X` : document, empreinte, date de la version indexée.
+fn split_seen(v: &[u8]) -> (NodeId, u64, i64) {
+    let num = |r: Range<usize>| {
+        v.get(r)
+            .and_then(|b| b.try_into().ok())
+            .map_or(0, u64::from_be_bytes)
+    };
+    (NodeId(num(0..8)), num(8..16), num(16..24) as i64)
+}
+
 impl<S: Storage> Engine<S> {
+    /// Indique si `item` est nouveau, inchangé ou modifié, sans l'analyser.
+    pub fn status(&self, item: &RawItem) -> Result<ItemStatus> {
+        let hash = content_hash(item);
+        if let Some(ext) = &item.external_id
+            && let Some(v) = self.get(&schema::seen_key(&item.source.0, ext))?
+        {
+            let (doc, old_hash, _) = split_seen(&v);
+            return Ok(if old_hash == hash {
+                ItemStatus::Unchanged(doc)
+            } else {
+                ItemStatus::Changed(doc)
+            });
+        }
+        Ok(match self.get(&schema::hash_key(hash))? {
+            Some(id) => ItemStatus::Unchanged(NodeId(schema::u64_value(Some(id)))),
+            None => ItemStatus::New,
+        })
+    }
+
+    /// Date de la version indexée du contenu `external_id` de `source`, s'il est connu.
+    pub fn known(&self, source: &str, external_id: &str) -> Result<Option<Timestamp>> {
+        Ok(self
+            .get(&schema::seen_key(source, external_id))?
+            .map(|v| Timestamp(split_seen(&v).2)))
+    }
+
+    /// Date de la dernière collecte réussie d'une source.
+    pub fn checkpoint(&self, source: &str) -> Result<Option<Timestamp>> {
+        Ok(self
+            .get(&schema::checkpoint_key(source))?
+            .map(|v| Timestamp(schema::u64_value(Some(v)) as i64)))
+    }
+
+    pub fn set_checkpoint(&mut self, source: &str, at: Timestamp) -> Result<()> {
+        self.apply(vec![Op::Put(
+            schema::checkpoint_key(source),
+            (at.0.max(0) as u64).to_be_bytes().to_vec(),
+        )])
+    }
+
+    /// Retire un document de l'index (passages, arêtes, statistiques).
+    pub fn remove(&mut self, doc: NodeId) -> Result<bool> {
+        let mut tx = Tx::new(self)?;
+        let removed = tx.remove_doc(doc)?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub fn ingest(&mut self, d: Document<'_>) -> Result<Ingested> {
         let item = d.item;
-        let hash = fnv(format!("{}\0{}", item.source.0, item.text).as_bytes());
-        if let Some(id) = self.get(&schema::hash_key(hash))? {
-            return Ok(Ingested::Duplicate(NodeId(schema::u64_value(Some(id)))));
-        }
+        let hash = content_hash(item);
+        let replaced = match self.status(item)? {
+            ItemStatus::Unchanged(doc) => return Ok(Ingested::Duplicate(doc)),
+            ItemStatus::Changed(doc) => Some(doc),
+            ItemStatus::New => None,
+        };
 
         let mut tx = Tx::new(self)?;
+        if let Some(old) = replaced {
+            tx.remove_doc(old)?;
+        }
         let doc = tx.next();
         let tokens = &d.analysis.tokens;
         let ranges = passages(&item.text, tokens);
@@ -138,6 +225,7 @@ impl<S: Storage> Engine<S> {
                     && let (Some(&a), Some(&n)) = (lemma_of.get(&adj), lemma_of.get(&noun))
                 {
                     tx.put(schema::qualified_key(n, a, pid), Vec::new());
+                    tx.put(schema::qualified_rev_key(pid, n, a), Vec::new());
                     tx.add_f32(Edge::key_of(a, EdgeKind::Qualifies, n).to_vec(), 1.0)?;
                 }
             }
@@ -154,7 +242,17 @@ impl<S: Storage> Engine<S> {
                     len,
                 })?,
             );
-            tx.add(schema::meta_key(schema::TOTAL_LEN), u64::from(len))?;
+            tx.add(schema::meta_key(schema::TOTAL_LEN), i64::from(len))?;
+        }
+
+        let mut title_lemmas = Vec::new();
+        for t in d.title.map(|a| a.tokens.as_slice()).unwrap_or_default() {
+            if is_content(t.pos) {
+                let id = tx.lemma(d.lang, t.pos, &t.lemma)?.0;
+                if !title_lemmas.contains(&id) {
+                    title_lemmas.push(id);
+                }
+            }
         }
 
         let date = item.date();
@@ -176,15 +274,29 @@ impl<S: Storage> Engine<S> {
                 nature: nature_prior(d.kind).scores(),
                 first_passage,
                 passages: ranges.len() as u32,
+                external_id: item.external_id.clone(),
+                hash,
+                title_lemmas,
             })?,
         );
         tx.put(schema::hash_key(hash), doc.0.to_be_bytes().to_vec());
-        tx.add(schema::meta_key(schema::PASSAGES), ranges.len() as u64)?;
+        if let Some(ext) = &item.external_id {
+            let mut v = doc.0.to_be_bytes().to_vec();
+            v.extend_from_slice(&hash.to_be_bytes());
+            v.extend_from_slice(&date.at.0.to_be_bytes());
+            tx.put(schema::seen_key(&item.source.0, ext), v);
+        }
+        tx.add(schema::meta_key(schema::PASSAGES), ranges.len() as i64)?;
         tx.add(schema::meta_key(schema::DOCS), 1)?;
         tx.commit()?;
-        Ok(Ingested::Added {
-            doc,
-            passages: ranges.len(),
+        let passages = ranges.len();
+        Ok(match replaced {
+            Some(replaced) => Ingested::Updated {
+                doc,
+                passages,
+                replaced,
+            },
+            None => Ingested::Added { doc, passages },
         })
     }
 }
@@ -222,12 +334,17 @@ impl<'e, S: Storage> Tx<'e, S> {
         self.ops.push(Op::Put(k, v));
     }
 
-    fn add(&mut self, key: Vec<u8>, delta: u64) -> Result<()> {
+    fn del(&mut self, k: Vec<u8>) {
+        self.ops.push(Op::Delete(k));
+    }
+
+    fn add(&mut self, key: Vec<u8>, delta: i64) -> Result<()> {
         if !self.counters.contains_key(&key) {
             let current = schema::u64_value(self.engine.get(&key)?);
             self.counters.insert(key.clone(), current);
         }
-        *self.counters.get_mut(&key).expect("inséré ci-dessus") += delta;
+        let c = self.counters.get_mut(&key).expect("inséré ci-dessus");
+        *c = c.saturating_add_signed(delta);
         Ok(())
     }
 
@@ -268,6 +385,59 @@ impl<'e, S: Storage> Tx<'e, S> {
         };
         self.lemmas.insert((pos, norm), id);
         Ok(id)
+    }
+
+    /// Retire un document : ses passages, leurs arêtes et qualifications, et met à jour
+    /// les statistiques. Renvoie `false` si le document n'existe pas.
+    fn remove_doc(&mut self, doc: NodeId) -> Result<bool> {
+        let Some(rec) = self.engine.doc(doc)? else {
+            return Ok(false);
+        };
+        let first = rec.first_passage;
+        for pid in (first..first + u64::from(rec.passages)).map(NodeId) {
+            for (key, _) in self.engine.scan(&Edge::prefix(pid, EdgeKind::Contains))? {
+                let Some(lemma) = Edge::target(&key) else {
+                    continue;
+                };
+                self.del(key);
+                self.del(Edge::key_of(lemma, EdgeKind::Occurs, pid).to_vec());
+                self.add(schema::id_key(schema::STATS, lemma), -1)?;
+            }
+            for (key, _) in self.engine.scan(&Edge::prefix(pid, EdgeKind::Similar))? {
+                if let Some(other) = Edge::target(&key) {
+                    self.del(Edge::key_of(other, EdgeKind::Similar, pid).to_vec());
+                }
+                self.del(key);
+            }
+            for (key, _) in self
+                .engine
+                .scan(&schema::id_key(schema::QUALIFIED_REV, pid))?
+            {
+                let id = |r: Range<usize>| {
+                    NodeId(
+                        key.get(r)
+                            .and_then(|b| b.try_into().ok())
+                            .map_or(0, u64::from_be_bytes),
+                    )
+                };
+                let (noun, adj) = (id(9..17), id(17..25));
+                self.del(schema::qualified_key(noun, adj, pid));
+                self.add_f32(Edge::key_of(adj, EdgeKind::Qualifies, noun).to_vec(), -1.0)?;
+                self.del(key);
+            }
+            if let Some(p) = self.engine.passage(pid)? {
+                self.add(schema::meta_key(schema::TOTAL_LEN), -i64::from(p.len))?;
+            }
+            self.del(schema::id_key(schema::PASSAGE, pid));
+        }
+        self.del(schema::id_key(schema::DOC, doc));
+        self.del(schema::hash_key(rec.hash));
+        if let Some(ext) = &rec.external_id {
+            self.del(schema::seen_key(&rec.source, ext));
+        }
+        self.add(schema::meta_key(schema::PASSAGES), -i64::from(rec.passages))?;
+        self.add(schema::meta_key(schema::DOCS), -1)?;
+        Ok(true)
     }
 
     fn commit(mut self) -> Result<()> {

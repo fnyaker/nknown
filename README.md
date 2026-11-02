@@ -51,7 +51,10 @@ nknown search base.redb data/fr.lex "paris sportifs"         # bonus si « sport
 Sources : `<dossier>`, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:<édition>:<requête>`,
 `wiki-cat:<édition>:<Catégorie>`, `@<fichier>` (une par ligne). Les requêtes HTTP sont espacées
 (1/s pour Wikipédia) et reprises sur 429/503 ; `NKNOWN_USER_AGENT` permet d'y ajouter un contact.
-Un contenu déjà indexé n'est pas réindexé.
+La collecte est incrémentale : un contenu inchangé n'est ni retéléchargé (Wikipédia : dates de
+révision par lots de 50) ni réanalysé ; une version modifiée remplace l'ancienne.
+`nknown watch base.redb data/fr.lex @examples/sources.txt 30m data/fr.tag` relance la collecte
+toutes les 30 minutes.
 
 Intentions reconnues dans la requête : `actu` (événements récents), `info` (référence),
 `avis`, `tuto`, `perso`. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,

@@ -17,7 +17,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub use graph::{Edge, EdgeKind, NodeId, NodeKind};
-pub use ingest::{Document, Ingested};
+pub use ingest::{Document, Ingested, ItemStatus};
 pub use search::{Hit, Intent, Query, QueryTerm, intent_for};
 pub use storage::{MemStorage, Op, RedbStorage, Storage};
 
@@ -177,6 +177,7 @@ mod tests {
             kind,
             lang: Lang::FRA,
             analysis: &analysis,
+            title: None,
         })
         .unwrap()
     }
@@ -340,8 +341,111 @@ mod tests {
                 kind: SourceKind::LocalFile,
                 lang: Lang::FRA,
                 analysis: &analysis,
+                title: None,
             })
             .unwrap();
         assert!(matches!(r, Ingested::Added { passages: 2, .. }));
+    }
+
+    fn item(ext: &str, spec: &str) -> (RawItem, Analysis) {
+        let (text, analysis) = doc(spec, &[(1, 0)]);
+        let mut item = RawItem::new(SourceId("wiki".into()), text, NOW);
+        item.external_id = Some(ext.into());
+        (item, analysis)
+    }
+
+    fn ingest(e: &mut Engine<MemStorage>, item: &RawItem, analysis: &Analysis) -> Ingested {
+        e.ingest(Document {
+            item,
+            kind: SourceKind::Encyclopedia,
+            lang: Lang::FRA,
+            analysis,
+            title: None,
+        })
+        .unwrap()
+    }
+
+    /// Tout le contenu de la base sauf le compteur d'identifiants (qui avance).
+    fn dump(e: &Engine<MemStorage>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        e.scan(b"")
+            .unwrap()
+            .into_iter()
+            .filter(|(k, _)| k[0] != b'M' || !k.ends_with(b"next_id"))
+            .collect()
+    }
+
+    #[test]
+    fn updates_replace_the_previous_version() {
+        let (v1, a1) = item("Paris", "rues/N/rue calmes/A/calme");
+        let (v2, a2) = item("Paris", "places/N/place animées/A/animé");
+
+        let mut e = Engine::new(MemStorage::default());
+        assert_eq!(e.status(&v1).unwrap(), ItemStatus::New);
+        assert!(matches!(ingest(&mut e, &v1, &a1), Ingested::Added { .. }));
+        assert!(matches!(e.status(&v1).unwrap(), ItemStatus::Unchanged(_)));
+        assert!(matches!(e.status(&v2).unwrap(), ItemStatus::Changed(_)));
+        assert!(matches!(ingest(&mut e, &v2, &a2), Ingested::Updated { .. }));
+
+        let rue = [("rues", &[(Pos::Noun, "rue")][..])];
+        assert!(
+            query(&e, &rue, None).is_empty(),
+            "l'ancienne version reste trouvable"
+        );
+        assert_eq!(e.stats().unwrap().docs, 1);
+
+        // Statistiques et liens : comme si seule la nouvelle version avait été indexée
+        // (à la numérotation près).
+        let mut fresh = Engine::new(MemStorage::default());
+        ingest(&mut fresh, &v2, &a2);
+        let keep = |d: Vec<(Vec<u8>, Vec<u8>)>| -> Vec<(u8, usize)> {
+            let mut kinds: Vec<(u8, usize)> = Vec::new();
+            for (k, _) in d {
+                match kinds.iter_mut().find(|(c, _)| *c == k[0]) {
+                    Some((_, n)) => *n += 1,
+                    None => kinds.push((k[0], 1)),
+                }
+            }
+            kinds
+        };
+        let stats = |e: &Engine<MemStorage>| {
+            e.scan(b"S")
+                .unwrap()
+                .into_iter()
+                .filter(|(_, v)| schema::u64_value(Some(v.clone())) > 0)
+                .count()
+        };
+        // Les lemmes de l'ancienne version restent connus (avec df = 0) : seules les
+        // entrées vivantes doivent coïncider.
+        assert_eq!(stats(&e), stats(&fresh));
+        let live = |d: Vec<(Vec<u8>, Vec<u8>)>| {
+            d.into_iter()
+                .filter(|(k, v)| {
+                    !matches!(k[0], b'L' | b'N' | b'S')
+                        && !(k[0] == b'E'
+                            && schema::f32_value(v) == 0.0
+                            && k.len() == 18
+                            && k[9] == EdgeKind::Qualifies as u8)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keep(live(dump(&e))), keep(live(dump(&fresh))));
+        assert_eq!(e.stats().unwrap(), fresh.stats().unwrap());
+    }
+
+    #[test]
+    fn removal_and_checkpoints() {
+        let (v1, a1) = item("Lyon", "rues/N/rue calmes/A/calme");
+        let mut e = Engine::new(MemStorage::default());
+        let Ingested::Added { doc, .. } = ingest(&mut e, &v1, &a1) else {
+            panic!()
+        };
+        assert!(e.remove(doc).unwrap());
+        assert!(!e.remove(doc).unwrap());
+        assert_eq!(e.stats().unwrap(), Stats::default());
+        assert_eq!(e.status(&v1).unwrap(), ItemStatus::New);
+
+        assert_eq!(e.checkpoint("rss:x").unwrap(), None);
+        e.set_checkpoint("rss:x", NOW).unwrap();
+        assert_eq!(e.checkpoint("rss:x").unwrap(), Some(NOW));
     }
 }

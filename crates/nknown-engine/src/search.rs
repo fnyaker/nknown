@@ -243,7 +243,7 @@ impl<S: Storage> Engine<S> {
         Ok(hits)
     }
 
-    fn passage(&self, id: NodeId) -> Result<Option<PassageRecord>> {
+    pub(crate) fn passage(&self, id: NodeId) -> Result<Option<PassageRecord>> {
         self.get(&schema::id_key(schema::PASSAGE, id))?
             .map(|v| decode(&v))
             .transpose()

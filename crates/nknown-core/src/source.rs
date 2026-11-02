@@ -69,4 +69,22 @@ pub trait Source {
     fn capabilities(&self) -> Capabilities;
     /// Renvoie les contenus, uniquement ceux postérieurs à `since` si la source est incrémentale.
     fn fetch(&mut self, since: Option<Timestamp>) -> Result<ItemStream<'_>, SourceError>;
+
+    /// Collecte incrémentale fine : `known(identifiant externe)` donne la date de la version
+    /// déjà dans la base (`None` si inconnue), ce qui permet à la source d'éviter des
+    /// téléchargements. Par défaut, équivaut à [`fetch`](Self::fetch).
+    fn fetch_new(
+        &mut self,
+        since: Option<Timestamp>,
+        known: &dyn Fn(&str) -> Option<Timestamp>,
+    ) -> Result<ItemStream<'_>, SourceError> {
+        let _ = known;
+        self.fetch(since)
+    }
+
+    /// Clé du point de reprise ; deux sélections d'une même source (ex. deux recherches
+    /// Wikipédia) doivent avoir chacune la leur.
+    fn checkpoint_key(&self) -> String {
+        self.id().0.clone()
+    }
 }

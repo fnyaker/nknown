@@ -18,6 +18,7 @@ usage :
   nknown ingest <dossier> [lexique.lex]
   nknown index <base.redb> <lexique.lex> <source> [modèle]...
   nknown search <base.redb> <lexique.lex> <requête> [nombre]
+  nknown watch <base.redb> <lexique.lex> <source> <intervalle> [modèle]...   (ex. 30m, 2h)
   nknown lexicon build <sortie.lex> <ressource>...
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
                    lexique <Lexique383.tsv>
@@ -43,6 +44,9 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
         ["index", base, lexicon, spec, models @ ..] => index(base, lexicon, spec, models),
+        ["watch", base, lexicon, spec, every, models @ ..] => {
+            watch(base, lexicon, spec, every, models)
+        }
         ["search", base, lexicon, query] => search(base, lexicon, query, "5"),
         ["search", base, lexicon, query, limit] => search(base, lexicon, query, limit),
         ["ingest", dir] => ingest(dir, None),
@@ -384,15 +388,55 @@ fn open_sources(spec: &str) -> Result<Vec<Box<dyn Source>>, Box<dyn Error>> {
 }
 
 fn index(base: &str, lexicon: &str, spec: &str, models: &[&str]) -> Res {
-    use nknown_engine::{Document, Engine, Ingested, RedbStorage};
-    let start = Instant::now();
     let pipeline = pipeline(lexicon, models)?;
-    let mut engine = Engine::new(RedbStorage::open(base)?);
+    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?);
+    collect(&mut engine, &pipeline, spec)
+}
+
+/// Collecte périodique : relit les sources toutes les `every` (ex. `30m`, `2h`, `90s`).
+fn watch(base: &str, lexicon: &str, spec: &str, every: &str, models: &[&str]) -> Res {
+    let secs: u64 = match every.char_indices().last() {
+        Some((i, 's')) => every[..i].parse()?,
+        Some((i, 'm')) => every[..i].parse::<u64>()? * 60,
+        Some((i, 'h')) => every[..i].parse::<u64>()? * 3600,
+        _ => return Err(format!("intervalle invalide : {every} (ex. 30m, 2h)").into()),
+    };
+    let pipeline = pipeline(lexicon, models)?;
+    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?);
+    loop {
+        let (y, m, d) = nknown_core::time::Timestamp::now().ymd();
+        println!("--- collecte du {y}-{m:02}-{d:02}");
+        if let Err(e) = collect(&mut engine, &pipeline, spec) {
+            eprintln!("collecte interrompue : {e}");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(secs.max(60)));
+    }
+}
+
+/// Collecte incrémentale de toutes les sources de `spec` : seuls les contenus nouveaux
+/// ou modifiés sont analysés ; les versions modifiées remplacent les anciennes.
+fn collect(
+    engine: &mut nknown_engine::Engine<nknown_engine::RedbStorage>,
+    pipeline: &Pipeline,
+    spec: &str,
+) -> Res {
+    use nknown_core::time::Timestamp;
+    use nknown_engine::{Document, Ingested, ItemStatus};
+    let start = Instant::now();
     for mut source in open_sources(spec)? {
-        let (kind, name) = (source.kind(), source.id().0.clone());
-        let (mut added, mut passages, mut duplicates, mut errors) =
-            (0usize, 0usize, 0usize, 0usize);
-        let items = match source.fetch(None) {
+        let (kind, name, checkpoint) = (
+            source.kind(),
+            source.id().0.clone(),
+            source.checkpoint_key(),
+        );
+        // Marge de 2 jours : un flux peut publier en retard ; les doublons sont reconnus.
+        let since = engine
+            .checkpoint(&checkpoint)?
+            .map(|t| Timestamp(t.0 - 2 * 86_400));
+        let fetched_at = Timestamp::now();
+        let (mut added, mut updated, mut unchanged, mut errors) = (0usize, 0usize, 0usize, 0usize);
+        let known = |ext: &str| engine.known(&name, ext).ok().flatten();
+        let items = match source.fetch_new(since, &known) {
             Ok(items) => items,
             Err(e) => {
                 eprintln!("{name} : {e}");
@@ -408,23 +452,30 @@ fn index(base: &str, lexicon: &str, spec: &str, models: &[&str]) -> Res {
                     continue;
                 }
             };
+            if let ItemStatus::Unchanged(_) = engine.status(&item)? {
+                unchanged += 1;
+                continue;
+            }
             let lang = item.lang_hint.unwrap_or(Lang::FRA);
             let analysis = pipeline.analyze(lang, &item.text);
+            let title = item.title.as_deref().map(|t| pipeline.analyze(lang, t));
             match engine.ingest(Document {
                 item: &item,
                 kind,
                 lang,
                 analysis: &analysis,
+                title: title.as_ref(),
             })? {
-                Ingested::Added { passages: p, .. } => {
-                    added += 1;
-                    passages += p;
-                }
-                Ingested::Duplicate(_) => duplicates += 1,
+                Ingested::Added { .. } => added += 1,
+                Ingested::Updated { .. } => updated += 1,
+                Ingested::Duplicate(_) => unchanged += 1,
             }
         }
+        if errors == 0 {
+            engine.set_checkpoint(&checkpoint, fetched_at)?;
+        }
         println!(
-            "{name} : {added} ajoutés ({passages} passages), {duplicates} déjà présents{}",
+            "{name} : {added} nouveaux, {updated} mis à jour, {unchanged} inchangés{}",
             if errors > 0 {
                 format!(", {errors} erreurs")
             } else {
