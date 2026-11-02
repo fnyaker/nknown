@@ -58,12 +58,12 @@ pub fn intent_for(word: &str) -> Option<Intent> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryTerm {
     pub text: String,
-    pub readings: Vec<(TermKind, String)>,
+    /// (langue, nature du terme, lemme) ; les termes de code sont sous [`Lang::NONE`].
+    pub readings: Vec<(Lang, TermKind, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Query {
-    pub lang: Lang,
     pub terms: Vec<QueryTerm>,
     pub intent: Option<Intent>,
 }
@@ -134,8 +134,8 @@ impl<S: Storage> Engine<S> {
         for term in &q.terms {
             let mut found = Vec::new();
             let mut seen = HashSet::new();
-            for (kind, lemma) in &term.readings {
-                let Some(v) = self.get(&schema::lexeme_key(q.lang, *kind, lemma))? else {
+            for (lang, kind, lemma) in &term.readings {
+                let Some(v) = self.get(&schema::lexeme_key(*lang, *kind, lemma))? else {
                     continue;
                 };
                 let id = NodeId(schema::u64_value(Some(v)));

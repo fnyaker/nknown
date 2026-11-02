@@ -12,16 +12,31 @@ use nknown_core::analyze::{Analysis, Analyzer, Relation, Segment, SegmentKind, T
 use nknown_core::lang::Lang;
 
 use crate::code;
+use crate::langid::LangDetector;
 use crate::pipeline::Pipeline;
 use crate::segment::{self, Format};
 
-pub fn analyze_document(pipeline: &Pipeline, lang: Lang, text: &str, format: &Format) -> Analysis {
+/// `lang` : langue du document. Avec un détecteur, chaque bloc de prose assez long reçoit
+/// sa propre langue ; un bloc trop court hérite de celle du bloc de prose précédent.
+pub fn analyze_document(
+    pipeline: &Pipeline,
+    lang: Lang,
+    text: &str,
+    format: &Format,
+    detector: Option<&LangDetector>,
+) -> Analysis {
     let mut out = Analysis::default();
+    let mut current = lang;
     for block in segment::blocks(text, format) {
         let first = out.tokens.len();
+        let mut block_lang = None;
         match &block.kind {
             SegmentKind::Prose => {
-                let mut a = pipeline.analyze(lang, &text[block.span.clone()]);
+                if let Some(found) = detector.and_then(|d| d.detect(&text[block.span.clone()])) {
+                    current = found;
+                }
+                block_lang = Some(current);
+                let mut a = pipeline.analyze(current, &text[block.span.clone()]);
                 for t in &mut a.tokens {
                     t.span = t.span.start + block.span.start..t.span.end + block.span.start;
                 }
@@ -39,6 +54,7 @@ pub fn analyze_document(pipeline: &Pipeline, lang: Lang, text: &str, format: &Fo
             out.segments.push(Segment {
                 tokens: first..out.tokens.len(),
                 kind: block.kind,
+                lang: block_lang,
             });
         }
     }
@@ -104,7 +120,7 @@ mod tests {
     #[test]
     fn mixed_markdown_page() {
         let md = "# Lire un fichier\n\nLa fonction `read_to_string` renvoie le contenu.\n\n```rust\n// lit la configuration depuis le disque\nlet s = std::fs::read_to_string(\"a.toml\")?;\n```\n\nC'est simple.";
-        let a = analyze_document(&Pipeline::default(), Lang::FRA, md, &Format::Markdown);
+        let a = analyze_document(&Pipeline::default(), Lang::FRA, md, &Format::Markdown, None);
         let kinds: Vec<_> = a
             .segments
             .iter()
@@ -127,7 +143,9 @@ mod tests {
         // Le commentaire du bloc de code est de la prose.
         let comment = &a.tokens[a.segments[1].tokens.clone()];
         assert!(comment.iter().all(|t| t.domain == Domain::Prose));
-        assert!(comment.iter().any(|t| t.lemma == "configuration"));
+        // Pipeline sans lexique : racines (Snowball).
+        let root = crate::langid::stem(Lang::FRA, "configuration").unwrap();
+        assert!(comment.iter().any(|t| t.lemma == root));
         // Tokens dans l'ordre du texte, segments contigus.
         assert!(
             a.tokens
@@ -139,5 +157,29 @@ mod tests {
                 .windows(2)
                 .all(|w| w[0].tokens.end == w[1].tokens.start)
         );
+    }
+
+    #[test]
+    fn each_prose_block_gets_its_language() {
+        let src = "/// Reads the configuration file and returns its content.\npub fn load() {}\n/// Lit le fichier de configuration et renvoie son contenu.\npub fn charger() {}\n// ok\n";
+        let a = analyze_document(
+            &Pipeline::default(),
+            Lang::FRA,
+            src,
+            &Format::Code {
+                lang: Some("rust".into()),
+            },
+            Some(&LangDetector::new()),
+        );
+        let langs: Vec<_> = a.segments.iter().map(|s| s.lang).collect();
+        assert_eq!(
+            langs,
+            [Some(Lang::ENG), None, Some(Lang::FRA), None],
+            "{:?}",
+            a.segments
+        );
+        // Anglais sans lexique : racines.
+        let eng = &a.tokens[a.segments[0].tokens.clone()];
+        assert!(eng.iter().any(|t| t.lemma == "return"), "{eng:?}");
     }
 }

@@ -9,6 +9,8 @@ pub struct Lang([u8; 3]);
 impl Lang {
     pub const FRA: Lang = Lang(*b"fra");
     pub const ENG: Lang = Lang(*b"eng");
+    /// « Pas de contenu linguistique » (ISO 639-3) : termes de code.
+    pub const NONE: Lang = Lang(*b"zxx");
 
     pub fn from_code(code: &str) -> Option<Self> {
         match code.as_bytes() {

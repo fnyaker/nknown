@@ -8,6 +8,7 @@ use nknown_core::analyze::{Analyzer, Pos, Relation};
 use nknown_core::lang::Lang;
 use nknown_core::source::{Source, SourceId};
 use nknown_nlp::import::{ImportStats, lexique, wiktextract};
+use nknown_nlp::langid::{self, LangDetector};
 use nknown_nlp::{
     Lexicon, LexiconBuilder, Pipeline, Tagger, TrainingSentence, conllu, eval, tokenize,
 };
@@ -423,6 +424,7 @@ fn collect(
     use nknown_core::time::Timestamp;
     use nknown_engine::{Document, Ingested, ItemStatus};
     let start = Instant::now();
+    let detector = LangDetector::new();
     for mut source in open_sources(spec)? {
         let (kind, name, checkpoint) = (
             source.kind(),
@@ -464,7 +466,9 @@ fn collect(
                 .map_or(nknown_nlp::Format::Plain, |(_, v)| {
                     nknown_nlp::Format::from_hint(v)
                 });
-            let analysis = nknown_nlp::analyze_document(pipeline, lang, &item.text, &format);
+            let analysis =
+                nknown_nlp::analyze_document(pipeline, lang, &item.text, &format, Some(&detector));
+            let lang = main_lang(&analysis).unwrap_or(lang);
             let title = item.title.as_deref().map(|t| pipeline.analyze(lang, t));
             match engine.ingest(Document {
                 item: &item,
@@ -520,7 +524,7 @@ fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
         // l'identifiant exact, pas ses morceaux (« string » est partout dans le code).
         if !segment::inline_code(chunk, 0..chunk.len()).is_empty() {
             let ident = chunk.trim_end_matches("()").trim_matches('`');
-            let readings = vec![(TermKind::Code, ident.to_lowercase())];
+            let readings = vec![(Lang::NONE, TermKind::Code, ident.to_lowercase())];
             terms.push(QueryTerm {
                 text: chunk.to_owned(),
                 readings,
@@ -530,15 +534,23 @@ fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
         // Mot ordinaire : ses lectures en prose (lexique), et le même mot comme terme de code.
         for span in tokenize::words(chunk) {
             let form = &chunk[span];
-            let mut readings: Vec<(TermKind, String)> = lexicon
+            let mut readings: Vec<(Lang, TermKind, String)> = lexicon
                 .lookup(form)
                 .filter(|e| nknown_engine::ingest::is_content(e.pos))
-                .map(|e| (TermKind::Word(e.pos), e.lemma.to_owned()))
+                .map(|e| (Lang::FRA, TermKind::Word(e.pos), e.lemma.to_owned()))
                 .collect();
             for pos in [Pos::Propn, Pos::Noun, Pos::X] {
-                readings.push((TermKind::Word(pos), form.to_owned()));
+                readings.push((Lang::FRA, TermKind::Word(pos), form.to_owned()));
             }
-            readings.push((TermKind::Code, form.to_lowercase()));
+            // Autres langues détectables, indexées par racines (pas de lexique).
+            for lang in LangDetector::languages()
+                .into_iter()
+                .filter(|l| *l != Lang::FRA)
+            {
+                let stem = langid::stem(lang, form).unwrap_or_else(|| form.to_lowercase());
+                readings.push((lang, TermKind::Word(Pos::X), stem));
+            }
+            readings.push((Lang::NONE, TermKind::Code, form.to_lowercase()));
             readings.dedup();
             terms.push(QueryTerm {
                 text: form.to_owned(),
@@ -546,11 +558,7 @@ fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
             });
         }
     }
-    nknown_engine::Query {
-        lang: Lang::FRA,
-        terms,
-        intent,
-    }
+    nknown_engine::Query { terms, intent }
 }
 
 fn search(base: &str, lexicon: &str, query: &str, limit: &str) -> Res {
@@ -619,4 +627,18 @@ fn snippet(text: &str, words: &[String], width: usize) -> String {
     let before = if start > 0 { "…" } else { "" };
     let after = if start + width < total { "…" } else { "" };
     format!("{before}{body}{after}")
+}
+
+/// Langue qui couvre le plus de tokens de prose.
+fn main_lang(a: &nknown_core::analyze::Analysis) -> Option<Lang> {
+    let mut counts: Vec<(Lang, usize)> = Vec::new();
+    for seg in &a.segments {
+        let Some(l) = seg.lang else { continue };
+        let n = seg.tokens.len();
+        match counts.iter_mut().find(|(c, _)| *c == l) {
+            Some((_, c)) => *c += n,
+            None => counts.push((l, n)),
+        }
+    }
+    counts.into_iter().max_by_key(|&(_, n)| n).map(|(l, _)| l)
 }

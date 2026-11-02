@@ -280,6 +280,19 @@ impl<S: Storage> Engine<S> {
         let pids: Vec<NodeId> = ranges.iter().map(|_| tx.next()).collect();
         let first_passage = pids.first().map_or(0, |p| p.0);
 
+        // Langue de chaque token : celle de son bloc (ou du document) ; le code n'a pas de
+        // langue (termes partagés entre documents de toutes langues).
+        let mut token_lang = vec![d.lang; tokens.len()];
+        for seg in &d.analysis.segments {
+            if let Some(l) = seg.lang {
+                token_lang[seg.tokens.clone()].fill(l);
+            }
+        }
+        for (t, l) in tokens.iter().zip(token_lang.iter_mut()) {
+            if t.domain == Domain::Code {
+                *l = Lang::NONE;
+            }
+        }
         let mut code_tokens = 0usize;
         let mut passage_terms: Vec<(NodeId, HashMap<NodeId, u32>)> = Vec::new();
         for (ordinal, ((range, kind), &pid)) in ranges.iter().zip(&pids).enumerate() {
@@ -291,7 +304,7 @@ impl<S: Storage> Engine<S> {
                     continue;
                 }
                 code_tokens += usize::from(t.domain == Domain::Code);
-                let id = tx.lemma(d.lang, term_kind(t), &t.lemma)?;
+                let id = tx.lemma(token_lang[i], term_kind(t), &t.lemma)?;
                 *tf.entry(id).or_default() += 1;
                 lemma_of.insert(i, id);
             }
@@ -347,7 +360,12 @@ impl<S: Storage> Engine<S> {
         let mut title_lemmas = Vec::new();
         for t in d.title.map(|a| a.tokens.as_slice()).unwrap_or_default() {
             if is_indexed(t) {
-                let id = tx.lemma(d.lang, term_kind(t), &t.lemma)?.0;
+                let lang = if t.domain == Domain::Code {
+                    Lang::NONE
+                } else {
+                    d.lang
+                };
+                let id = tx.lemma(lang, term_kind(t), &t.lemma)?.0;
                 if !title_lemmas.contains(&id) {
                     title_lemmas.push(id);
                     tx.put(
@@ -412,7 +430,7 @@ struct Tx<'e, S: Storage> {
     counter: u64,
     counters: HashMap<Vec<u8>, u64>,
     weights: HashMap<Vec<u8>, f32>,
-    lemmas: HashMap<(TermKind, String), NodeId>,
+    lemmas: HashMap<(Lang, TermKind, String), NodeId>,
 }
 
 impl<'e, S: Storage> Tx<'e, S> {
@@ -467,7 +485,7 @@ impl<'e, S: Storage> Tx<'e, S> {
     /// Identifiant du lemme, créé s'il n'existe pas.
     fn lemma(&mut self, lang: Lang, kind: TermKind, lemma: &str) -> Result<NodeId> {
         let norm = schema::normalize_lemma(lemma);
-        if let Some(&id) = self.lemmas.get(&(kind, norm.clone())) {
+        if let Some(&id) = self.lemmas.get(&(lang, kind, norm.clone())) {
             return Ok(id);
         }
         let key = schema::lexeme_key(lang, kind, &norm);
@@ -487,7 +505,7 @@ impl<'e, S: Storage> Tx<'e, S> {
                 id
             }
         };
-        self.lemmas.insert((kind, norm), id);
+        self.lemmas.insert((lang, kind, norm), id);
         Ok(id)
     }
 

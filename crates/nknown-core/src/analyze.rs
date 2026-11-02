@@ -115,6 +115,8 @@ pub enum SegmentKind {
 pub struct Segment {
     pub tokens: Range<usize>,
     pub kind: SegmentKind,
+    /// Langue du bloc de prose, si elle a été déterminée (sinon celle du document).
+    pub lang: Option<Lang>,
 }
 
 /// Relation entre deux tokens (indices dans [`Analysis::tokens`]).

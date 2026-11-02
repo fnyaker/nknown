@@ -86,6 +86,27 @@ impl Pipeline {
         words: &[&str],
     ) -> Annotated {
         let tags = self.taggers.get(&lang).map(|t| t.tag(words, lexicon));
+        // Langue sans ressources : racines (Snowball) plutôt que formes brutes, pour que
+        // « returns », « returned » et « returning » se rejoignent.
+        if lexicon.is_none() && tags.is_none() {
+            let annotated = words
+                .iter()
+                .map(|&form| Word {
+                    lemma: if tokenize::is_word(form) {
+                        crate::langid::stem(lang, form).unwrap_or_else(|| normalize(form))
+                    } else {
+                        form.to_owned()
+                    },
+                    pos: if tokenize::is_word(form) {
+                        Pos::X
+                    } else {
+                        Pos::Punct
+                    },
+                    feats: Feats::default(),
+                })
+                .collect();
+            return (annotated, Vec::new());
+        }
         let annotated: Vec<Word> = words
             .iter()
             .enumerate()

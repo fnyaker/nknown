@@ -7,7 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 fst = "0.4"
+lingua = { version = "1.8", default-features = false, features = ["french", "english", "german", "spanish", "italian", "portuguese", "dutch"] }
 nknown-core.workspace = true
+rust-stemmers = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

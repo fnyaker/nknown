@@ -199,14 +199,13 @@ mod tests {
         intent: Option<&str>,
     ) -> Vec<Hit> {
         let q = Query {
-            lang: Lang::FRA,
             terms: words
                 .iter()
                 .map(|(w, rs)| QueryTerm {
                     text: w.to_string(),
                     readings: rs
                         .iter()
-                        .map(|(p, l)| (schema::TermKind::Word(*p), l.to_string()))
+                        .map(|(p, l)| (Lang::FRA, schema::TermKind::Word(*p), l.to_string()))
                         .collect(),
                 })
                 .collect(),
@@ -498,6 +497,7 @@ mod tests {
                 } else {
                     SegmentKind::Prose
                 },
+                lang: None,
             });
         }
         let mut item = RawItem::new(SourceId(ext.into()), text, NOW);
@@ -514,12 +514,11 @@ mod tests {
 
     fn search_kinds(e: &Engine<MemStorage>, word: &str, intent: Option<&str>) -> Vec<Hit> {
         let q = Query {
-            lang: Lang::FRA,
             terms: vec![QueryTerm {
                 text: word.into(),
                 readings: vec![
-                    (schema::TermKind::Word(Pos::Noun), word.into()),
-                    (schema::TermKind::Code, word.into()),
+                    (Lang::FRA, schema::TermKind::Word(Pos::Noun), word.into()),
+                    (Lang::NONE, schema::TermKind::Code, word.into()),
                 ],
             }],
             intent: intent.and_then(intent_for),
@@ -758,5 +757,59 @@ mod tests {
         e.remove(id).unwrap();
         assert!(query(&e, &[("mst", &[(Pos::X, "mst")])], None).is_empty());
         assert!(e.scan(b"E").unwrap().is_empty());
+    }
+
+    #[test]
+    fn blocks_are_indexed_in_their_language() {
+        use nknown_core::analyze::{Domain, Segment, SegmentKind};
+        let mut e = Engine::new(MemStorage::default());
+        // Bloc anglais (racines), puis code : le terme `return` du code est sans langue.
+        let (text, mut analysis) = doc("reads/X/read config/X/config return/X/return x/X", &[]);
+        analysis.tokens[3].domain = Domain::Code;
+        analysis.segments = vec![
+            Segment {
+                tokens: 0..3,
+                kind: SegmentKind::Prose,
+                lang: Some(Lang::ENG),
+            },
+            Segment {
+                tokens: 3..4,
+                kind: SegmentKind::Code { lang: None },
+                lang: None,
+            },
+        ];
+        let item = RawItem::new(SourceId("x".into()), text, NOW);
+        e.ingest(Document {
+            item: &item,
+            kind: SourceKind::Web,
+            lang: Lang::FRA,
+            analysis: &analysis,
+            title: None,
+        })
+        .unwrap();
+        let find = |lang: Lang, kind: schema::TermKind, w: &str| {
+            e.search(
+                &Query {
+                    terms: vec![QueryTerm {
+                        text: w.into(),
+                        readings: vec![(lang, kind, w.into())],
+                    }],
+                    intent: None,
+                },
+                NOW,
+                5,
+            )
+            .unwrap()
+            .len()
+        };
+        use schema::TermKind::{Code, Word};
+        assert_eq!(find(Lang::ENG, Word(Pos::X), "return"), 1);
+        assert_eq!(
+            find(Lang::FRA, Word(Pos::X), "return"),
+            0,
+            "pas sous la langue du document"
+        );
+        assert_eq!(find(Lang::NONE, Code, "x"), 1);
+        assert_eq!(find(Lang::FRA, Code, "x"), 0);
     }
 }

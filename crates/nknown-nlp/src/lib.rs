@@ -10,6 +10,7 @@ pub mod conllu;
 pub mod document;
 pub mod eval;
 pub mod import;
+pub mod langid;
 pub mod lexicon;
 pub mod parser;
 pub mod pipeline;
