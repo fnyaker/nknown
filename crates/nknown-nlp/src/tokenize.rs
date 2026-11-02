@@ -30,9 +30,37 @@ pub fn tokens(text: &str) -> Vec<Range<usize>> {
             end = i + d.len_utf8();
             chars.next();
         }
-        out.push(start..end);
+        if text[start..end].chars().any(is_cjk) {
+            segment_cjk(text, start..end, &mut out);
+        } else {
+            out.push(start..end);
+        }
     }
     out
+}
+
+/// Idéogrammes et kana : écritures sans espaces entre les mots.
+pub fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{3040}'..='\u{30FF}'   // hiragana, katakana
+        | '\u{3400}'..='\u{4DBF}' // CJK extension A
+        | '\u{4E00}'..='\u{9FFF}' // CJK unifiés
+        | '\u{F900}'..='\u{FAFF}' // compatibilité
+        | '\u{20000}'..='\u{2EBEF}')
+}
+
+/// Découpe en mots une suite contenant du chinois ou du japonais (dictionnaire ICU4X).
+fn segment_cjk(text: &str, span: Range<usize>, out: &mut Vec<Range<usize>>) {
+    use icu_segmenter::WordSegmenter;
+    let piece = &text[span.clone()];
+    let segmenter = WordSegmenter::new_dictionary(Default::default());
+    let mut prev = 0;
+    for b in segmenter.segment_str(piece) {
+        if b > prev && piece[prev..b].chars().any(|c| c.is_alphanumeric()) {
+            out.push(span.start + prev..span.start + b);
+        }
+        prev = b;
+    }
 }
 
 /// Les tokens qui sont des mots (ils commencent par une lettre ou un chiffre).
@@ -54,7 +82,7 @@ pub fn is_joiner(c: char) -> bool {
 
 /// Fin de phrase (« . », « ! », « ? », « … »).
 pub fn ends_sentence(token: &str) -> bool {
-    token.starts_with(['.', '!', '?', '…'])
+    token.starts_with(['.', '!', '?', '…', '。', '！', '？'])
 }
 
 #[cfg(test)]
@@ -89,5 +117,18 @@ mod tests {
             ["Quoi", "?", "!", "«", "Non", "...", "»"]
         );
         assert_eq!(words("Quoi?! « Non... »").len(), 2);
+    }
+
+    #[test]
+    fn segments_chinese() {
+        let text = "我在北京大学学习中文。Rust很好";
+        let toks = split(text);
+        assert!(toks.len() >= 6, "{toks:?}");
+        assert!(toks.contains(&"。"));
+        assert!(toks.contains(&"Rust"));
+        // Chaque morceau reste dans le texte, sans chevauchement.
+        let spans = tokens(text);
+        assert!(spans.windows(2).all(|w| w[0].end <= w[1].start));
+        assert!(ends_sentence("。"));
     }
 }

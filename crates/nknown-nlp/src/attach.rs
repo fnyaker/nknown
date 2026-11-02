@@ -38,8 +38,27 @@ impl AttachRules {
         ],
     };
 
+    /// Anglais : adjectif avant le nom (« quiet streets »).
+    pub const ENGLISH: AttachRules = AttachRules {
+        prefer_left: false,
+        copulas: &["be", "become", "seem", "remain", "stay", "look", "appear"],
+    };
+
+    /// Russe : adjectif généralement avant le nom, accord en genre et nombre ;
+    /// copule souvent absente au présent.
+    pub const RUSSIAN: AttachRules = AttachRules {
+        prefer_left: false,
+        copulas: &["быть", "стать", "являться", "казаться", "оставаться"],
+    };
+
+    /// Règles de la langue ; aucune pour le chinois (sans accord, la couche 3 s'en charge).
     pub fn for_lang(lang: Lang) -> Option<AttachRules> {
-        (lang == Lang::FRA).then_some(Self::FRENCH)
+        match lang.as_str() {
+            "fra" => Some(Self::FRENCH),
+            "eng" => Some(Self::ENGLISH),
+            "rus" => Some(Self::RUSSIAN),
+            _ => None,
+        }
     }
 }
 

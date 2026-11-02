@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use nknown_core::analyze::{Analysis, Analyzer, Domain, Feats, Pos, Relation, Token};
 use nknown_core::lang::Lang;
@@ -24,7 +25,7 @@ use crate::tokenize;
 pub struct Pipeline {
     lexicons: HashMap<Lang, Lexicon>,
     taggers: HashMap<Lang, Tagger>,
-    parsers: HashMap<Lang, Box<dyn SentenceParser>>,
+    parsers: HashMap<Lang, Arc<dyn SentenceParser>>,
 }
 
 impl std::fmt::Debug for Pipeline {
@@ -54,8 +55,21 @@ impl Pipeline {
     /// Couche 3 : analyseur syntaxique complet. Prioritaire sur le tagueur et les règles
     /// de rattachement quand il sait analyser la phrase.
     pub fn with_parser(mut self, lang: Lang, parser: Box<dyn SentenceParser>) -> Self {
+        self.parsers.insert(lang, Arc::from(parser));
+        self
+    }
+
+    /// Un même analyseur multilingue pour plusieurs langues.
+    pub fn with_shared_parser(mut self, lang: Lang, parser: Arc<dyn SentenceParser>) -> Self {
         self.parsers.insert(lang, parser);
         self
+    }
+
+    /// Langues dotées d'un lexique.
+    pub fn lexicon_langs(&self) -> Vec<Lang> {
+        let mut langs: Vec<Lang> = self.lexicons.keys().copied().collect();
+        langs.sort();
+        langs
     }
 
     pub fn lexicon(&self, lang: Lang) -> Option<&Lexicon> {

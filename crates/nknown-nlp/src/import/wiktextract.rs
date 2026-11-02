@@ -15,7 +15,7 @@ use std::io::BufRead;
 use nknown_core::analyze::{Feats, Gender, Number, Pos};
 use serde::Deserialize;
 
-use super::{ImportError, ImportStats, is_single_word};
+use super::{ImportError, ImportStats, is_single_word, strip_stress};
 use crate::lexicon::LexiconBuilder;
 
 #[derive(Deserialize)]
@@ -87,8 +87,11 @@ pub fn import(
         };
         stats.used += 1;
         import_entry(&entry, pos, &mut |form, lemma, feats| {
-            if is_single_word(form) {
-                builder.insert(form, lemma, pos, feats);
+            // Accents toniques retirés avant tout contrôle : ce sont des caractères
+            // combinants, qui couperaient le mot en deux (краси́вые).
+            let form = strip_stress(form);
+            if is_single_word(&form) {
+                builder.insert(&form, &strip_stress(lemma), pos, feats);
                 stats.analyses += 1;
             }
         });
@@ -289,5 +292,18 @@ pas du json
         let (lex, _) = build();
         assert_eq!(lex.lookup("pomme de terre").count(), 0);
         assert_eq!(lex.lookup("book").count(), 0);
+    }
+
+    #[test]
+    fn russian_stress_marks_are_removed() {
+        let dump = r#"{"word": "красивый", "lang_code": "ru", "pos": "adj", "forms": [{"form": "краси́вые", "tags": ["nominative", "plural"]}], "senses": [{}]}"#;
+        let mut b = LexiconBuilder::new();
+        import(dump.as_bytes(), "ru", &mut b).unwrap();
+        let lex = b.build().unwrap();
+        let e = lex
+            .lookup("красивые")
+            .next()
+            .expect("forme trouvée sans accent");
+        assert_eq!((e.lemma, e.feats.number), ("красивый", Some(Number::Plur)));
     }
 }

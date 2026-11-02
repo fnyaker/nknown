@@ -330,7 +330,16 @@ impl Lexicon {
 
 /// Clé de recherche : minuscules, apostrophe typographique ramenée à `'`.
 pub(crate) fn normalize(form: &str) -> String {
-    form.to_lowercase().replace('\u{2019}', "'")
+    form.to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            '\u{2019}' => Some('\''),
+            // Accents toniques (dictionnaires russes : кни́га) : absents des textes courants.
+            '\u{0300}' | '\u{0301}' => None,
+            'ё' => Some('е'),
+            c => Some(c),
+        })
+        .collect()
 }
 
 /// `a` est au moins aussi précis que `b` et compatible avec lui.

@@ -28,7 +28,7 @@ usage :
   nknown analyze <lexique.lex> <texte> [modèle]...
   nknown eval <lexique.lex> <corpus.conllu> [modèle]...
   nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
-  nknown parser train [vulkan] <xlm-roberta/> <train.conllu> <dev.conllu> <sortie/> [passes] [pas-max]
+  nknown parser train [vulkan] <xlm-roberta/> <train.conllu> <dev.conllu> <sortie/> [passes] [pas-max] [--langs=fra,eng]
 
   source : <dossier>                      fichiers .txt et .md
            rss:<url>                       flux RSS / Atom / JSON Feed
@@ -76,7 +76,7 @@ fn main() -> ExitCode {
             out,
             rest @ ..,
         ] if rest.len() <= 2 => parser_train(true, xlmr, train, dev, out, rest),
-        ["parser", "train", xlmr, train, dev, out, rest @ ..] if rest.len() <= 2 => {
+        ["parser", "train", xlmr, train, dev, out, rest @ ..] if rest.len() <= 3 => {
             parser_train(false, xlmr, train, dev, out, rest)
         }
         ["tagger", "train", lexicon, corpus, out] => tagger_train(lexicon, corpus, out, "10"),
@@ -195,26 +195,78 @@ fn lexicon_lookup(path: &str, words: &[&str]) -> Res {
     Ok(())
 }
 
+/// Langue d'un fichier de modèle d'après son nom (`fr.lex`, `eng.tag`, `fr_gsd-ud-test`).
+fn lang_of(path: &str) -> Option<Lang> {
+    let stem = std::path::Path::new(path).file_stem()?.to_str()?;
+    Lang::from_tag(stem.split(['_', '.', '-']).next()?)
+}
+
+/// Pipeline : `lexicon` est un fichier (lexique français) ou un dossier dont chaque
+/// `<langue>.lex` et `<langue>.tag` est chargé ; `models` ajoute tagueurs et analyseurs.
 fn pipeline(lexicon: &str, models: &[&str]) -> Result<Pipeline, Box<dyn Error>> {
-    let mut pipeline = Pipeline::default().with_lexicon(Lang::FRA, Lexicon::load(lexicon)?);
+    let mut pipeline = Pipeline::default();
+    let path = std::path::Path::new(lexicon);
+    if path.is_dir() {
+        let mut files: Vec<_> = std::fs::read_dir(path)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+        for f in files {
+            let (Some(name), Some(ext)) = (f.to_str(), f.extension().and_then(|e| e.to_str()))
+            else {
+                continue;
+            };
+            let Some(lang) = lang_of(name) else { continue };
+            match ext {
+                "lex" => pipeline = pipeline.with_lexicon(lang, Lexicon::load(&f)?),
+                "tag" => pipeline = pipeline.with_tagger(lang, Tagger::load(&f)?),
+                _ => {}
+            }
+        }
+    } else {
+        pipeline = pipeline.with_lexicon(
+            lang_of(lexicon).unwrap_or(Lang::FRA),
+            Lexicon::load(lexicon)?,
+        );
+    }
     for path in models {
         if let Some(dir) = path.strip_prefix("vulkan:") {
             pipeline = with_vulkan_parser(pipeline, dir)?;
         } else if std::path::Path::new(path).is_dir() {
             pipeline = with_parser(pipeline, path)?;
         } else {
-            pipeline = pipeline.with_tagger(Lang::FRA, Tagger::load(path)?);
+            pipeline =
+                pipeline.with_tagger(lang_of(path).unwrap_or(Lang::FRA), Tagger::load(path)?);
         }
     }
     Ok(pipeline)
+}
+
+/// Un analyseur multilingue, partagé entre toutes ses langues.
+#[cfg(feature = "neural")]
+fn share_parser(
+    mut pipeline: Pipeline,
+    langs: Vec<Lang>,
+    parser: std::sync::Arc<dyn nknown_nlp::SentenceParser>,
+) -> Pipeline {
+    for lang in if langs.is_empty() {
+        vec![Lang::FRA]
+    } else {
+        langs
+    } {
+        pipeline = pipeline.with_shared_parser(lang, parser.clone());
+    }
+    pipeline
 }
 
 #[cfg(feature = "neural")]
 fn with_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Box<dyn Error>> {
     let start = Instant::now();
     let parser = nknown_neural::NeuralParser::load(dir)?;
-    eprintln!("analyseur chargé [{:.1?}]", start.elapsed());
-    Ok(pipeline.with_parser(Lang::FRA, Box::new(parser)))
+    let langs = parser.langs();
+    eprintln!("analyseur chargé ({langs:?}) [{:.1?}]", start.elapsed());
+    Ok(share_parser(pipeline, langs, std::sync::Arc::new(parser)))
 }
 
 #[cfg(not(feature = "neural"))]
@@ -226,11 +278,12 @@ fn with_parser(_: Pipeline, _: &str) -> Result<Pipeline, Box<dyn Error>> {
 fn with_vulkan_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Box<dyn Error>> {
     let start = Instant::now();
     let parser = nknown_neural::vulkan::VulkanParser::load(dir)?;
+    let langs = parser.langs();
     eprintln!(
-        "analyseur chargé sur GPU (Vulkan) [{:.1?}]",
+        "analyseur chargé sur GPU ({langs:?}) [{:.1?}]",
         start.elapsed()
     );
-    Ok(pipeline.with_parser(Lang::FRA, Box::new(parser)))
+    Ok(share_parser(pipeline, langs, std::sync::Arc::new(parser)))
 }
 
 #[cfg(not(feature = "vulkan"))]
@@ -241,6 +294,14 @@ fn with_vulkan_parser(_: Pipeline, _: &str) -> Result<Pipeline, Box<dyn Error>> 
 #[cfg(feature = "neural")]
 fn parser_train(vulkan: bool, xlmr: &str, train: &str, dev: &str, out: &str, rest: &[&str]) -> Res {
     let mut opts = nknown_neural::TrainOptions::default();
+    // --langs=fra,eng,rus,zho : langues déclarées du modèle (multilingue).
+    let (flags, rest): (Vec<&str>, Vec<&str>) = rest.iter().partition(|a| a.starts_with("--"));
+    for f in flags {
+        match f.strip_prefix("--langs=") {
+            Some(l) => opts.langs = l.split(',').map(str::to_owned).collect(),
+            None => return Err(format!("option inconnue : {f}").into()),
+        }
+    }
     if let Some(p) = rest.first() {
         opts.epochs = p
             .parse()
@@ -299,7 +360,26 @@ fn parser_train(_: bool, _: &str, _: &str, _: &str, _: &str, _: &[&str]) -> Res 
 }
 
 fn analyze(lexicon: &str, text: &str, models: &[&str]) -> Res {
-    let analysis = pipeline(lexicon, models)?.analyze(Lang::FRA, text);
+    // Segmentation prose / code et langue par bloc, comme à l'indexation.
+    let pipeline = pipeline(lexicon, models)?;
+    let detector = LangDetector::new();
+    let analysis = nknown_nlp::analyze_document(
+        &pipeline,
+        detector.detect(text).unwrap_or(Lang::FRA),
+        text,
+        &nknown_nlp::Format::Markdown,
+        Some(&detector),
+    );
+    for seg in &analysis.segments {
+        let kind = match &seg.kind {
+            nknown_core::analyze::SegmentKind::Prose => "prose".to_owned(),
+            nknown_core::analyze::SegmentKind::Code { lang } => {
+                format!("code {}", lang.as_deref().unwrap_or("?"))
+            }
+        };
+        let lang = seg.lang.map_or("-".to_owned(), |l| l.to_string());
+        println!("[bloc {kind}, langue {lang}, {} tokens]", seg.tokens.len());
+    }
     let form = |i: usize| &text[analysis.tokens[i].span.clone()];
     for (i, t) in analysis.tokens.iter().enumerate() {
         println!("{:<16} {:<16} {:?}", form(i), t.lemma, t.pos);
@@ -347,7 +427,9 @@ fn tagger_train(lexicon: &str, corpus: &str, out: &str, passes: &str) -> Res {
 
 fn eval(lexicon: &str, corpus: &str, models: &[&str]) -> Res {
     let pipeline = pipeline(lexicon, models)?;
-    let report = eval::evaluate(&pipeline, Lang::FRA, &read_corpus(corpus)?);
+    let lang = lang_of(corpus).unwrap_or(Lang::FRA);
+    eprintln!("langue évaluée : {lang}");
+    let report = eval::evaluate(&pipeline, lang, &read_corpus(corpus)?);
     print!("{report}");
     Ok(())
 }
@@ -523,7 +605,7 @@ fn collect(
 
 /// Requête → mots et lectures possibles (lexique, plus la forme brute pour les mots inconnus
 /// et les noms propres), et intention éventuelle (« actu », « info »...).
-fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
+fn build_query(pipeline: &Pipeline, text: &str) -> nknown_engine::Query {
     use nknown_engine::schema::TermKind;
     use nknown_engine::{QueryTerm, intent_for};
     use nknown_nlp::segment;
@@ -550,18 +632,25 @@ fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
         // Mot ordinaire : ses lectures en prose (lexique), et le même mot comme terme de code.
         for span in tokenize::words(chunk) {
             let form = &chunk[span];
-            let mut readings: Vec<(Lang, TermKind, String)> = lexicon
-                .lookup(form)
-                .filter(|e| nknown_engine::ingest::is_content(e.pos))
-                .map(|e| (Lang::FRA, TermKind::Word(e.pos), e.lemma.to_owned()))
-                .collect();
-            for pos in [Pos::Propn, Pos::Noun, Pos::X] {
-                readings.push((Lang::FRA, TermKind::Word(pos), form.to_owned()));
+            let mut readings: Vec<(Lang, TermKind, String)> = Vec::new();
+            // Langues avec lexique : lectures du lexique et forme brute.
+            let with_lexicon = pipeline.lexicon_langs();
+            for &lang in &with_lexicon {
+                let lexicon = pipeline.lexicon(lang).expect("langue listée");
+                readings.extend(
+                    lexicon
+                        .lookup(form)
+                        .filter(|e| nknown_engine::ingest::is_content(e.pos))
+                        .map(|e| (lang, TermKind::Word(e.pos), e.lemma.to_owned())),
+                );
+                for pos in [Pos::Propn, Pos::Noun, Pos::X] {
+                    readings.push((lang, TermKind::Word(pos), form.to_owned()));
+                }
             }
-            // Autres langues détectables, indexées par racines (pas de lexique).
+            // Autres langues détectables : indexées par racines.
             for lang in LangDetector::languages()
                 .into_iter()
-                .filter(|l| *l != Lang::FRA)
+                .filter(|l| !with_lexicon.contains(l))
             {
                 let stem = langid::stem(lang, form).unwrap_or_else(|| form.to_lowercase());
                 readings.push((lang, TermKind::Word(Pos::X), stem));
@@ -597,9 +686,9 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) ->
     let limit: usize = limit
         .parse()
         .map_err(|_| format!("nombre invalide : {limit}"))?;
-    let lexicon = Lexicon::load(lexicon)?;
+    let pipeline = pipeline(lexicon, &[])?;
     let engine = Engine::new(RedbStorage::open(base)?);
-    let q = build_query(&lexicon, query);
+    let q = build_query(&pipeline, query);
     if let Some(i) = &q.intent {
         println!("intention : {}", i.name);
     }

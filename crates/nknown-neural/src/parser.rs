@@ -47,6 +47,15 @@ impl NeuralParser {
         })
     }
 
+    /// Langues d'entraînement du modèle.
+    pub fn langs(&self) -> Vec<Lang> {
+        self.cfg
+            .langs
+            .iter()
+            .filter_map(|l| Lang::from_code(l))
+            .collect()
+    }
+
     pub fn parse_words(&self, sentences: &[Vec<&str>]) -> Result<Vec<Option<ParsedSentence>>> {
         parse_with(
             &self.model,

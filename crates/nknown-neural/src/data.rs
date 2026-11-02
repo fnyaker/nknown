@@ -9,7 +9,7 @@ use nknown_core::analyze::{Feats, Gender, Number, Pos};
 use nknown_nlp::conllu::GoldSentence;
 use tokenizers::{EncodeInput, InputSequence, Tokenizer};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 pub const N_UPOS: usize = Pos::ALL.len();
 pub const GENDERS: [Option<Gender>; 4] = [
@@ -57,8 +57,12 @@ pub fn encode(
             }
         }
     }
-    if first.contains(&u32::MAX) {
-        return Err(Error::Format("mot sans sous-mot après tokenisation".into()));
+    // Un mot sans sous-mot (caractère invisible, ou supprimé par la normalisation du
+    // tokeniseur) prend la position du mot précédent plutôt que de faire échouer la phrase.
+    for w in 1..first.len() {
+        if first[w] == u32::MAX {
+            first[w] = first[w - 1];
+        }
     }
     Ok(Some(Encoded {
         ids: enc.get_ids().to_vec(),
@@ -292,4 +296,29 @@ pub fn assemble(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn words_without_subwords_do_not_fail() {
+        let tok =
+            Tokenizer::from_file(std::env::var("NKNOWN_XLMR_TOKENIZER").unwrap_or_else(|_| {
+                format!(
+                    "{}/.local/share/nknown/xlm-roberta-base/tokenizer.json",
+                    std::env::var("HOME").unwrap_or_default()
+                )
+            }));
+        let Ok(tok) = tok else {
+            eprintln!("tokeniseur XLM-R absent : test ignoré");
+            return;
+        };
+        let e = encode(&tok, &["Bonjour", "\u{200b}", "monde"], 64)
+            .unwrap()
+            .unwrap();
+        assert_eq!(e.first.len(), 4);
+        assert!(e.first.iter().all(|&p| p != u32::MAX));
+    }
 }

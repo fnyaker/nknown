@@ -53,6 +53,18 @@ impl From<io::Error> for ImportError {
 }
 
 /// Vrai si `form` est un seul mot pour le tokeniseur : les autres ne seraient jamais retrouvés.
+/// Un mot chinois ou japonais est gardé entier même si le segmenteur le découperait
+/// (« 北京大学 ») : sans espaces ni ponctuation, c'est bien une entrée de dictionnaire.
 pub(crate) fn is_single_word(form: &str) -> bool {
+    if form.chars().any(tokenize::is_cjk) {
+        return !form.is_empty() && form.chars().all(char::is_alphanumeric);
+    }
     matches!(tokenize::words(form).as_slice(), [span] if *span == (0..form.len()))
+}
+
+/// Retire les accents toniques des lemmes (dictionnaires russes).
+pub(crate) fn strip_stress(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '\u{0300}' | '\u{0301}'))
+        .collect()
 }

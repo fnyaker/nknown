@@ -7,7 +7,7 @@ use rust_stemmers::{Algorithm, Stemmer};
 
 /// Langues reconnues. Garder la liste courte : chaque langue ajoute un modèle au binaire,
 /// et moins de candidats rend la détection plus sûre sur les textes courts.
-const LANGUAGES: [Language; 7] = [
+const LANGUAGES: [Language; 9] = [
     Language::French,
     Language::English,
     Language::German,
@@ -15,6 +15,8 @@ const LANGUAGES: [Language; 7] = [
     Language::Italian,
     Language::Portuguese,
     Language::Dutch,
+    Language::Russian,
+    Language::Chinese,
 ];
 
 /// En dessous, un bloc est trop court pour qu'on se fie à la détection.
@@ -52,10 +54,12 @@ impl LangDetector {
 
     /// Langue de `text`, si le texte est assez long et la détection assez sûre.
     pub fn detect(&self, text: &str) -> Option<Lang> {
+        // Le chinois n'a pas d'espaces : deux idéogrammes comptent pour un mot.
         let words = text
             .split_whitespace()
             .filter(|w| w.chars().any(char::is_alphabetic))
-            .count();
+            .count()
+            .max(text.chars().filter(|&c| crate::tokenize::is_cjk(c)).count() / 2);
         if words < MIN_WORDS {
             return None;
         }
@@ -123,6 +127,14 @@ mod tests {
             Lang::from_code("deu")
         );
         assert_eq!(d.detect("TODO fix"), None, "trop court");
+        assert_eq!(
+            d.detect("Читает файл конфигурации и возвращает его содержимое."),
+            Lang::from_code("rus")
+        );
+        assert_eq!(
+            d.detect("读取配置文件并返回其内容。"),
+            Lang::from_code("zho")
+        );
         assert!(LangDetector::languages().contains(&Lang::ENG));
     }
 

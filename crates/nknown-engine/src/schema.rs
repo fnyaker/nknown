@@ -64,7 +64,16 @@ pub fn hash_key(hash: u64) -> Vec<u8> {
 /// Les lemmes sont indexés en minuscules : « Paris » et « paris » (nom propre) se rejoignent,
 /// mais pas « Paris » (nom propre) et « pari » (nom).
 pub fn normalize_lemma(lemma: &str) -> String {
-    lemma.to_lowercase().replace('\u{2019}', "'")
+    lemma
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            '\u{2019}' => Some('\''),
+            '\u{0300}' | '\u{0301}' => None,
+            'ё' => Some('е'),
+            c => Some(c),
+        })
+        .collect()
 }
 
 /// Octet de catégorie des termes de code dans les clés de lemmes (hors des valeurs de `Pos`) :
