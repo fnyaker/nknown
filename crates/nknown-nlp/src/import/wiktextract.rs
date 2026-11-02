@@ -183,6 +183,9 @@ fn map_pos(pos: &str) -> Option<Pos> {
         "particle" => Pos::Part,
         "punct" => Pos::Punct,
         "symbol" => Pos::Sym,
+        // Fiche de caractère (sinogrammes surtout) : souvent la seule entrée d'un mot
+        // d'une syllabe (的, 在, 是). Mot connu, catégorie laissée au tagueur.
+        "character" => Pos::X,
         // Affixes, locutions, proverbes, caractères... : pas des mots autonomes.
         _ => return None,
     })
