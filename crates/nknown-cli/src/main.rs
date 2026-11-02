@@ -457,7 +457,14 @@ fn collect(
                 continue;
             }
             let lang = item.lang_hint.unwrap_or(Lang::FRA);
-            let analysis = pipeline.analyze(lang, &item.text);
+            let format = item
+                .meta
+                .iter()
+                .find(|(k, _)| k == "format")
+                .map_or(nknown_nlp::Format::Plain, |(_, v)| {
+                    nknown_nlp::Format::from_hint(v)
+                });
+            let analysis = nknown_nlp::analyze_document(pipeline, lang, &item.text, &format);
             let title = item.title.as_deref().map(|t| pipeline.analyze(lang, t));
             match engine.ingest(Document {
                 item: &item,
@@ -497,30 +504,47 @@ fn collect(
 /// Requête → mots et lectures possibles (lexique, plus la forme brute pour les mots inconnus
 /// et les noms propres), et intention éventuelle (« actu », « info »...).
 fn build_query(lexicon: &Lexicon, text: &str) -> nknown_engine::Query {
+    use nknown_engine::schema::TermKind;
     use nknown_engine::{QueryTerm, intent_for};
+    use nknown_nlp::segment;
     let mut intent = None;
     let mut terms = Vec::new();
-    for span in tokenize::words(text) {
-        let form = &text[span];
+    for chunk in text.split_whitespace() {
         if intent.is_none()
-            && let Some(i) = intent_for(form)
+            && let Some(i) = intent_for(chunk)
         {
             intent = Some(i);
             continue;
         }
-        let mut readings: Vec<(Pos, String)> = lexicon
-            .lookup(form)
-            .filter(|e| nknown_engine::ingest::is_content(e.pos))
-            .map(|e| (e.pos, e.lemma.to_owned()))
-            .collect();
-        for pos in [Pos::Propn, Pos::Noun, Pos::X] {
-            readings.push((pos, form.to_owned()));
+        // Identifiant manifeste (`read_to_string`, `HashMap::new`, `f()`) : on cherche
+        // l'identifiant exact, pas ses morceaux (« string » est partout dans le code).
+        if !segment::inline_code(chunk, 0..chunk.len()).is_empty() {
+            let ident = chunk.trim_end_matches("()").trim_matches('`');
+            let readings = vec![(TermKind::Code, ident.to_lowercase())];
+            terms.push(QueryTerm {
+                text: chunk.to_owned(),
+                readings,
+            });
+            continue;
         }
-        readings.dedup();
-        terms.push(QueryTerm {
-            text: form.to_owned(),
-            readings,
-        });
+        // Mot ordinaire : ses lectures en prose (lexique), et le même mot comme terme de code.
+        for span in tokenize::words(chunk) {
+            let form = &chunk[span];
+            let mut readings: Vec<(TermKind, String)> = lexicon
+                .lookup(form)
+                .filter(|e| nknown_engine::ingest::is_content(e.pos))
+                .map(|e| (TermKind::Word(e.pos), e.lemma.to_owned()))
+                .collect();
+            for pos in [Pos::Propn, Pos::Noun, Pos::X] {
+                readings.push((TermKind::Word(pos), form.to_owned()));
+            }
+            readings.push((TermKind::Code, form.to_lowercase()));
+            readings.dedup();
+            terms.push(QueryTerm {
+                text: form.to_owned(),
+                readings,
+            });
+        }
     }
     nknown_engine::Query {
         lang: Lang::FRA,
@@ -547,19 +571,43 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str) -> Res {
     for h in hits {
         let (y, m, d) = Timestamp(h.doc.date).ymd();
         let title = h.doc.title.as_deref().unwrap_or("(sans titre)");
-        println!("\n{:.3}  {y}-{m:02}-{d:02}  {title}", h.score);
+        let kind = match (h.is_code, &h.code_lang) {
+            (true, Some(l)) => format!("  [code {l}]"),
+            (true, None) => "  [code]".to_owned(),
+            _ => String::new(),
+        };
+        println!("\n{:.3}  {y}-{m:02}-{d:02}  {title}{kind}", h.score);
         let mut info = format!("  mots : {}", h.matched.join(", "));
         for (adj, noun) in &h.qualified {
             info.push_str(&format!(" ; « {adj} » qualifie « {noun} »"));
         }
         println!("{info}");
-        let snippet: String = h.text.chars().take(220).collect();
-        let more = if h.text.chars().count() > 220 {
-            "…"
-        } else {
-            ""
-        };
-        println!("  {}{more}", snippet.replace('\n', " "));
+        println!("  {}", snippet(&h.text, &h.matched, 220));
     }
     Ok(())
+}
+
+/// Extrait de `text` d'environ `width` caractères, centré sur la première occurrence
+/// d'un des mots trouvés.
+fn snippet(text: &str, words: &[String], width: usize) -> String {
+    let lower = text.to_lowercase();
+    let hit = words
+        .iter()
+        .filter_map(|w| lower.find(&w.to_lowercase()))
+        .min()
+        .unwrap_or(0);
+    let hit_chars = lower.get(..hit).map_or(0, |s| s.chars().count());
+    let start = hit_chars.saturating_sub(width / 3);
+    let total = text.chars().count();
+    let body = text
+        .chars()
+        .skip(start)
+        .take(width)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let before = if start > 0 { "…" } else { "" };
+    let after = if start + width < total { "…" } else { "" };
+    format!("{before}{body}{after}")
 }

@@ -78,13 +78,43 @@ pub struct Feats {
     pub number: Option<Number>,
 }
 
+/// Domaine d'un token : langue humaine, ou terme de code (identifiant, chemin).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Domain {
+    #[default]
+    Prose,
+    Code,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     /// Position en octets dans le texte analysé.
     pub span: Range<usize>,
+    /// Forme normalisée : lemme pour la prose, identifiant en minuscules pour le code.
     pub lemma: String,
+    /// Catégorie grammaticale (prose) ; `X` pour un terme de code.
     pub pos: Pos,
     pub feats: Feats,
+    pub domain: Domain,
+}
+
+/// Nature d'un bloc de texte.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SegmentKind {
+    Prose,
+    /// Code, avec son langage s'il est connu (`rust`, `python`...).
+    Code {
+        lang: Option<String>,
+    },
+}
+
+/// Bloc homogène du document : les tokens `tokens` (indices dans [`Analysis::tokens`]).
+/// Les blocs se suivent et ne se chevauchent pas ; un commentaire au milieu du code
+/// est un bloc de prose entre deux blocs de code.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Segment {
+    pub tokens: Range<usize>,
+    pub kind: SegmentKind,
 }
 
 /// Relation entre deux tokens (indices dans [`Analysis::tokens`]).
@@ -122,6 +152,8 @@ impl Relation {
 pub struct Analysis {
     pub tokens: Vec<Token>,
     pub relations: Vec<Relation>,
+    /// Blocs prose / code ; vide = tout le texte est de la prose.
+    pub segments: Vec<Segment>,
 }
 
 pub trait Analyzer {

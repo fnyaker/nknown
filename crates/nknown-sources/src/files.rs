@@ -1,4 +1,7 @@
-//! Source : fichiers texte d'un dossier local (`.txt`, `.md`), parcouru récursivement.
+//! Source : fichiers d'un dossier local, parcouru récursivement — textes, documentation,
+//! code et configuration. Le format (texte, Markdown, code et son langage) est déduit de
+//! l'extension et transmis dans `meta["format"]`. Les dossiers de dépendances et de
+//! compilation, les fichiers binaires et trop gros sont ignorés.
 
 use std::fs;
 use std::io;
@@ -8,7 +11,66 @@ use nknown_core::item::RawItem;
 use nknown_core::source::{Capabilities, ItemStream, Source, SourceError, SourceId, SourceKind};
 use nknown_core::time::{DateConfidence, Dated, Timestamp};
 
-const EXTENSIONS: &[&str] = &["txt", "md"];
+/// Extension → format (`plain`, `markdown`, `html`, `code:<langage>`).
+fn format_of(ext: &str) -> Option<String> {
+    let lang = match ext {
+        "txt" | "text" | "org" | "log" => return Some("plain".into()),
+        "md" | "markdown" | "rst" | "adoc" => return Some("markdown".into()),
+        "html" | "htm" => return Some("html".into()),
+        "rs" => "rust",
+        "py" | "pyi" => "python",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" => "cpp",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "cs" => "csharp",
+        "rb" => "ruby",
+        "php" => "php",
+        "lua" => "lua",
+        "sh" | "bash" | "zsh" | "fish" => "shell",
+        "sql" => "sql",
+        "hs" => "haskell",
+        "scala" => "scala",
+        "ex" | "exs" => "elixir",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "json" => "json",
+        "ini" | "cfg" | "conf" => "ini",
+        "nix" => "nix",
+        "css" | "scss" => "css",
+        "qml" => "qml",
+        "vim" => "vim",
+        _ => return None,
+    };
+    Some(format!("code:{lang}"))
+}
+
+/// Dossiers jamais parcourus : dépendances, compilation, caches, gestion de versions.
+const SKIPPED_DIRS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "target",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".cache",
+    ".idea",
+    ".vscode",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+];
+
+/// Au-delà, un fichier est probablement généré (données, code minifié).
+const MAX_FILE_BYTES: u64 = 1 << 20;
 
 #[derive(Debug)]
 pub struct LocalFiles {
@@ -31,13 +93,17 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
         let entry = entry?;
         let path = entry.path();
         let ft = entry.file_type()?;
+        let name = entry.file_name();
         if ft.is_dir() {
-            collect(&path, out)?;
+            if !SKIPPED_DIRS.contains(&name.to_string_lossy().as_ref()) {
+                collect(&path, out)?;
+            }
         } else if ft.is_file()
             && path
                 .extension()
                 .and_then(|e| e.to_str())
-                .is_some_and(|e| EXTENSIONS.contains(&e))
+                .is_some_and(|e| format_of(&e.to_ascii_lowercase()).is_some())
+            && entry.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
         {
             out.push(path);
         }
@@ -60,7 +126,21 @@ fn read_item(
     {
         return Ok(None);
     }
-    let mut item = RawItem::new(id.clone(), fs::read_to_string(path)?, fetched_at);
+    let Ok(mut text) = String::from_utf8(fs::read(path)?) else {
+        return Ok(None); // pas du texte UTF-8 : fichier binaire
+    };
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut format = format_of(&ext).unwrap_or_else(|| "plain".into());
+    if format == "html" {
+        text = crate::html::to_text(&text);
+        format = "markdown".into(); // les blocs <pre> deviennent des blocs délimités
+    }
+    let mut item = RawItem::new(id.clone(), text, fetched_at);
+    item.meta.push(("format".into(), format));
     item.external_id = Some(path.display().to_string());
     item.title = path.file_stem().map(|s| s.to_string_lossy().into_owned());
     // La date de modification n'est qu'un indice de la date réelle du contenu.
@@ -111,6 +191,8 @@ mod tests {
         fs::write(dir.join("a.txt"), "Bonjour Paris").unwrap();
         fs::write(dir.join("sous/b.md"), "# Note").unwrap();
         fs::write(dir.join("ignore.bin"), [0u8, 1, 2]).unwrap();
+        fs::create_dir_all(dir.join("target")).unwrap();
+        fs::write(dir.join("target/gen.rs"), "fn x() {}").unwrap();
 
         let mut src = LocalFiles::new(SourceId("test".into()), &dir);
         let items: Vec<_> = src.fetch(None).unwrap().map(Result::unwrap).collect();

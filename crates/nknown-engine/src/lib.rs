@@ -120,6 +120,8 @@ mod tests {
     use nknown_core::source::{SourceId, SourceKind};
     use nknown_core::time::{DateConfidence, Dated, Timestamp};
 
+    use nknown_core::nature::{Nature, NatureProfile};
+
     use super::*;
 
     const DAY: i64 = 86_400;
@@ -149,13 +151,21 @@ mod tests {
                 lemma: parts.get(2).unwrap_or(&parts[0]).to_string(),
                 pos,
                 feats: Feats::default(),
+                domain: Default::default(),
             });
         }
         let relations = qualifies
             .iter()
             .map(|&(adj, noun)| Relation::Qualifies { adj, noun })
             .collect();
-        (text, Analysis { tokens, relations })
+        (
+            text,
+            Analysis {
+                tokens,
+                relations,
+                segments: Vec::new(),
+            },
+        )
     }
 
     fn add(
@@ -193,7 +203,10 @@ mod tests {
                 .iter()
                 .map(|(w, rs)| QueryTerm {
                     text: w.to_string(),
-                    readings: rs.iter().map(|(p, l)| (*p, l.to_string())).collect(),
+                    readings: rs
+                        .iter()
+                        .map(|(p, l)| (schema::TermKind::Word(*p), l.to_string()))
+                        .collect(),
                 })
                 .collect(),
             intent: intent.and_then(intent_for),
@@ -447,5 +460,108 @@ mod tests {
         assert_eq!(e.checkpoint("rss:x").unwrap(), None);
         e.set_checkpoint("rss:x", NOW).unwrap();
         assert_eq!(e.checkpoint("rss:x").unwrap(), Some(NOW));
+    }
+
+    /// Document mêlant prose et code : `spec` comme pour `doc`, « | » sépare les blocs,
+    /// un bloc préfixé par « code: » est du code (ses mots sont des termes de code).
+    fn mixed(e: &mut Engine<MemStorage>, ext: &str, blocks: &[&str]) {
+        use nknown_core::analyze::{Domain, Segment, SegmentKind};
+        let mut text = String::new();
+        let mut analysis = Analysis::default();
+        for b in blocks {
+            let (is_code, spec) = match b.strip_prefix("code:") {
+                Some(s) => (true, s),
+                None => (false, *b),
+            };
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            let (t, mut a) = doc(spec, &[]);
+            let offset = text.len();
+            text.push_str(&t);
+            let first = analysis.tokens.len();
+            for mut tok in a.tokens.drain(..) {
+                tok.span = tok.span.start + offset..tok.span.end + offset;
+                if is_code {
+                    tok.domain = Domain::Code;
+                    tok.pos = Pos::X;
+                }
+                analysis.tokens.push(tok);
+            }
+            analysis.segments.push(Segment {
+                tokens: first..analysis.tokens.len(),
+                kind: if is_code {
+                    SegmentKind::Code {
+                        lang: Some("rust".into()),
+                    }
+                } else {
+                    SegmentKind::Prose
+                },
+            });
+        }
+        let mut item = RawItem::new(SourceId(ext.into()), text, NOW);
+        item.external_id = Some(ext.into());
+        e.ingest(Document {
+            item: &item,
+            kind: SourceKind::Web,
+            lang: Lang::FRA,
+            analysis: &analysis,
+            title: None,
+        })
+        .unwrap();
+    }
+
+    fn search_kinds(e: &Engine<MemStorage>, word: &str, intent: Option<&str>) -> Vec<Hit> {
+        let q = Query {
+            lang: Lang::FRA,
+            terms: vec![QueryTerm {
+                text: word.into(),
+                readings: vec![
+                    (schema::TermKind::Word(Pos::Noun), word.into()),
+                    (schema::TermKind::Code, word.into()),
+                ],
+            }],
+            intent: intent.and_then(intent_for),
+        };
+        e.search(&q, NOW, 10).unwrap()
+    }
+
+    #[test]
+    fn code_and_prose_words_stay_apart() {
+        let mut e = Engine::new(MemStorage::default());
+        // Un récit anglais où « map » est un mot ordinaire...
+        mixed(
+            &mut e,
+            "story",
+            &["we/D read/V the/D map/N/map and/D found/V the/D road/N"],
+        );
+        // ...et une page technique : prose, puis code utilisant `map`.
+        mixed(
+            &mut e,
+            "tuto",
+            &[
+                "transformer/V une/D liste/N",
+                "code:items/X iter/X map/X collect/X",
+            ],
+        );
+        let p = e.stats().unwrap().passages;
+        assert_eq!(p, 3, "les passages ne franchissent pas les blocs");
+
+        // Sans intention, les deux sens sont trouvés.
+        let all = search_kinds(&e, "map", None);
+        assert_eq!(all.len(), 2);
+        // Avec « code », le passage de code passe devant le récit.
+        let code = search_kinds(&e, "map", Some("code"));
+        assert!(
+            code[0].is_code && code[0].code_lang.as_deref() == Some("rust"),
+            "{code:#?}"
+        );
+        assert!(!code[1].is_code);
+        // Le récit n'est pas devenu technique.
+        let story = all.iter().find(|h| !h.is_code).unwrap();
+        assert_eq!(
+            NatureProfile::from_scores(story.doc.nature).get(Nature::Technical),
+            0.0
+        );
     }
 }

@@ -16,7 +16,7 @@ use nknown_core::nature::{Nature, NatureProfile};
 use nknown_core::time::Timestamp;
 
 use crate::graph::{Edge, EdgeKind, NodeId};
-use crate::schema::{self, DocRecord, PassageRecord};
+use crate::schema::{self, DocRecord, PassageRecord, TermKind};
 use crate::storage::Storage;
 use crate::{Engine, Result, decode};
 
@@ -27,16 +27,20 @@ pub struct Intent {
     pub nature: NatureProfile,
     /// Demi-vie de la fraîcheur, en jours ; `None` = la date ne compte pas.
     pub half_life_days: Option<f64>,
+    /// `Some(true)` : préférer les passages de code ; `Some(false)` : la prose technique.
+    pub prefer_code: Option<bool>,
 }
 
-/// Opérateurs reconnus en tête ou dans la requête.
+/// Opérateurs reconnus dans la requête.
 pub fn intent_for(word: &str) -> Option<Intent> {
-    let (name, nature, half_life_days) = match word.to_lowercase().as_str() {
-        "actu" | "actus" | "news" => ("actu", Nature::Event, Some(3.0)),
-        "info" | "def" | "définition" => ("info", Nature::Reference, None),
-        "avis" | "opinion" => ("avis", Nature::Opinion, Some(30.0)),
-        "tuto" | "comment" => ("tuto", Nature::Tutorial, None),
-        "perso" | "notes" => ("perso", Nature::Personal, None),
+    let (name, nature, half_life_days, prefer_code) = match word.to_lowercase().as_str() {
+        "actu" | "actus" | "news" => ("actu", Nature::Event, Some(3.0), None),
+        "info" | "def" | "définition" => ("info", Nature::Reference, None, None),
+        "avis" | "opinion" => ("avis", Nature::Opinion, Some(30.0), None),
+        "tuto" | "comment" => ("tuto", Nature::Tutorial, None, None),
+        "perso" | "notes" => ("perso", Nature::Personal, None, None),
+        "code" => ("code", Nature::Technical, None, Some(true)),
+        "doc" | "docs" => ("doc", Nature::Technical, None, Some(false)),
         _ => return None,
     };
     let mut profile = NatureProfile::default();
@@ -45,14 +49,15 @@ pub fn intent_for(word: &str) -> Option<Intent> {
         name,
         nature: profile,
         half_life_days,
+        prefer_code,
     })
 }
 
-/// Un mot de la requête et ses lectures possibles (catégorie, lemme).
+/// Un mot de la requête et ses lectures possibles (mot d'une catégorie, ou terme de code).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryTerm {
     pub text: String,
-    pub readings: Vec<(Pos, String)>,
+    pub readings: Vec<(TermKind, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +78,8 @@ pub struct Hit {
     pub matched: Vec<String>,
     /// Paires (adjectif, nom) de la requête liées dans le passage.
     pub qualified: Vec<(String, String)>,
+    pub is_code: bool,
+    pub code_lang: Option<String>,
 }
 
 const K1: f64 = 1.2;
@@ -82,7 +89,7 @@ const QUALIFIED_BONUS: f64 = 1.5;
 /// Un lemme candidat d'un mot de la requête.
 struct Reading {
     id: NodeId,
-    pos: Pos,
+    kind: TermKind,
     idf: f64,
     /// Part de cette lecture parmi celles du mot, selon l'usage dans l'index : pour « paris »,
     /// la ville (fréquente) l'emporte sur « pari » (rare), que l'IDF seul favoriserait.
@@ -104,8 +111,8 @@ impl<S: Storage> Engine<S> {
         for term in &q.terms {
             let mut found = Vec::new();
             let mut seen = HashSet::new();
-            for (pos, lemma) in &term.readings {
-                let Some(v) = self.get(&schema::lexeme_key(q.lang, *pos, lemma))? else {
+            for (kind, lemma) in &term.readings {
+                let Some(v) = self.get(&schema::lexeme_key(q.lang, *kind, lemma))? else {
                     continue;
                 };
                 let id = NodeId(schema::u64_value(Some(v)));
@@ -114,7 +121,7 @@ impl<S: Storage> Engine<S> {
                         schema::u64_value(self.get(&schema::id_key(schema::STATS, id))?) as f64;
                     found.push(Reading {
                         id,
-                        pos: *pos,
+                        kind: *kind,
                         idf: 0.0,
                         share: df,
                     });
@@ -167,11 +174,13 @@ impl<S: Storage> Engine<S> {
                 if a == b {
                     continue;
                 }
-                for adj in adj_rs.iter().filter(|r| r.pos == Pos::Adj) {
-                    for noun in noun_rs
-                        .iter()
-                        .filter(|r| matches!(r.pos, Pos::Noun | Pos::Propn))
-                    {
+                for adj in adj_rs.iter().filter(|r| r.kind == TermKind::Word(Pos::Adj)) {
+                    for noun in noun_rs.iter().filter(|r| {
+                        matches!(
+                            r.kind,
+                            TermKind::Word(Pos::Noun) | TermKind::Word(Pos::Propn)
+                        )
+                    }) {
                         for (key, _) in self.scan(&schema::qualified_prefix(noun.id, adj.id))? {
                             if let Some(pid) = key.get(17..25).and_then(|b| b.try_into().ok()) {
                                 let pairs = qualified
@@ -211,6 +220,13 @@ impl<S: Storage> Engine<S> {
                 }
             };
             if let Some(intent) = &q.intent {
+                if let Some(prefer_code) = intent.prefer_code {
+                    score *= if passage.is_code == prefer_code {
+                        1.5
+                    } else {
+                        0.6
+                    };
+                }
                 let fit = NatureProfile::from_scores(doc.nature).weigh(&intent.nature);
                 score *= 0.25 + f64::from(fit);
                 if let Some(half_life) = intent.half_life_days {
@@ -226,6 +242,8 @@ impl<S: Storage> Engine<S> {
                 passage: pid,
                 doc_id: NodeId(passage.doc),
                 score,
+                is_code: passage.is_code,
+                code_lang: passage.code_lang.clone(),
                 text: passage.text,
                 doc,
                 matched: matched.iter().map(|&t| q.terms[t].text.clone()).collect(),

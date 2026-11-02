@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use nknown_core::analyze::{Analysis, Pos, Relation, Token};
+use nknown_core::analyze::{Analysis, Domain, Pos, Relation, SegmentKind, Token};
 use nknown_core::item::RawItem;
 use nknown_core::lang::Lang;
 use nknown_core::nature::{Nature, NatureProfile};
@@ -14,7 +14,7 @@ use nknown_core::source::SourceKind;
 use nknown_core::time::{DateConfidence, Timestamp};
 
 use crate::graph::{Edge, EdgeKind, NodeId};
-use crate::schema::{self, DocRecord, LemmaRecord, PassageRecord};
+use crate::schema::{self, DocRecord, LemmaRecord, PassageRecord, TermKind};
 use crate::storage::{Op, Storage};
 use crate::{Engine, Result, encode};
 
@@ -64,6 +64,17 @@ pub fn is_content(pos: Pos) -> bool {
     )
 }
 
+fn is_indexed(t: &Token) -> bool {
+    t.domain == Domain::Code || is_content(t.pos)
+}
+
+fn term_kind(t: &Token) -> TermKind {
+    match t.domain {
+        Domain::Code => TermKind::Code,
+        Domain::Prose => TermKind::Word(t.pos),
+    }
+}
+
 /// Nature a priori d'un contenu selon sa source.
 pub fn nature_prior(kind: SourceKind) -> NatureProfile {
     let mut p = NatureProfile::default();
@@ -84,20 +95,79 @@ pub fn nature_prior(kind: SourceKind) -> NatureProfile {
     p
 }
 
+/// Nature du document : celle de sa source, et technique d'autant plus qu'il contient du code.
+pub fn nature_of(kind: SourceKind, code_tokens: usize, total: usize) -> NatureProfile {
+    let mut p = nature_prior(kind);
+    if code_tokens > 0 {
+        let share = code_tokens as f32 / total.max(1) as f32;
+        p.set(
+            Nature::Technical,
+            p.get(Nature::Technical).max(0.4 + 0.6 * share),
+        );
+    }
+    p
+}
+
 /// Passage maximal avant découpe aux fins de phrase.
 const MAX_PASSAGE_TOKENS: usize = 120;
 
-/// Passages = paragraphes (séparés par une ligne vide), redécoupés aux fins de phrase
-/// s'ils sont trop longs. Renvoie des plages d'indices de tokens.
-pub fn passages(text: &str, tokens: &[Token]) -> Vec<Range<usize>> {
+/// Code : passage coupé à une ligne vide au-delà de cette taille, et au plus tard ici.
+const CODE_SOFT_TOKENS: usize = 60;
+const CODE_MAX_TOKENS: usize = 400;
+
+/// Passages d'un document analysé, avec leur bloc (prose ou code). Ils ne franchissent
+/// jamais la frontière d'un bloc : prose découpée par paragraphe (puis aux fins de phrase),
+/// code découpé aux lignes vides.
+pub fn passages<'a>(text: &str, a: &'a Analysis) -> Vec<(Range<usize>, &'a SegmentKind)> {
+    static PROSE: SegmentKind = SegmentKind::Prose;
+    if a.segments.is_empty() {
+        return prose_passages(text, &a.tokens, 0..a.tokens.len())
+            .into_iter()
+            .map(|r| (r, &PROSE))
+            .collect();
+    }
     let mut out = Vec::new();
-    let mut start = 0;
-    for i in 0..tokens.len() {
-        let last = i + 1 == tokens.len();
-        let paragraph_break = !last && {
-            let gap = &text[tokens[i].span.end..tokens[i + 1].span.start];
-            gap.matches('\n').count() >= 2
+    for seg in &a.segments {
+        let ranges = match seg.kind {
+            SegmentKind::Prose => prose_passages(text, &a.tokens, seg.tokens.clone()),
+            SegmentKind::Code { .. } => code_passages(text, &a.tokens, seg.tokens.clone()),
         };
+        out.extend(ranges.into_iter().map(|r| (r, &seg.kind)));
+    }
+    out
+}
+
+fn code_passages(text: &str, tokens: &[Token], range: Range<usize>) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = range.start;
+    for i in range.clone() {
+        let last = i + 1 == range.end;
+        let blank_line = !last
+            && tokens[i].span.end <= tokens[i + 1].span.start
+            && text[tokens[i].span.end..tokens[i + 1].span.start]
+                .matches('\n')
+                .count()
+                >= 2;
+        let size = i + 1 - start;
+        if last || (blank_line && size >= CODE_SOFT_TOKENS) || size >= CODE_MAX_TOKENS {
+            out.push(start..i + 1);
+            start = i + 1;
+        }
+    }
+    out
+}
+
+fn prose_passages(text: &str, tokens: &[Token], range: Range<usize>) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = range.start;
+    for i in range.clone() {
+        let last = i + 1 == range.end;
+        let paragraph_break = !last
+            && tokens[i].span.end <= tokens[i + 1].span.start
+            && text[tokens[i].span.end..tokens[i + 1].span.start]
+                .matches('\n')
+                .count()
+                >= 2;
         let too_long = i + 1 - start >= MAX_PASSAGE_TOKENS
             && tokens[i].pos == Pos::Punct
             && text[tokens[i].span.clone()].starts_with(['.', '!', '?', '…']);
@@ -193,20 +263,22 @@ impl<S: Storage> Engine<S> {
         }
         let doc = tx.next();
         let tokens = &d.analysis.tokens;
-        let ranges = passages(&item.text, tokens);
+        let ranges = passages(&item.text, d.analysis);
         // Passages contigus : le document ne retient que le premier et leur nombre.
         let pids: Vec<NodeId> = ranges.iter().map(|_| tx.next()).collect();
         let first_passage = pids.first().map_or(0, |p| p.0);
 
-        for (ordinal, (range, &pid)) in ranges.iter().zip(&pids).enumerate() {
+        let mut code_tokens = 0usize;
+        for (ordinal, ((range, kind), &pid)) in ranges.iter().zip(&pids).enumerate() {
             let mut tf: HashMap<NodeId, u32> = HashMap::new();
             let mut lemma_of: HashMap<usize, NodeId> = HashMap::new();
             for i in range.clone() {
                 let t = &tokens[i];
-                if !is_content(t.pos) {
+                if !is_indexed(t) {
                     continue;
                 }
-                let id = tx.lemma(d.lang, t.pos, &t.lemma)?;
+                code_tokens += usize::from(t.domain == Domain::Code);
+                let id = tx.lemma(d.lang, term_kind(t), &t.lemma)?;
                 *tf.entry(id).or_default() += 1;
                 lemma_of.insert(i, id);
             }
@@ -229,10 +301,16 @@ impl<S: Storage> Engine<S> {
                     tx.add_f32(Edge::key_of(a, EdgeKind::Qualifies, n).to_vec(), 1.0)?;
                 }
             }
-            let (start, end) = (
-                tokens[range.start].span.start,
-                tokens[range.end - 1].span.end,
-            );
+            let start = tokens[range.clone()]
+                .iter()
+                .map(|t| t.span.start)
+                .min()
+                .unwrap_or(0);
+            let end = tokens[range.clone()]
+                .iter()
+                .map(|t| t.span.end)
+                .max()
+                .unwrap_or(0);
             tx.put(
                 schema::id_key(schema::PASSAGE, pid),
                 encode(&PassageRecord {
@@ -240,6 +318,11 @@ impl<S: Storage> Engine<S> {
                     ordinal: ordinal as u32,
                     text: item.text[start..end].to_owned(),
                     len,
+                    is_code: matches!(kind, SegmentKind::Code { .. }),
+                    code_lang: match kind {
+                        SegmentKind::Code { lang } => lang.clone(),
+                        SegmentKind::Prose => None,
+                    },
                 })?,
             );
             tx.add(schema::meta_key(schema::TOTAL_LEN), i64::from(len))?;
@@ -247,14 +330,15 @@ impl<S: Storage> Engine<S> {
 
         let mut title_lemmas = Vec::new();
         for t in d.title.map(|a| a.tokens.as_slice()).unwrap_or_default() {
-            if is_content(t.pos) {
-                let id = tx.lemma(d.lang, t.pos, &t.lemma)?.0;
+            if is_indexed(t) {
+                let id = tx.lemma(d.lang, term_kind(t), &t.lemma)?.0;
                 if !title_lemmas.contains(&id) {
                     title_lemmas.push(id);
                 }
             }
         }
 
+        let total_words = tokens.iter().filter(|t| is_indexed(t)).count();
         let date = item.date();
         tx.put(
             schema::id_key(schema::DOC, doc),
@@ -271,7 +355,7 @@ impl<S: Storage> Engine<S> {
                 },
                 fetched_at: item.fetched_at.0,
                 lang: d.lang.as_str().to_owned(),
-                nature: nature_prior(d.kind).scores(),
+                nature: nature_of(d.kind, code_tokens, total_words).scores(),
                 first_passage,
                 passages: ranges.len() as u32,
                 external_id: item.external_id.clone(),
@@ -308,7 +392,7 @@ struct Tx<'e, S: Storage> {
     counter: u64,
     counters: HashMap<Vec<u8>, u64>,
     weights: HashMap<Vec<u8>, f32>,
-    lemmas: HashMap<(Pos, String), NodeId>,
+    lemmas: HashMap<(TermKind, String), NodeId>,
 }
 
 impl<'e, S: Storage> Tx<'e, S> {
@@ -361,12 +445,12 @@ impl<'e, S: Storage> Tx<'e, S> {
     }
 
     /// Identifiant du lemme, créé s'il n'existe pas.
-    fn lemma(&mut self, lang: Lang, pos: Pos, lemma: &str) -> Result<NodeId> {
+    fn lemma(&mut self, lang: Lang, kind: TermKind, lemma: &str) -> Result<NodeId> {
         let norm = schema::normalize_lemma(lemma);
-        if let Some(&id) = self.lemmas.get(&(pos, norm.clone())) {
+        if let Some(&id) = self.lemmas.get(&(kind, norm.clone())) {
             return Ok(id);
         }
-        let key = schema::lexeme_key(lang, pos, &norm);
+        let key = schema::lexeme_key(lang, kind, &norm);
         let id = match self.engine.get(&key)? {
             Some(v) => NodeId(schema::u64_value(Some(v))),
             None => {
@@ -376,14 +460,14 @@ impl<'e, S: Storage> Tx<'e, S> {
                     schema::id_key(schema::NODE, id),
                     encode(&LemmaRecord {
                         lang: lang.as_str().to_owned(),
-                        pos: pos as u8,
+                        pos: kind.byte(),
                         lemma: lemma.to_owned(),
                     })?,
                 );
                 id
             }
         };
-        self.lemmas.insert((pos, norm), id);
+        self.lemmas.insert((kind, norm), id);
         Ok(id)
     }
 

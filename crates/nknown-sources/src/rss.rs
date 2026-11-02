@@ -106,6 +106,8 @@ pub fn parse_feed(
         if let Some(t) = &feed_title {
             item.meta.push(("flux".into(), t.clone()));
         }
+        // Le HTML converti garde les blocs de code sous forme Markdown.
+        item.meta.push(("format".into(), "markdown".into()));
         items.push(item);
     }
     Ok(items)
@@ -156,7 +158,7 @@ mod tests {
             a.date().at,
             Timestamp::parse_rfc3339("2026-11-02T07:30:00Z").unwrap()
         );
-        assert_eq!(a.meta, [("flux".to_string(), "Le Journal".to_string())]);
+        assert_eq!(a.meta[0], ("flux".to_string(), "Le Journal".to_string()));
         assert_eq!(items[1].text, "Vieille nouvelle");
     }
 

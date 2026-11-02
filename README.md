@@ -10,7 +10,7 @@ dans un graphe pondéré interrogeable (`actu paris`, ...).
 |---|---|
 | `nknown-core` | Types et traits partagés : `Source`, `RawItem`, `Analyzer`, `Lang`, `NatureProfile`, dates |
 | `nknown-sources` | Sources : fichiers locaux, flux RSS/Atom/JSON Feed, Wikipédia (titres, recherche, catégorie) |
-| `nknown-nlp` | Pipeline NLP : lexique (Wiktextract + Lexique → `fst`), tagueur perceptron, rattachement des adjectifs ; neuronal (candle) à venir |
+| `nknown-nlp` | Segmentation prose / code (blocs imbriqués), analyse du code, pipeline linguistique : lexique (`fst`), tagueur, rattachement des adjectifs |
 | `nknown-engine` | Moteur : graphe (lemmes, passages, documents, qualifications), index BM25, intentions (`actu`, `info`…), stockage redb |
 | `nknown-cli` | Binaire `nknown` |
 
@@ -56,8 +56,16 @@ révision par lots de 50) ni réanalysé ; une version modifiée remplace l'anci
 `nknown watch base.redb data/fr.lex @examples/sources.txt 30m data/fr.tag` relance la collecte
 toutes les 30 minutes.
 
+Tout type de contenu : une même page peut mêler prose, blocs de code (Markdown, `<pre>`, ou code
+collé sans balisage, reconnu ligne par ligne), code en ligne (`` `HashMap` ``, `read_to_string()`),
+et dans le code, des commentaires et docstrings traités comme de la prose. Les termes de code
+(identifiants, chemins `std::fs::read`, morceaux `hash`/`map` de `HashMap`) ont leur propre espace :
+« map » dans un texte anglais n'est pas `map` dans du code. Les fichiers locaux couvrent code,
+configuration et documentation (`target/`, `node_modules/`, `.git/`… ignorés).
+
 Intentions reconnues dans la requête : `actu` (événements récents), `info` (référence),
-`avis`, `tuto`, `perso`. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
+`avis`, `tuto`, `perso`, `code` (passages de code), `doc` (prose technique).
+Un identifiant tapé tel quel (`read_to_string`, `HashMap::new`) est cherché exactement. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
 pondérées par leur usage dans la base.
 
 ## Mesures (UD French-GSD, test)

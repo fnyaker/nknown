@@ -12,16 +12,19 @@ pub enum Nature {
     /// Document personnel (notes, fichiers).
     Personal,
     Discussion,
+    /// Documentation technique, code.
+    Technical,
 }
 
 impl Nature {
-    pub const ALL: [Nature; 6] = [
+    pub const ALL: [Nature; 7] = [
         Nature::Event,
         Nature::Reference,
         Nature::Opinion,
         Nature::Tutorial,
         Nature::Personal,
         Nature::Discussion,
+        Nature::Technical,
     ];
     pub const COUNT: usize = Self::ALL.len();
 }

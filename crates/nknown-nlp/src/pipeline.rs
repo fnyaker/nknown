@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use nknown_core::analyze::{Analysis, Analyzer, Feats, Pos, Relation, Token};
+use nknown_core::analyze::{Analysis, Analyzer, Domain, Feats, Pos, Relation, Token};
 use nknown_core::lang::Lang;
 
 use crate::attach::{self, AttachRules, Word};
@@ -183,6 +183,7 @@ impl Analyzer for Pipeline {
                     lemma: w.lemma,
                     pos: w.pos,
                     feats: w.feats,
+                    domain: Domain::Prose,
                 }));
             analysis
                 .relations

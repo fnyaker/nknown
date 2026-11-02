@@ -65,10 +65,30 @@ pub fn normalize_lemma(lemma: &str) -> String {
     lemma.to_lowercase().replace('\u{2019}', "'")
 }
 
-pub fn lexeme_key(lang: Lang, pos: Pos, lemma: &str) -> Vec<u8> {
+/// Octet de catégorie des termes de code dans les clés de lemmes (hors des valeurs de `Pos`) :
+/// `map` dans du code et « map » dans un texte anglais sont deux termes distincts.
+pub const CODE_TERM: u8 = 200;
+
+/// Nature d'un terme de recherche : un mot (avec sa catégorie) ou un terme de code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TermKind {
+    Word(Pos),
+    Code,
+}
+
+impl TermKind {
+    pub fn byte(self) -> u8 {
+        match self {
+            TermKind::Word(pos) => pos as u8,
+            TermKind::Code => CODE_TERM,
+        }
+    }
+}
+
+pub fn lexeme_key(lang: Lang, kind: TermKind, lemma: &str) -> Vec<u8> {
     let mut k = vec![LEXEME];
     k.extend_from_slice(lang.as_str().as_bytes());
-    k.push(pos as u8);
+    k.push(kind.byte());
     k.extend_from_slice(normalize_lemma(lemma).as_bytes());
     k
 }
@@ -147,6 +167,9 @@ pub struct PassageRecord {
     pub text: String,
     /// Nombre de mots indexés (longueur pour BM25).
     pub len: u32,
+    /// Passage de code (sinon prose), et son langage s'il est connu.
+    pub is_code: bool,
+    pub code_lang: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
