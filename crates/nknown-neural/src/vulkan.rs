@@ -292,7 +292,9 @@ fn load_store(path: &Path, partial: bool) -> SafetensorsStore {
 }
 
 fn save_store(path: &Path) -> SafetensorsStore {
+    // Écrase le modèle de la passe précédente quand une passe fait mieux.
     SafetensorsStore::from_file(path)
+        .overwrite(true)
         .with_to_adapter(BurnToPyTorchAdapter)
         .with_key_remapping(r"\.self_\.", ".self.")
         .with_key_remapping(r"layer_norm", "LayerNorm")
