@@ -5,10 +5,10 @@
 //!
 //! Seule la couche 1 existe pour l'instant.
 
+pub mod import;
 pub mod lexicon;
 pub mod pipeline;
 pub mod tokenize;
-pub mod wiktextract;
 
 pub use lexicon::{LexEntry, Lexicon, LexiconBuilder, LexiconError};
 pub use pipeline::Pipeline;

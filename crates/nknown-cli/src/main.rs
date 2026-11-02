@@ -7,14 +7,18 @@ use std::time::Instant;
 use nknown_core::analyze::Analyzer;
 use nknown_core::lang::Lang;
 use nknown_core::source::{Source, SourceId};
-use nknown_nlp::{Lexicon, LexiconBuilder, Pipeline, wiktextract};
+use nknown_nlp::import::{ImportStats, lexique, wiktextract};
+use nknown_nlp::{Lexicon, LexiconBuilder, Pipeline};
 use nknown_sources::LocalFiles;
 
 const USAGE: &str = "\
 usage :
   nknown ingest <dossier> [lexique.lex]
-  nknown lexicon build <dump-wiktextract.jsonl> <code-langue-wiktionary> <sortie.lex>
-  nknown lexicon lookup <lexique.lex> <mot>...";
+  nknown lexicon build <sortie.lex> <ressource>...
+      ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
+                   lexique <Lexique383.tsv>
+  nknown lexicon lookup <lexique.lex> <mot>...
+  nknown analyze <lexique.lex> <texte>";
 
 type Res = Result<(), Box<dyn Error>>;
 
@@ -24,7 +28,10 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         ["ingest", dir] => ingest(dir, None),
         ["ingest", dir, lexicon] => ingest(dir, Some(lexicon)),
-        ["lexicon", "build", dump, lang, out] => lexicon_build(dump, lang, out),
+        ["lexicon", "build", out, sources @ ..] if !sources.is_empty() => {
+            lexicon_build(out, sources)
+        }
+        ["analyze", lexicon, text] => analyze(lexicon, text),
         ["lexicon", "lookup", lexicon, words @ ..] if !words.is_empty() => {
             lexicon_lookup(lexicon, words)
         }
@@ -65,18 +72,34 @@ fn ingest(dir: &str, lexicon: Option<&str>) -> Res {
     Ok(())
 }
 
-fn lexicon_build(dump: &str, lang: &str, out: &str) -> Res {
+fn lexicon_build(out: &str, mut sources: &[&str]) -> Res {
     let start = Instant::now();
     let mut builder = LexiconBuilder::new();
-    let stats = wiktextract::import(BufReader::new(File::open(dump)?), lang, &mut builder)?;
-    eprintln!(
-        "{} entrées lues ({} utilisées, {} invalides), {} formes distinctes [{:.1?}]",
-        stats.entries,
-        stats.used,
-        stats.invalid,
-        builder.form_count(),
-        start.elapsed()
-    );
+    while !sources.is_empty() {
+        let (name, stats): (&str, ImportStats) = match sources {
+            ["wiktextract", dump, lang, rest @ ..] => {
+                sources = rest;
+                let file = BufReader::new(File::open(dump)?);
+                (dump, wiktextract::import(file, lang, &mut builder)?)
+            }
+            ["lexique", path, rest @ ..] => {
+                sources = rest;
+                (
+                    path,
+                    lexique::import(BufReader::new(File::open(path)?), &mut builder)?,
+                )
+            }
+            _ => return Err(format!("ressource invalide : {}\n{USAGE}", sources.join(" ")).into()),
+        };
+        eprintln!(
+            "{name} : {} lignes ({} utilisées, {} invalides) -> {} formes au total [{:.1?}]",
+            stats.entries,
+            stats.used,
+            stats.invalid,
+            builder.form_count(),
+            start.elapsed()
+        );
+    }
     let lexicon = builder.build()?;
     lexicon.save(out)?;
     eprintln!(
@@ -103,11 +126,26 @@ fn lexicon_lookup(path: &str, words: &[&str]) -> Res {
             .flatten()
             .collect::<Vec<_>>()
             .join(",");
-            println!("  {:<20} {:<6} {feats}", e.lemma, format!("{:?}", e.pos));
+            println!(
+                "  {:<20} {:<6} {:<10} {:>9.2}",
+                e.lemma,
+                format!("{:?}", e.pos),
+                feats,
+                e.freq
+            );
         }
         if !found {
             println!("  (inconnu)");
         }
+    }
+    Ok(())
+}
+
+fn analyze(lexicon: &str, text: &str) -> Res {
+    let pipeline = Pipeline::default().with_lexicon(Lang::FRA, Lexicon::load(lexicon)?);
+    for t in pipeline.analyze(Lang::FRA, text).tokens {
+        let form = &text[t.span.clone()];
+        println!("{form:<16} {:<16} {:?}", t.lemma, t.pos);
     }
     Ok(())
 }

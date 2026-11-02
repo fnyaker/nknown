@@ -17,11 +17,17 @@ dans un graphe pondéré interrogeable (`actu paris`, ...).
 ## Utilisation
 
 ```sh
-# Lexique français depuis le dump Wiktextract (https://kaikki.org/dictionary/French/)
-nknown lexicon build kaikki.org-dictionary-French.jsonl fr fr.lex
-nknown lexicon lookup fr.lex livres "l'" aujourd'hui
+# Lexique français : Wiktextract (couverture) + Lexique 3.83 (fréquences)
+#   https://kaikki.org/dictionary/French/kaikki.org-dictionary-French.jsonl
+#   http://www.lexique.org/databases/Lexique383/Lexique383.tsv
+nknown lexicon build fr.lex \
+    wiktextract kaikki.org-dictionary-French.jsonl fr \
+    lexique Lexique383.tsv
+nknown lexicon lookup fr.lex été "l'" aujourd'hui
+nknown analyze fr.lex "Les rues calmes de Paris."
 
 nknown ingest <dossier> [fr.lex]
 ```
 
-Les données du Wiktionary sont sous licence CC BY-SA : un lexique compilé en hérite.
+Le Wiktionary (CC BY-SA 3.0/4.0) et Lexique 3.83 (CC BY-SA 4.0) sont sous licence à partage
+à l'identique : un lexique compilé en hérite.

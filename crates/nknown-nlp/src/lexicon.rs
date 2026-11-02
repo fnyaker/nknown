@@ -1,14 +1,15 @@
 //! Couche 1 : le lexique compilé.
 //!
-//! Associe chaque forme (en minuscules) à ses analyses possibles (lemme, catégorie, traits).
-//! Les formes sont stockées dans un automate `fst`, qui pointe vers une liste d'analyses.
+//! Associe chaque forme (en minuscules) à ses analyses possibles (lemme, catégorie, traits),
+//! triées par fréquence décroissante. Les formes sont stockées dans un automate `fst`,
+//! qui pointe vers une liste d'analyses.
 //!
 //! Format de fichier (entiers en little-endian) :
 //!
 //! ```text
 //! MAGIC (8 octets) | len_fst u64 | len_postings u64 | len_analyses u64 | len_strings u64
 //! fst       : forme -> position dans postings
-//! postings  : varint nombre, puis varint id d'analyse, pour chaque forme
+//! postings  : par forme, varint nombre, puis pour chaque analyse : varint id, f32 fréquence
 //! analyses  : 8 octets par analyse : u32 position du lemme dans strings, u8 pos, u8 genre, u8 nombre, u8 réservé
 //! strings   : lemmes, chacun préfixé de sa longueur en varint
 //! ```
@@ -19,16 +20,18 @@ use std::{error, fmt, fs, io};
 
 use nknown_core::analyze::{Feats, Gender, Number, Pos};
 
-const MAGIC: &[u8; 8] = b"NKLEX\0\0\x01";
+const MAGIC: &[u8; 8] = b"NKLEX\0\0\x02";
 const HEADER_LEN: usize = MAGIC.len() + 4 * 8;
 const ANALYSIS_LEN: usize = 8;
 
 /// Une analyse possible d'une forme. Une forme peut en avoir plusieurs (« ferme »).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LexEntry<'a> {
     pub lemma: &'a str,
     pub pos: Pos,
     pub feats: Feats,
+    /// Fréquence de cette lecture de la forme, par million de mots (0 si inconnue).
+    pub freq: f32,
 }
 
 #[derive(Debug)]
@@ -79,6 +82,9 @@ pub struct LexiconBuilder {
     analysis_ids: HashMap<(u32, Pos, Feats), u32>,
     strings: Vec<u8>,
     lemma_offsets: HashMap<String, u32>,
+    /// (forme, lemme, catégorie) -> fréquence. Indépendante des traits : les ressources
+    /// ne s'accordent pas toujours sur eux, et la fréquence doit survivre à l'élagage.
+    freqs: HashMap<(String, u32, Pos), f32>,
 }
 
 impl LexiconBuilder {
@@ -86,9 +92,34 @@ impl LexiconBuilder {
         Self::default()
     }
 
-    /// Ajoute une analyse pour `form`. Les doublons sont ignorés ; l'ordre d'insertion
-    /// est conservé (la première analyse sert de choix par défaut sans la couche 2).
+    /// Ajoute une analyse pour `form`. Les doublons sont ignorés. À fréquence égale,
+    /// l'ordre d'insertion est conservé.
     pub fn insert(&mut self, form: &str, lemma: &str, pos: Pos, feats: Feats) {
+        self.insert_analysis(form, lemma, pos, feats);
+    }
+
+    /// Comme [`insert`](Self::insert), avec la fréquence de cette lecture (par million).
+    /// Si plusieurs fréquences sont fournies pour une même lecture, la plus haute l'emporte.
+    pub fn insert_with_frequency(
+        &mut self,
+        form: &str,
+        lemma: &str,
+        pos: Pos,
+        feats: Feats,
+        freq: f32,
+    ) {
+        let (key, lemma_off) = self.insert_analysis(form, lemma, pos, feats);
+        let slot = self.freqs.entry((key, lemma_off, pos)).or_insert(0.0);
+        *slot = slot.max(freq);
+    }
+
+    fn insert_analysis(
+        &mut self,
+        form: &str,
+        lemma: &str,
+        pos: Pos,
+        feats: Feats,
+    ) -> (String, u32) {
         let lemma_off = match self.lemma_offsets.get(lemma) {
             Some(&off) => off,
             None => {
@@ -104,10 +135,12 @@ impl LexiconBuilder {
             self.analyses.push(analysis);
             u32::try_from(self.analyses.len() - 1).expect("plus de 4 milliards d'analyses")
         });
-        let ids = self.forms.entry(normalize(form)).or_default();
+        let key = normalize(form);
+        let ids = self.forms.entry(key.clone()).or_default();
         if !ids.contains(&id) {
             ids.push(id);
         }
+        (key, lemma_off)
     }
 
     pub fn form_count(&self) -> usize {
@@ -134,11 +167,22 @@ impl LexiconBuilder {
         let mut postings = Vec::new();
         let mut fst = fst::MapBuilder::memory();
         for (form, ids) in &self.forms {
-            let ids = self.prune_subsumed(ids);
+            let mut ranked: Vec<(u32, f32)> = self
+                .prune_subsumed(ids)
+                .into_iter()
+                .map(|id| {
+                    let (lemma_off, pos, _) = self.analyses[id as usize];
+                    let freq = self.freqs.get(&(form.clone(), lemma_off, pos));
+                    (id, freq.copied().unwrap_or(0.0))
+                })
+                .collect();
+            // Tri stable : à fréquence égale, l'ordre d'insertion est gardé.
+            ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
             fst.insert(form, postings.len() as u64)?;
-            write_varint(&mut postings, ids.len() as u64);
-            for id in ids {
+            write_varint(&mut postings, ranked.len() as u64);
+            for (id, freq) in ranked {
                 write_varint(&mut postings, u64::from(id));
+                postings.extend_from_slice(&freq.to_le_bytes());
             }
         }
         let mut analyses = Vec::with_capacity(self.analyses.len() * ANALYSIS_LEN);
@@ -188,10 +232,15 @@ impl Lexicon {
             None => &[],
         };
         let count = read_varint(&mut rest).unwrap_or(0);
-        (0..count).map_while(move |_| self.analysis(read_varint(&mut rest)?))
+        (0..count).map_while(move |_| {
+            let id = read_varint(&mut rest)?;
+            let (freq, tail) = rest.split_first_chunk::<4>()?;
+            rest = tail;
+            self.analysis(id, f32::from_le_bytes(*freq))
+        })
     }
 
-    fn analysis(&self, id: u64) -> Option<LexEntry<'_>> {
+    fn analysis(&self, id: u64, freq: f32) -> Option<LexEntry<'_>> {
         let start = usize::try_from(id).ok()?.checked_mul(ANALYSIS_LEN)?;
         let rec = self.analyses.get(start..start + ANALYSIS_LEN)?;
         let lemma_off = u32::from_le_bytes(rec[..4].try_into().ok()?) as usize;
@@ -205,6 +254,7 @@ impl Lexicon {
                 gender: decode_gender(rec[5])?,
                 number: decode_number(rec[6])?,
             },
+            freq,
         })
     }
 
@@ -408,6 +458,34 @@ mod tests {
         let rues: Vec<_> = lex.lookup("rues").map(|e| (e.lemma, e.pos)).collect();
         assert_eq!(rues, [("rue", Pos::Noun), ("ruer", Pos::Verb)]);
         assert_eq!(lex.lookup("calmes").count(), 1);
+    }
+
+    #[test]
+    fn analyses_are_ranked_by_frequency() {
+        let mut b = LexiconBuilder::new();
+        let m_sg = feats(Some(Gender::Masc), Some(Number::Sing));
+        // Wiktextract d'abord, sans fréquence...
+        b.insert("été", "été", Pos::Noun, m_sg);
+        b.insert("été", "être", Pos::Verb, Feats::default());
+        // ...puis Lexique, avec fréquences et traits moins précis pour le nom.
+        b.insert_with_frequency(
+            "été",
+            "été",
+            Pos::Noun,
+            feats(None, Some(Number::Sing)),
+            61.8,
+        );
+        b.insert_with_frequency("été", "être", Pos::Verb, Feats::default(), 1041.2);
+        let lex = b.build().unwrap();
+
+        let got: Vec<_> = lex
+            .lookup("été")
+            .map(|e| (e.lemma, e.feats, e.freq))
+            .collect();
+        assert_eq!(
+            got,
+            [("être", Feats::default(), 1041.2), ("été", m_sg, 61.8)]
+        );
     }
 
     #[test]

@@ -7,17 +7,16 @@
 //! - les renvois « forme de » (`form_of`) et « variante de » (`alt_of`) : le mot est alors
 //!   une flexion, une graphie alternative ou une élision (« l' » → le, la) d'un autre lemme.
 //!
-//! Seules les formes d'un seul mot (au sens de [`tokenize::words`]) sont gardées,
+//! Seules les formes d'un seul mot (au sens de [`crate::tokenize::words`]) sont gardées,
 //! sinon elles ne pourraient jamais être retrouvées à l'analyse.
 
 use std::io::BufRead;
-use std::{error, fmt, io};
 
 use nknown_core::analyze::{Feats, Gender, Number, Pos};
 use serde::Deserialize;
 
+use super::{ImportError, ImportStats, is_single_word};
 use crate::lexicon::LexiconBuilder;
-use crate::tokenize;
 
 #[derive(Deserialize)]
 struct Entry {
@@ -62,45 +61,6 @@ const SKIPPED_FORM_TAGS: &[&str] = &[
     "class",
     "auxiliary",
 ];
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ImportStats {
-    /// Lignes JSON lues.
-    pub entries: u64,
-    /// Entrées de la bonne langue avec une catégorie reconnue.
-    pub used: u64,
-    /// Lignes illisibles, ignorées.
-    pub invalid: u64,
-    /// Couples (forme, analyse) proposés au lexique, avant dédoublonnage.
-    pub analyses: u64,
-}
-
-#[derive(Debug)]
-pub enum ImportError {
-    Io(io::Error),
-}
-
-impl fmt::Display for ImportError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ImportError::Io(e) => write!(f, "lecture du dump : {e}"),
-        }
-    }
-}
-
-impl error::Error for ImportError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            ImportError::Io(e) => Some(e),
-        }
-    }
-}
-
-impl From<io::Error> for ImportError {
-    fn from(e: io::Error) -> Self {
-        ImportError::Io(e)
-    }
-}
 
 /// Importe les entrées de langue `lang_code` (code Wiktionary : `fr`, `en`, `de`...).
 pub fn import(
@@ -254,10 +214,6 @@ fn feats_from_tags(tags: &[String]) -> Feats {
         gender: gender_from_tags(tags),
         number,
     }
-}
-
-fn is_single_word(form: &str) -> bool {
-    matches!(tokenize::words(form).as_slice(), [span] if *span == (0..form.len()))
 }
 
 #[cfg(test)]

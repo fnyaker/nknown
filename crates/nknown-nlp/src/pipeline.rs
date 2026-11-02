@@ -75,15 +75,33 @@ fn push_word(lexicon: Option<&Lexicon>, text: &str, mut span: Range<usize>, out:
     }
 }
 
-/// Sans couche 2, on retient la première analyse du lexique.
+/// Sans couche 2, on retient l'analyse la plus fréquente, sauf pour un mot à majuscule
+/// en milieu de phrase, où l'on préfère un nom propre (« Paris » plutôt que « pari »).
 fn lookup(lexicon: Option<&Lexicon>, text: &str, span: Range<usize>) -> Option<Token> {
-    let e = lexicon?.lookup(&text[span.clone()]).next()?;
+    let mut entries = lexicon?.lookup(&text[span.clone()]);
+    let first = entries.next()?;
+    let e = if first.pos != Pos::Propn && capitalized_mid_sentence(text, span.start) {
+        entries.find(|e| e.pos == Pos::Propn).unwrap_or(first)
+    } else {
+        first
+    };
     Some(Token {
         span,
         lemma: e.lemma.to_owned(),
         pos: e.pos,
         feats: e.feats,
     })
+}
+
+fn capitalized_mid_sentence(text: &str, start: usize) -> bool {
+    let capitalized = text[start..].chars().next().is_some_and(char::is_uppercase);
+    let before = text[..start]
+        .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '«' | '"' | '(' | '—' | '–'));
+    capitalized
+        && before
+            .chars()
+            .next_back()
+            .is_some_and(|c| !matches!(c, '.' | '!' | '?' | '…'))
 }
 
 fn unknown(text: &str, span: Range<usize>) -> Token {
@@ -138,5 +156,23 @@ mod tests {
                 ("actu", "actu"),
             ]
         );
+    }
+
+    #[test]
+    fn prefers_proper_nouns_mid_sentence() {
+        let mut b = LexiconBuilder::new();
+        b.insert_with_frequency("paris", "pari", Pos::Noun, Feats::default(), 10.0);
+        b.insert("Paris", "Paris", Pos::Propn, Feats::default());
+        let pipeline = Pipeline::default().with_lexicon(Lang::FRA, b.build().unwrap());
+        let lemmas = |text: &str| -> Vec<String> {
+            pipeline
+                .analyze(Lang::FRA, text)
+                .tokens
+                .into_iter()
+                .map(|t| t.lemma)
+                .collect()
+        };
+        assert_eq!(lemmas("à Paris. Paris"), ["à", "Paris", "pari"]);
+        assert_eq!(lemmas("des paris"), ["des", "pari"]);
     }
 }
