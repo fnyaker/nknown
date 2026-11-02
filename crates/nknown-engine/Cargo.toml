@@ -1,0 +1,12 @@
+[package]
+name = "nknown-engine"
+description = "Moteur de graphe, d'index et de scoring de NKnown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nknown-core.workspace = true
+
+[lints]
+workspace = true

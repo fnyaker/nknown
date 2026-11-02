@@ -1,0 +1,19 @@
+[package]
+name = "nknown-cli"
+description = "Interface en ligne de commande de NKnown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nknown"
+path = "src/main.rs"
+
+[dependencies]
+nknown-core.workspace = true
+nknown-nlp.workspace = true
+nknown-sources.workspace = true
+nknown-engine.workspace = true
+
+[lints]
+workspace = true

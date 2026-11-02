@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+nknown-core = { path = "crates/nknown-core" }
+nknown-nlp = { path = "crates/nknown-nlp" }
+nknown-sources = { path = "crates/nknown-sources" }
+nknown-engine = { path = "crates/nknown-engine" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
