@@ -23,9 +23,10 @@ usage :
   nknown analyze <lexique.lex> <texte> [modèle]...
   nknown eval <lexique.lex> <corpus.conllu> [modèle]...
   nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
-  nknown parser train <xlm-roberta/> <train.conllu> <dev.conllu> <sortie/> [passes] [pas-max]
+  nknown parser train [vulkan] <xlm-roberta/> <train.conllu> <dev.conllu> <sortie/> [passes] [pas-max]
 
-  modèle : fichier .tag (tagueur, couche 2) ou répertoire d'analyseur (couche 3)";
+  modèle : fichier .tag (tagueur, couche 2), répertoire d'analyseur (couche 3, CPU)
+           ou vulkan:<répertoire> (couche 3 sur GPU)";
 
 type Res = Result<(), Box<dyn Error>>;
 
@@ -40,8 +41,18 @@ fn main() -> ExitCode {
         }
         ["analyze", lexicon, text, models @ ..] => analyze(lexicon, text, models),
         ["eval", lexicon, corpus, models @ ..] => eval(lexicon, corpus, models),
+        [
+            "parser",
+            "train",
+            "vulkan",
+            xlmr,
+            train,
+            dev,
+            out,
+            rest @ ..,
+        ] if rest.len() <= 2 => parser_train(true, xlmr, train, dev, out, rest),
         ["parser", "train", xlmr, train, dev, out, rest @ ..] if rest.len() <= 2 => {
-            parser_train(xlmr, train, dev, out, rest)
+            parser_train(false, xlmr, train, dev, out, rest)
         }
         ["tagger", "train", lexicon, corpus, out] => tagger_train(lexicon, corpus, out, "10"),
         ["tagger", "train", lexicon, corpus, out, passes] => {
@@ -162,7 +173,9 @@ fn lexicon_lookup(path: &str, words: &[&str]) -> Res {
 fn pipeline(lexicon: &str, models: &[&str]) -> Result<Pipeline, Box<dyn Error>> {
     let mut pipeline = Pipeline::default().with_lexicon(Lang::FRA, Lexicon::load(lexicon)?);
     for path in models {
-        if std::path::Path::new(path).is_dir() {
+        if let Some(dir) = path.strip_prefix("vulkan:") {
+            pipeline = with_vulkan_parser(pipeline, dir)?;
+        } else if std::path::Path::new(path).is_dir() {
             pipeline = with_parser(pipeline, path)?;
         } else {
             pipeline = pipeline.with_tagger(Lang::FRA, Tagger::load(path)?);
@@ -184,8 +197,24 @@ fn with_parser(_: Pipeline, _: &str) -> Result<Pipeline, Box<dyn Error>> {
     Err("compilé sans la fonctionnalité « neural » (couche 3)".into())
 }
 
+#[cfg(feature = "vulkan")]
+fn with_vulkan_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Box<dyn Error>> {
+    let start = Instant::now();
+    let parser = nknown_neural::vulkan::VulkanParser::load(dir)?;
+    eprintln!(
+        "analyseur chargé sur GPU (Vulkan) [{:.1?}]",
+        start.elapsed()
+    );
+    Ok(pipeline.with_parser(Lang::FRA, Box::new(parser)))
+}
+
+#[cfg(not(feature = "vulkan"))]
+fn with_vulkan_parser(_: Pipeline, _: &str) -> Result<Pipeline, Box<dyn Error>> {
+    Err("compilé sans la fonctionnalité « vulkan »".into())
+}
+
 #[cfg(feature = "neural")]
-fn parser_train(xlmr: &str, train: &str, dev: &str, out: &str, rest: &[&str]) -> Res {
+fn parser_train(vulkan: bool, xlmr: &str, train: &str, dev: &str, out: &str, rest: &[&str]) -> Res {
     let mut opts = nknown_neural::TrainOptions::default();
     if let Some(p) = rest.first() {
         opts.epochs = p
@@ -198,20 +227,49 @@ fn parser_train(xlmr: &str, train: &str, dev: &str, out: &str, rest: &[&str]) ->
                 .map_err(|_| format!("nombre de pas invalide : {m}"))?,
         );
     }
-    let best = nknown_neural::train(
-        std::path::Path::new(xlmr),
-        &read_corpus(train)?,
-        &read_corpus(dev)?,
-        std::path::Path::new(out),
-        &opts,
-        |line| eprintln!("{line}"),
-    )?;
+    let (xlmr, out) = (std::path::Path::new(xlmr), std::path::Path::new(out));
+    let (train, dev) = (read_corpus(train)?, read_corpus(dev)?);
+    let log = |line: &str| eprintln!("{line}");
+    let best = if vulkan {
+        train_vulkan(xlmr, &train, &dev, out, &opts)?
+    } else {
+        nknown_neural::train(xlmr, &train, &dev, out, &opts, log)?
+    };
     eprintln!("meilleur sur dev : {best:?}");
     Ok(())
 }
 
+#[cfg(feature = "vulkan")]
+fn train_vulkan(
+    xlmr: &std::path::Path,
+    train: &[conllu::GoldSentence],
+    dev: &[conllu::GoldSentence],
+    out: &std::path::Path,
+    opts: &nknown_neural::TrainOptions,
+) -> Result<nknown_neural::train::DevScores, Box<dyn Error>> {
+    Ok(nknown_neural::vulkan::train(
+        xlmr,
+        train,
+        dev,
+        out,
+        opts,
+        |l| eprintln!("{l}"),
+    )?)
+}
+
+#[cfg(all(feature = "neural", not(feature = "vulkan")))]
+fn train_vulkan(
+    _: &std::path::Path,
+    _: &[conllu::GoldSentence],
+    _: &[conllu::GoldSentence],
+    _: &std::path::Path,
+    _: &nknown_neural::TrainOptions,
+) -> Result<nknown_neural::train::DevScores, Box<dyn Error>> {
+    Err("compilé sans la fonctionnalité « vulkan »".into())
+}
+
 #[cfg(not(feature = "neural"))]
-fn parser_train(_: &str, _: &str, _: &str, _: &str, _: &[&str]) -> Res {
+fn parser_train(_: bool, _: &str, _: &str, _: &str, _: &str, _: &[&str]) -> Res {
     Err("compilé sans la fonctionnalité « neural » (couche 3)".into())
 }
 

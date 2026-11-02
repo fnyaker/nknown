@@ -165,8 +165,8 @@ impl XlmrEncoder {
         let (b, t) = input_ids.dims2()?;
         let device = input_ids.device();
         // Positions RoBERTa : pad_id + 1 + rang pour les vrais tokens, pad_id pour le remplissage.
-        let mask = attention_mask.to_vec2::<u32>()?;
-        let positions: Vec<u32> = mask
+        let positions: Vec<u32> = attention_mask
+            .to_vec2::<u32>()?
             .iter()
             .flat_map(|row| {
                 row.iter().enumerate().map(|(i, &m)| {

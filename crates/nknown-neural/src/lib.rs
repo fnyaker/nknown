@@ -19,6 +19,8 @@ pub mod model;
 pub mod mst;
 pub mod parser;
 pub mod train;
+#[cfg(feature = "vulkan")]
+pub mod vulkan;
 
 pub use config::ParserConfig;
 pub use error::Error;

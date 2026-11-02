@@ -4,16 +4,14 @@ use std::path::Path;
 
 use candle_core::{D, DType, Device, Tensor};
 use candle_nn::{VarBuilder, ops};
-use nknown_core::analyze::{Feats, Pos};
 use nknown_core::lang::Lang;
 use nknown_nlp::{ParsedSentence, SentenceParser};
 use tokenizers::Tokenizer;
 
 use crate::config::ParserConfig;
-use crate::data::{self, Batch, Encoded, GENDERS, NUMBERS};
+use crate::data::{self, Batch, Encoded};
 use crate::error::Result;
 use crate::model::{ParserModel, Scores};
-use crate::mst;
 
 pub struct NeuralParser {
     model: ParserModel,
@@ -116,59 +114,27 @@ pub(crate) fn decode(
     let gender = s.gender.argmax(D::Minus1)?.to_vec2::<u32>()?;
     let number = s.number.argmax(D::Minus1)?.to_vec2::<u32>()?;
     let arcs = ops::log_softmax(&s.arcs, D::Minus1)?.to_vec3::<f32>()?;
+    let trees = data::decode_trees(&arcs, &batch.lengths);
 
     let width = batch.width;
-    let mut trees = Vec::with_capacity(batch.lengths.len());
     let mut head_ids = vec![0u32; batch.lengths.len() * width];
-    for (b, &n) in batch.lengths.iter().enumerate() {
-        let matrix: Vec<Vec<f32>> = (0..=n)
-            .map(|d| {
-                (0..=n)
-                    .map(|h| {
-                        if h == d {
-                            f32::NEG_INFINITY
-                        } else {
-                            arcs[b][d][h]
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-        let tree = mst::decode(&matrix);
-        for d in 1..=n {
-            head_ids[b * width + d] = tree[d] as u32;
+    for (b, tree) in trees.iter().enumerate() {
+        for (d, &h) in tree.iter().enumerate().skip(1) {
+            head_ids[b * width + d] = h as u32;
         }
-        trees.push(tree);
     }
     let heads = Tensor::from_vec(head_ids, (batch.lengths.len(), width), s.arcs.device())?;
     let labels = model
         .labels(s, &heads)?
         .argmax(D::Minus1)?
         .to_vec2::<u32>()?;
-
-    Ok(batch
-        .lengths
-        .iter()
-        .enumerate()
-        .map(|(b, &n)| {
-            let words = 1..=n;
-            ParsedSentence {
-                upos: words
-                    .clone()
-                    .map(|d| Pos::ALL[upos[b][d] as usize])
-                    .collect(),
-                feats: words
-                    .clone()
-                    .map(|d| Feats {
-                        gender: GENDERS[gender[b][d] as usize],
-                        number: NUMBERS[number[b][d] as usize],
-                    })
-                    .collect(),
-                heads: words.clone().map(|d| trees[b][d].checked_sub(1)).collect(),
-                deprels: words
-                    .map(|d| deprels[labels[b][d] as usize].clone())
-                    .collect(),
-            }
-        })
-        .collect())
+    Ok(data::assemble(
+        &batch.lengths,
+        &upos,
+        &gender,
+        &number,
+        &trees,
+        &labels,
+        deprels,
+    ))
 }

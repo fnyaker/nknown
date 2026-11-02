@@ -292,12 +292,20 @@ fn evaluate(
 ) -> Result<DevScores> {
     let inputs: Vec<Vec<&str>> = gold.iter().map(|s| s.words()).collect();
     let parsed = parser::parse_with(model, tokenizer, cfg, device, &inputs, 32)?;
+    Ok(score(gold, &parsed))
+}
+
+/// Scores UPOS, UAS et LAS d'analyses face à la référence.
+pub(crate) fn score(
+    gold: &[GoldSentence],
+    parsed: &[Option<nknown_nlp::ParsedSentence>],
+) -> DevScores {
     let (mut tokens, mut upos, mut deps, mut uas, mut las) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
     for (s, p) in gold.iter().zip(parsed) {
         for (i, t) in s.tokens.iter().enumerate() {
             tokens += 1;
-            let Some(p) = &p else { continue };
+            let Some(p) = p else { continue };
             upos += usize::from(p.upos[i] == t.upos);
             if !t.deprel.is_empty() {
                 deps += 1;
@@ -309,11 +317,11 @@ fn evaluate(
         }
     }
     let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
-    Ok(DevScores {
+    DevScores {
         upos: pct(upos, tokens),
         uas: pct(uas, deps),
         las: pct(las, deps),
-    })
+    }
 }
 
 fn save(
