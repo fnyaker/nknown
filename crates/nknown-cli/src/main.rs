@@ -4,11 +4,13 @@ use std::io::BufReader;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use nknown_core::analyze::Analyzer;
+use nknown_core::analyze::{Analyzer, Pos, Relation};
 use nknown_core::lang::Lang;
 use nknown_core::source::{Source, SourceId};
 use nknown_nlp::import::{ImportStats, lexique, wiktextract};
-use nknown_nlp::{Lexicon, LexiconBuilder, Pipeline};
+use nknown_nlp::{
+    Lexicon, LexiconBuilder, Pipeline, Tagger, TrainingSentence, conllu, eval, tokenize,
+};
 use nknown_sources::LocalFiles;
 
 const USAGE: &str = "\
@@ -18,7 +20,9 @@ usage :
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
                    lexique <Lexique383.tsv>
   nknown lexicon lookup <lexique.lex> <mot>...
-  nknown analyze <lexique.lex> <texte>";
+  nknown analyze <lexique.lex> <texte> [modele.tag]
+  nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
+  nknown tagger eval <lexique.lex> <corpus.conllu> [modele.tag]";
 
 type Res = Result<(), Box<dyn Error>>;
 
@@ -31,7 +35,14 @@ fn main() -> ExitCode {
         ["lexicon", "build", out, sources @ ..] if !sources.is_empty() => {
             lexicon_build(out, sources)
         }
-        ["analyze", lexicon, text] => analyze(lexicon, text),
+        ["analyze", lexicon, text] => analyze(lexicon, text, None),
+        ["analyze", lexicon, text, tagger] => analyze(lexicon, text, Some(tagger)),
+        ["tagger", "train", lexicon, corpus, out] => tagger_train(lexicon, corpus, out, "10"),
+        ["tagger", "train", lexicon, corpus, out, passes] => {
+            tagger_train(lexicon, corpus, out, passes)
+        }
+        ["tagger", "eval", lexicon, corpus] => tagger_eval(lexicon, corpus, None),
+        ["tagger", "eval", lexicon, corpus, tagger] => tagger_eval(lexicon, corpus, Some(tagger)),
         ["lexicon", "lookup", lexicon, words @ ..] if !words.is_empty() => {
             lexicon_lookup(lexicon, words)
         }
@@ -60,12 +71,14 @@ fn ingest(dir: &str, lexicon: Option<&str>) -> Res {
         let item = item?;
         let lang = item.lang_hint.unwrap_or(Lang::FRA);
         let analysis = pipeline.analyze(lang, &item.text);
-        words += analysis.tokens.len();
-        known += analysis
+        let word_tokens = analysis
             .tokens
             .iter()
-            .filter(|t| t.pos != nknown_core::analyze::Pos::X)
-            .count();
+            .filter(|t| tokenize::is_word(&item.text[t.span.clone()]));
+        for t in word_tokens {
+            words += 1;
+            known += usize::from(t.pos != Pos::X);
+        }
         docs += 1;
     }
     println!("{docs} documents, {words} mots, {known} reconnus par le lexique");
@@ -141,11 +154,56 @@ fn lexicon_lookup(path: &str, words: &[&str]) -> Res {
     Ok(())
 }
 
-fn analyze(lexicon: &str, text: &str) -> Res {
-    let pipeline = Pipeline::default().with_lexicon(Lang::FRA, Lexicon::load(lexicon)?);
-    for t in pipeline.analyze(Lang::FRA, text).tokens {
-        let form = &text[t.span.clone()];
-        println!("{form:<16} {:<16} {:?}", t.lemma, t.pos);
+fn pipeline(lexicon: &str, tagger: Option<&str>) -> Result<Pipeline, Box<dyn Error>> {
+    let mut pipeline = Pipeline::default().with_lexicon(Lang::FRA, Lexicon::load(lexicon)?);
+    if let Some(path) = tagger {
+        pipeline = pipeline.with_tagger(Lang::FRA, Tagger::load(path)?);
     }
+    Ok(pipeline)
+}
+
+fn analyze(lexicon: &str, text: &str, tagger: Option<&str>) -> Res {
+    let analysis = pipeline(lexicon, tagger)?.analyze(Lang::FRA, text);
+    let form = |i: usize| &text[analysis.tokens[i].span.clone()];
+    for (i, t) in analysis.tokens.iter().enumerate() {
+        println!("{:<16} {:<16} {:?}", form(i), t.lemma, t.pos);
+    }
+    for &Relation::Qualifies { adj, noun } in &analysis.relations {
+        println!("{} -> qualifie -> {}", form(adj), form(noun));
+    }
+    Ok(())
+}
+
+fn read_corpus(path: &str) -> Result<Vec<conllu::GoldSentence>, Box<dyn Error>> {
+    Ok(conllu::parse(BufReader::new(File::open(path)?))?)
+}
+
+fn tagger_train(lexicon: &str, corpus: &str, out: &str, passes: &str) -> Res {
+    let passes: usize = passes
+        .parse()
+        .map_err(|_| format!("nombre de passes invalide : {passes}"))?;
+    let lexicon = Lexicon::load(lexicon)?;
+    let sentences: Vec<TrainingSentence> = read_corpus(corpus)?
+        .iter()
+        .map(|s| s.to_training())
+        .collect();
+    let start = Instant::now();
+    eprintln!("{} phrases d'entraînement", sentences.len());
+    let tagger = Tagger::train(&sentences, Some(&lexicon), passes, |epoch, acc| {
+        eprintln!(
+            "passe {epoch:>2} : {:.2} % [{:.1?}]",
+            acc * 100.0,
+            start.elapsed()
+        );
+    });
+    tagger.save(out)?;
+    eprintln!("{out} : {} traits", tagger.feature_count());
+    Ok(())
+}
+
+fn tagger_eval(lexicon: &str, corpus: &str, tagger: Option<&str>) -> Res {
+    let pipeline = pipeline(lexicon, tagger)?;
+    let report = eval::evaluate(&pipeline, Lang::FRA, &read_corpus(corpus)?);
+    print!("{report}");
     Ok(())
 }

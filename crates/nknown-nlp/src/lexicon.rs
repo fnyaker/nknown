@@ -329,7 +329,7 @@ impl Lexicon {
 }
 
 /// Clé de recherche : minuscules, apostrophe typographique ramenée à `'`.
-fn normalize(form: &str) -> String {
+pub(crate) fn normalize(form: &str) -> String {
     form.to_lowercase().replace('\u{2019}', "'")
 }
 

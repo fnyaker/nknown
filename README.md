@@ -10,7 +10,7 @@ dans un graphe pondéré interrogeable (`actu paris`, ...).
 |---|---|
 | `nknown-core` | Types et traits partagés : `Source`, `RawItem`, `Analyzer`, `Lang`, `NatureProfile`, dates |
 | `nknown-sources` | Implémentations de sources (fichiers locaux ; RSS, Wikipedia à venir) |
-| `nknown-nlp` | Pipeline NLP en 3 couches : lexique (Wiktextract → `fst`), tagueur, neuronal optionnel (candle) |
+| `nknown-nlp` | Pipeline NLP : lexique (Wiktextract + Lexique → `fst`), tagueur perceptron, rattachement des adjectifs ; neuronal (candle) à venir |
 | `nknown-engine` | Moteur : graphe, index, scoring, au-dessus d'un `Storage` abstrait |
 | `nknown-cli` | Binaire `nknown` |
 
@@ -24,10 +24,25 @@ nknown lexicon build fr.lex \
     wiktextract kaikki.org-dictionary-French.jsonl fr \
     lexique Lexique383.tsv
 nknown lexicon lookup fr.lex été "l'" aujourd'hui
-nknown analyze fr.lex "Les rues calmes de Paris."
+
+# Tagueur (couche 2) entraîné sur UD French-GSD (CC BY-SA 4.0)
+#   https://github.com/UniversalDependencies/UD_French-GSD
+nknown tagger train fr.lex fr_gsd-ud-train.conllu fr.tag
+nknown tagger eval fr.lex fr_gsd-ud-test.conllu fr.tag
+nknown analyze fr.lex "Les rues calmes de Paris." fr.tag
 
 nknown ingest <dossier> [fr.lex]
 ```
 
 Le Wiktionary (CC BY-SA 3.0/4.0) et Lexique 3.83 (CC BY-SA 4.0) sont sous licence à partage
 à l'identique : un lexique compilé en hérite.
+
+## Mesures (UD French-GSD, test)
+
+| | Couche 1 seule | + tagueur |
+|---|---|---|
+| Catégories (UPOS) | 81,0 % (dev) | **97,6 %** |
+| Adjectifs `amod` : rappel / précision | 67,4 % / 86,8 % (dev) | **83,7 % / 87,3 %** |
+
+La précision des adjectifs est sous-estimée : les attributs (« Paris est calme ») ne sont pas
+des `amod` dans UD mais comptent ici comme rattachements.
