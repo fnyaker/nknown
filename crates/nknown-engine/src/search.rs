@@ -65,6 +65,7 @@ pub struct Query {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub passage: NodeId,
+    pub doc_id: NodeId,
     pub score: f64,
     pub text: String,
     pub doc: DocRecord,
@@ -223,6 +224,7 @@ impl<S: Storage> Engine<S> {
             }
             hits.push(Hit {
                 passage: pid,
+                doc_id: NodeId(passage.doc),
                 score,
                 text: passage.text,
                 doc,
@@ -234,6 +236,9 @@ impl<S: Storage> Engine<S> {
             });
         }
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        // Un résultat par document : son meilleur passage.
+        let mut seen = HashSet::new();
+        hits.retain(|h| seen.insert(h.doc_id));
         hits.truncate(limit);
         Ok(hits)
     }

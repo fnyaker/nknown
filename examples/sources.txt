@@ -1,0 +1,8 @@
+# Actualité
+rss:https://www.lemonde.fr/rss/une.xml
+rss:https://www.francetvinfo.fr/titres.rss
+rss:https://www.france24.com/fr/rss
+rss:https://www.20minutes.fr/feeds/rss-paris.xml
+# Référence
+wiki:fr:Paris|Lyon|Seine|Tour Eiffel|Pari sportif
+wiki-search:fr:transports en commun Île-de-France

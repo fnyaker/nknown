@@ -16,7 +16,7 @@ use nknown_sources::LocalFiles;
 const USAGE: &str = "\
 usage :
   nknown ingest <dossier> [lexique.lex]
-  nknown index <base.redb> <lexique.lex> <dossier> [modèle]...
+  nknown index <base.redb> <lexique.lex> <source> [modèle]...
   nknown search <base.redb> <lexique.lex> <requête> [nombre]
   nknown lexicon build <sortie.lex> <ressource>...
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
@@ -27,6 +27,12 @@ usage :
   nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
   nknown parser train [vulkan] <xlm-roberta/> <train.conllu> <dev.conllu> <sortie/> [passes] [pas-max]
 
+  source : <dossier>                      fichiers .txt et .md
+           rss:<url>                       flux RSS / Atom / JSON Feed
+           wiki:<édition>:<Titre>[|<Titre>...]   articles Wikipédia (ex. wiki:fr:Paris|Lyon)
+           wiki-search:<édition>:<requête>      les 10 premiers résultats d'une recherche
+           wiki-cat:<édition>:<Catégorie>       les 50 premiers articles d'une catégorie
+           @<fichier>                      une source par ligne (# = commentaire)
   modèle : fichier .tag (tagueur, couche 2), répertoire d'analyseur (couche 3, CPU)
            ou vulkan:<répertoire> (couche 3 sur GPU)";
 
@@ -36,7 +42,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
-        ["index", base, lexicon, dir, models @ ..] => index(base, lexicon, dir, models),
+        ["index", base, lexicon, spec, models @ ..] => index(base, lexicon, spec, models),
         ["search", base, lexicon, query] => search(base, lexicon, query, "5"),
         ["search", base, lexicon, query, limit] => search(base, lexicon, query, limit),
         ["ingest", dir] => ingest(dir, None),
@@ -332,39 +338,107 @@ fn eval(lexicon: &str, corpus: &str, models: &[&str]) -> Res {
     Ok(())
 }
 
-fn index(base: &str, lexicon: &str, dir: &str, models: &[&str]) -> Res {
+/// Sources désignées par une spécification (voir l'aide).
+fn open_sources(spec: &str) -> Result<Vec<Box<dyn Source>>, Box<dyn Error>> {
+    use nknown_sources::{RssSource, Selection, WikipediaSource};
+    if let Some(path) = spec.strip_prefix('@') {
+        let list = std::fs::read_to_string(path)?;
+        let mut out = Vec::new();
+        for line in list.lines().map(str::trim) {
+            if !line.is_empty() && !line.starts_with('#') {
+                out.extend(open_sources(line)?);
+            }
+        }
+        return Ok(out);
+    }
+    let wiki = |rest: &str| -> Result<(String, String), Box<dyn Error>> {
+        let (edition, arg) = rest
+            .split_once(':')
+            .ok_or_else(|| format!("édition manquante : {spec}"))?;
+        Ok((edition.to_owned(), arg.to_owned()))
+    };
+    let source: Box<dyn Source> = if let Some(url) = spec.strip_prefix("rss:") {
+        Box::new(RssSource::new(url))
+    } else if let Some(rest) = spec.strip_prefix("wiki:") {
+        let (edition, titles) = wiki(rest)?;
+        let titles = titles.split('|').map(|t| t.trim().to_owned()).collect();
+        Box::new(WikipediaSource::new(edition, Selection::Titles(titles)))
+    } else if let Some(rest) = spec.strip_prefix("wiki-search:") {
+        let (edition, query) = wiki(rest)?;
+        Box::new(WikipediaSource::new(
+            edition,
+            Selection::Search { query, limit: 10 },
+        ))
+    } else if let Some(rest) = spec.strip_prefix("wiki-cat:") {
+        let (edition, name) = wiki(rest)?;
+        Box::new(WikipediaSource::new(
+            edition,
+            Selection::Category { name, limit: 50 },
+        ))
+    } else if std::path::Path::new(spec).is_dir() {
+        Box::new(LocalFiles::new(SourceId(format!("files:{spec}")), spec))
+    } else {
+        return Err(format!("source inconnue : {spec}").into());
+    };
+    Ok(vec![source])
+}
+
+fn index(base: &str, lexicon: &str, spec: &str, models: &[&str]) -> Res {
     use nknown_engine::{Document, Engine, Ingested, RedbStorage};
     let start = Instant::now();
     let pipeline = pipeline(lexicon, models)?;
     let mut engine = Engine::new(RedbStorage::open(base)?);
-    let mut source = LocalFiles::new(SourceId("files".into()), dir);
-    let kind = source.kind();
-    let (mut added, mut passages, mut duplicates) = (0usize, 0usize, 0usize);
-    for item in source.fetch(None)? {
-        let item = item?;
-        let lang = item.lang_hint.unwrap_or(Lang::FRA);
-        let analysis = pipeline.analyze(lang, &item.text);
-        match engine.ingest(Document {
-            item: &item,
-            kind,
-            lang,
-            analysis: &analysis,
-        })? {
-            Ingested::Added { passages: p, .. } => {
-                added += 1;
-                passages += p;
+    for mut source in open_sources(spec)? {
+        let (kind, name) = (source.kind(), source.id().0.clone());
+        let (mut added, mut passages, mut duplicates, mut errors) =
+            (0usize, 0usize, 0usize, 0usize);
+        let items = match source.fetch(None) {
+            Ok(items) => items,
+            Err(e) => {
+                eprintln!("{name} : {e}");
+                continue;
             }
-            Ingested::Duplicate(_) => duplicates += 1,
+        };
+        for item in items {
+            let item = match item {
+                Ok(item) => item,
+                Err(e) => {
+                    eprintln!("{name} : {e}");
+                    errors += 1;
+                    continue;
+                }
+            };
+            let lang = item.lang_hint.unwrap_or(Lang::FRA);
+            let analysis = pipeline.analyze(lang, &item.text);
+            match engine.ingest(Document {
+                item: &item,
+                kind,
+                lang,
+                analysis: &analysis,
+            })? {
+                Ingested::Added { passages: p, .. } => {
+                    added += 1;
+                    passages += p;
+                }
+                Ingested::Duplicate(_) => duplicates += 1,
+            }
         }
+        println!(
+            "{name} : {added} ajoutés ({passages} passages), {duplicates} déjà présents{}",
+            if errors > 0 {
+                format!(", {errors} erreurs")
+            } else {
+                String::new()
+            }
+        );
     }
     let stats = engine.stats()?;
     println!(
-        "{added} documents ajoutés ({passages} passages), {duplicates} déjà présents [{:.1?}]",
+        "base : {} documents, {} passages, {} mots indexés [{:.1?}]",
+        stats.docs,
+        stats.passages,
+        stats.indexed_words,
         start.elapsed()
-    );
-    println!(
-        "base : {} documents, {} passages, {} mots indexés",
-        stats.docs, stats.passages, stats.indexed_words
     );
     Ok(())
 }

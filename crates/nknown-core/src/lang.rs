@@ -17,6 +17,50 @@ impl Lang {
         }
     }
 
+    /// Langue d'une étiquette BCP 47 / ISO 639-1 (`fr`, `fr-FR`, `en_US`) ou ISO 639-3 (`fra`).
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        let primary = tag.split(['-', '_']).next()?.to_ascii_lowercase();
+        if primary.len() == 3 {
+            return Self::from_code(&primary);
+        }
+        let code = match primary.as_str() {
+            "fr" => "fra",
+            "en" => "eng",
+            "de" => "deu",
+            "es" => "spa",
+            "it" => "ita",
+            "pt" => "por",
+            "nl" => "nld",
+            "ca" => "cat",
+            "br" => "bre",
+            "eu" => "eus",
+            "oc" => "oci",
+            "pl" => "pol",
+            "ru" => "rus",
+            "uk" => "ukr",
+            "cs" => "ces",
+            "sv" => "swe",
+            "da" => "dan",
+            "no" | "nb" => "nob",
+            "fi" => "fin",
+            "el" => "ell",
+            "tr" => "tur",
+            "ar" => "ara",
+            "he" => "heb",
+            "fa" => "fas",
+            "hi" => "hin",
+            "zh" => "zho",
+            "ja" => "jpn",
+            "ko" => "kor",
+            "vi" => "vie",
+            "id" => "ind",
+            "ro" => "ron",
+            "hu" => "hun",
+            _ => return None,
+        };
+        Self::from_code(code)
+    }
+
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.0).expect("ASCII garanti par la construction")
     }
@@ -44,5 +88,9 @@ mod tests {
         assert_eq!(Lang::from_code("FRA"), None);
         assert_eq!(Lang::from_code("fr"), None);
         assert_eq!(Lang::ENG.to_string(), "eng");
+        assert_eq!(Lang::from_tag("fr-FR"), Some(Lang::FRA));
+        assert_eq!(Lang::from_tag("EN_us"), Some(Lang::ENG));
+        assert_eq!(Lang::from_tag("fra"), Some(Lang::FRA));
+        assert_eq!(Lang::from_tag("xx"), None);
     }
 }

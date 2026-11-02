@@ -310,6 +310,7 @@ mod tests {
             [("calmes".to_string(), "rues".to_string())]
         );
         assert!(hits[1].qualified.is_empty());
+        assert_ne!(hits[0].doc_id, hits[1].doc_id);
     }
 
     #[test]

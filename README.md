@@ -9,7 +9,7 @@ dans un graphe pondéré interrogeable (`actu paris`, ...).
 | Crate | Rôle |
 |---|---|
 | `nknown-core` | Types et traits partagés : `Source`, `RawItem`, `Analyzer`, `Lang`, `NatureProfile`, dates |
-| `nknown-sources` | Implémentations de sources (fichiers locaux ; RSS, Wikipedia à venir) |
+| `nknown-sources` | Sources : fichiers locaux, flux RSS/Atom/JSON Feed, Wikipédia (titres, recherche, catégorie) |
 | `nknown-nlp` | Pipeline NLP : lexique (Wiktextract + Lexique → `fst`), tagueur perceptron, rattachement des adjectifs ; neuronal (candle) à venir |
 | `nknown-engine` | Moteur : graphe (lemmes, passages, documents, qualifications), index BM25, intentions (`actu`, `info`…), stockage redb |
 | `nknown-cli` | Binaire `nknown` |
@@ -40,10 +40,18 @@ Le Wiktionary (CC BY-SA 3.0/4.0) et Lexique 3.83 (CC BY-SA 4.0) sont sous licenc
 ## Base de connaissances
 
 ```sh
-nknown index base.redb data/fr.lex <dossier> data/fr.tag     # ou data/parser-fr (couche 3)
+nknown index base.redb data/fr.lex @examples/sources.txt data/fr.tag   # ou data/parser-fr (couche 3)
+nknown index base.redb data/fr.lex rss:https://www.lemonde.fr/rss/une.xml data/fr.tag
+nknown index base.redb data/fr.lex "wiki:fr:Paris|Lyon" data/fr.tag
+nknown index base.redb data/fr.lex <dossier> data/fr.tag
 nknown search base.redb data/fr.lex "actu paris"
 nknown search base.redb data/fr.lex "paris sportifs"         # bonus si « sportifs » qualifie « paris »
 ```
+
+Sources : `<dossier>`, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:<édition>:<requête>`,
+`wiki-cat:<édition>:<Catégorie>`, `@<fichier>` (une par ligne). Les requêtes HTTP sont espacées
+(1/s pour Wikipédia) et reprises sur 429/503 ; `NKNOWN_USER_AGENT` permet d'y ajouter un contact.
+Un contenu déjà indexé n'est pas réindexé.
 
 Intentions reconnues dans la requête : `actu` (événements récents), `info` (référence),
 `avis`, `tuto`, `perso`. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
