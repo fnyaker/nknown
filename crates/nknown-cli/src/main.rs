@@ -20,9 +20,12 @@ usage :
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
                    lexique <Lexique383.tsv>
   nknown lexicon lookup <lexique.lex> <mot>...
-  nknown analyze <lexique.lex> <texte> [modele.tag]
+  nknown analyze <lexique.lex> <texte> [modèle]...
+  nknown eval <lexique.lex> <corpus.conllu> [modèle]...
   nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
-  nknown tagger eval <lexique.lex> <corpus.conllu> [modele.tag]";
+  nknown parser train <xlm-roberta/> <train.conllu> <dev.conllu> <sortie/> [passes] [pas-max]
+
+  modèle : fichier .tag (tagueur, couche 2) ou répertoire d'analyseur (couche 3)";
 
 type Res = Result<(), Box<dyn Error>>;
 
@@ -35,14 +38,16 @@ fn main() -> ExitCode {
         ["lexicon", "build", out, sources @ ..] if !sources.is_empty() => {
             lexicon_build(out, sources)
         }
-        ["analyze", lexicon, text] => analyze(lexicon, text, None),
-        ["analyze", lexicon, text, tagger] => analyze(lexicon, text, Some(tagger)),
+        ["analyze", lexicon, text, models @ ..] => analyze(lexicon, text, models),
+        ["eval", lexicon, corpus, models @ ..] => eval(lexicon, corpus, models),
+        ["parser", "train", xlmr, train, dev, out, rest @ ..] if rest.len() <= 2 => {
+            parser_train(xlmr, train, dev, out, rest)
+        }
         ["tagger", "train", lexicon, corpus, out] => tagger_train(lexicon, corpus, out, "10"),
         ["tagger", "train", lexicon, corpus, out, passes] => {
             tagger_train(lexicon, corpus, out, passes)
         }
-        ["tagger", "eval", lexicon, corpus] => tagger_eval(lexicon, corpus, None),
-        ["tagger", "eval", lexicon, corpus, tagger] => tagger_eval(lexicon, corpus, Some(tagger)),
+        ["tagger", "eval", lexicon, corpus, models @ ..] => eval(lexicon, corpus, models),
         ["lexicon", "lookup", lexicon, words @ ..] if !words.is_empty() => {
             lexicon_lookup(lexicon, words)
         }
@@ -154,22 +159,78 @@ fn lexicon_lookup(path: &str, words: &[&str]) -> Res {
     Ok(())
 }
 
-fn pipeline(lexicon: &str, tagger: Option<&str>) -> Result<Pipeline, Box<dyn Error>> {
+fn pipeline(lexicon: &str, models: &[&str]) -> Result<Pipeline, Box<dyn Error>> {
     let mut pipeline = Pipeline::default().with_lexicon(Lang::FRA, Lexicon::load(lexicon)?);
-    if let Some(path) = tagger {
-        pipeline = pipeline.with_tagger(Lang::FRA, Tagger::load(path)?);
+    for path in models {
+        if std::path::Path::new(path).is_dir() {
+            pipeline = with_parser(pipeline, path)?;
+        } else {
+            pipeline = pipeline.with_tagger(Lang::FRA, Tagger::load(path)?);
+        }
     }
     Ok(pipeline)
 }
 
-fn analyze(lexicon: &str, text: &str, tagger: Option<&str>) -> Res {
-    let analysis = pipeline(lexicon, tagger)?.analyze(Lang::FRA, text);
+#[cfg(feature = "neural")]
+fn with_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Box<dyn Error>> {
+    let start = Instant::now();
+    let parser = nknown_neural::NeuralParser::load(dir)?;
+    eprintln!("analyseur chargé [{:.1?}]", start.elapsed());
+    Ok(pipeline.with_parser(Lang::FRA, Box::new(parser)))
+}
+
+#[cfg(not(feature = "neural"))]
+fn with_parser(_: Pipeline, _: &str) -> Result<Pipeline, Box<dyn Error>> {
+    Err("compilé sans la fonctionnalité « neural » (couche 3)".into())
+}
+
+#[cfg(feature = "neural")]
+fn parser_train(xlmr: &str, train: &str, dev: &str, out: &str, rest: &[&str]) -> Res {
+    let mut opts = nknown_neural::TrainOptions::default();
+    if let Some(p) = rest.first() {
+        opts.epochs = p
+            .parse()
+            .map_err(|_| format!("nombre de passes invalide : {p}"))?;
+    }
+    if let Some(m) = rest.get(1) {
+        opts.max_steps = Some(
+            m.parse()
+                .map_err(|_| format!("nombre de pas invalide : {m}"))?,
+        );
+    }
+    let best = nknown_neural::train(
+        std::path::Path::new(xlmr),
+        &read_corpus(train)?,
+        &read_corpus(dev)?,
+        std::path::Path::new(out),
+        &opts,
+        |line| eprintln!("{line}"),
+    )?;
+    eprintln!("meilleur sur dev : {best:?}");
+    Ok(())
+}
+
+#[cfg(not(feature = "neural"))]
+fn parser_train(_: &str, _: &str, _: &str, _: &str, _: &[&str]) -> Res {
+    Err("compilé sans la fonctionnalité « neural » (couche 3)".into())
+}
+
+fn analyze(lexicon: &str, text: &str, models: &[&str]) -> Res {
+    let analysis = pipeline(lexicon, models)?.analyze(Lang::FRA, text);
     let form = |i: usize| &text[analysis.tokens[i].span.clone()];
     for (i, t) in analysis.tokens.iter().enumerate() {
         println!("{:<16} {:<16} {:?}", form(i), t.lemma, t.pos);
     }
-    for &Relation::Qualifies { adj, noun } in &analysis.relations {
-        println!("{} -> qualifie -> {}", form(adj), form(noun));
+    for r in &analysis.relations {
+        match r {
+            Relation::Qualifies { adj, noun } => {
+                println!("{} -> qualifie -> {}", form(*adj), form(*noun))
+            }
+            Relation::Dependency { dep, head, label } => {
+                let head = head.map_or("RACINE", form);
+                println!("  {:<14} --{label}--> {head}", form(*dep));
+            }
+        }
     }
     Ok(())
 }
@@ -201,8 +262,8 @@ fn tagger_train(lexicon: &str, corpus: &str, out: &str, passes: &str) -> Res {
     Ok(())
 }
 
-fn tagger_eval(lexicon: &str, corpus: &str, tagger: Option<&str>) -> Res {
-    let pipeline = pipeline(lexicon, tagger)?;
+fn eval(lexicon: &str, corpus: &str, models: &[&str]) -> Res {
+    let pipeline = pipeline(lexicon, models)?;
     let report = eval::evaluate(&pipeline, Lang::FRA, &read_corpus(corpus)?);
     print!("{report}");
     Ok(())

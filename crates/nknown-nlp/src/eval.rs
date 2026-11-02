@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use nknown_core::analyze::Relation;
 use nknown_core::lang::Lang;
 
+use crate::attach::Word;
 use crate::conllu::GoldSentence;
+use crate::lexicon::Lexicon;
 use crate::pipeline::Pipeline;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,12 @@ pub struct Report {
     pub amod_missed: usize,
     /// Rattachements sur des adjectifs non `amod` dans la référence (attributs, erreurs de catégorie).
     pub other_attachments: usize,
+    /// Tokens évalués en dépendances (hors contractions), si l'analyseur en produit.
+    pub deps: usize,
+    /// Bon gouverneur (UAS).
+    pub uas: usize,
+    /// Bon gouverneur et bonne étiquette (LAS).
+    pub las: usize,
 }
 
 fn pct(a: usize, b: usize) -> f64 {
@@ -68,55 +76,101 @@ impl std::fmt::Display for Report {
             self.amod_wrong_head,
             self.amod_missed,
             self.other_attachments
-        )
+        )?;
+        if self.deps > 0 {
+            writeln!(
+                f,
+                "dépendances : UAS {:.2} %, LAS {:.2} % ({} tokens)",
+                pct(self.uas, self.deps),
+                pct(self.las, self.deps),
+                self.deps
+            )?;
+        }
+        Ok(())
     }
 }
 
 pub fn evaluate(pipeline: &Pipeline, lang: Lang, sentences: &[GoldSentence]) -> Report {
     let lexicon = pipeline.lexicon(lang);
     let mut r = Report::default();
-    for s in sentences {
-        let words = s.words();
-        let (annotated, relations) = pipeline.annotate(lang, &words);
-        for ((form, gold), got) in words.iter().zip(&s.tokens).zip(&annotated) {
-            let ok = gold.upos == got.pos;
-            r.tokens += 1;
-            r.correct += usize::from(ok);
-            let mut cats: Vec<_> = lexicon
-                .map(|l| l.lookup(form).map(|e| e.pos).collect())
-                .unwrap_or_default();
-            cats.dedup();
-            cats.sort_by_key(|p| *p as u8);
-            cats.dedup();
-            if cats.is_empty() {
-                r.unknown += 1;
-                r.unknown_correct += usize::from(ok);
-            } else if cats.len() > 1 {
-                r.ambiguous += 1;
-                r.ambiguous_correct += usize::from(ok);
-            }
+    // Par lots, pour que la couche 3 travaille efficacement.
+    for chunk in sentences.chunks(64) {
+        let inputs: Vec<Vec<&str>> = chunk.iter().map(|s| s.words()).collect();
+        let outputs = pipeline.annotate(lang, &inputs);
+        for ((s, words), (annotated, relations)) in chunk.iter().zip(&inputs).zip(outputs) {
+            score_sentence(&mut r, lexicon, s, words, &annotated, &relations);
         }
-
-        let predicted: HashMap<usize, usize> = relations
-            .iter()
-            .map(|&Relation::Qualifies { adj, noun }| (adj, noun))
-            .collect();
-        let gold: HashMap<usize, usize> = s
-            .tokens
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| t.deprel == "amod" || t.deprel.starts_with("amod:"))
-            .filter_map(|(i, t)| Some((i, t.head?)))
-            .collect();
-        r.amod += gold.len();
-        for (adj, head) in &gold {
-            match predicted.get(adj) {
-                Some(n) if n == head => r.amod_correct += 1,
-                Some(_) => r.amod_wrong_head += 1,
-                None => r.amod_missed += 1,
-            }
-        }
-        r.other_attachments += predicted.keys().filter(|a| !gold.contains_key(a)).count();
     }
     r
+}
+
+fn score_sentence(
+    r: &mut Report,
+    lexicon: Option<&Lexicon>,
+    s: &GoldSentence,
+    words: &[&str],
+    annotated: &[Word],
+    relations: &[Relation],
+) {
+    for ((form, gold), got) in words.iter().zip(&s.tokens).zip(annotated) {
+        let ok = gold.upos == got.pos;
+        r.tokens += 1;
+        r.correct += usize::from(ok);
+        let mut cats: Vec<_> = lexicon
+            .map(|l| l.lookup(form).map(|e| e.pos as u8).collect())
+            .unwrap_or_default();
+        cats.sort_unstable();
+        cats.dedup();
+        if cats.is_empty() {
+            r.unknown += 1;
+            r.unknown_correct += usize::from(ok);
+        } else if cats.len() > 1 {
+            r.ambiguous += 1;
+            r.ambiguous_correct += usize::from(ok);
+        }
+    }
+
+    let mut predicted: HashMap<usize, usize> = HashMap::new();
+    let mut deps: HashMap<usize, (Option<usize>, &str)> = HashMap::new();
+    for rel in relations {
+        match rel {
+            Relation::Qualifies { adj, noun } => {
+                predicted.insert(*adj, *noun);
+            }
+            Relation::Dependency { dep, head, label } => {
+                deps.insert(*dep, (*head, label.as_str()));
+            }
+        }
+    }
+    let gold: HashMap<usize, usize> = s
+        .tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.deprel == "amod" || t.deprel.starts_with("amod:"))
+        .filter_map(|(i, t)| Some((i, t.head?)))
+        .collect();
+    r.amod += gold.len();
+    for (adj, head) in &gold {
+        match predicted.get(adj) {
+            Some(n) if n == head => r.amod_correct += 1,
+            Some(_) => r.amod_wrong_head += 1,
+            None => r.amod_missed += 1,
+        }
+    }
+    r.other_attachments += predicted.keys().filter(|a| !gold.contains_key(a)).count();
+
+    if !deps.is_empty() {
+        for (i, t) in s.tokens.iter().enumerate() {
+            if t.deprel.is_empty() {
+                continue; // contraction : pas de dépendance de référence
+            }
+            r.deps += 1;
+            if let Some((head, label)) = deps.get(&i)
+                && *head == t.head
+            {
+                r.uas += 1;
+                r.las += usize::from(*label == t.deprel);
+            }
+        }
+    }
 }

@@ -14,6 +14,12 @@ nknown-core.workspace = true
 nknown-nlp.workspace = true
 nknown-sources.workspace = true
 nknown-engine.workspace = true
+nknown-neural = { workspace = true, optional = true }
+
+[features]
+default = ["neural"]
+# Couche 3 (candle, XLM-R) : dépendances lourdes, désactivable.
+neural = ["dep:nknown-neural"]
 
 [lints]
 workspace = true

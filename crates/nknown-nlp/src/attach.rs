@@ -155,7 +155,10 @@ mod tests {
     fn pairs(words: &[Word]) -> Vec<(usize, usize)> {
         attach(words, &AttachRules::FRENCH)
             .into_iter()
-            .map(|Relation::Qualifies { adj, noun }| (adj, noun))
+            .filter_map(|r| match r {
+                Relation::Qualifies { adj, noun } => Some((adj, noun)),
+                _ => None,
+            })
             .collect()
     }
 

@@ -88,9 +88,34 @@ pub struct Token {
 }
 
 /// Relation entre deux tokens (indices dans [`Analysis::tokens`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Relation {
+    /// Un adjectif qualifie un nom (« rues **calmes** »).
     Qualifies { adj: usize, noun: usize },
+    /// Dépendance syntaxique Universal Dependencies : `dep` dépend de `head`
+    /// (`None` pour la racine de la phrase), avec l'étiquette `label` (`nsubj`, `obj`, `amod`...).
+    Dependency {
+        dep: usize,
+        head: Option<usize>,
+        label: String,
+    },
+}
+
+impl Relation {
+    /// La même relation, indices décalés de `offset` (phrase → document).
+    pub fn shifted(self, offset: usize) -> Relation {
+        match self {
+            Relation::Qualifies { adj, noun } => Relation::Qualifies {
+                adj: adj + offset,
+                noun: noun + offset,
+            },
+            Relation::Dependency { dep, head, label } => Relation::Dependency {
+                dep: dep + offset,
+                head: head.map(|h| h + offset),
+                label,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

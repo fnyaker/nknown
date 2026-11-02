@@ -14,16 +14,31 @@ use nknown_core::lang::Lang;
 
 use crate::attach::{self, AttachRules, Word};
 use crate::lexicon::{LexEntry, Lexicon, normalize};
+use crate::parser::{ParsedSentence, SentenceParser};
 use crate::tagger::Tagger;
 use crate::tokenize;
 
 /// Pipeline multilingue. Une langue sans lexique ni tagueur reste analysable,
 /// en mode dégradé (mots en minuscules, catégorie inconnue).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Pipeline {
     lexicons: HashMap<Lang, Lexicon>,
     taggers: HashMap<Lang, Tagger>,
+    parsers: HashMap<Lang, Box<dyn SentenceParser>>,
 }
+
+impl std::fmt::Debug for Pipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pipeline")
+            .field("lexicons", &self.lexicons.keys().collect::<Vec<_>>())
+            .field("taggers", &self.taggers.keys().collect::<Vec<_>>())
+            .field("parsers", &self.parsers.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+/// Analyse d'une phrase : mots annotés et relations (indices relatifs à la phrase).
+pub type Annotated = (Vec<Word>, Vec<Relation>);
 
 impl Pipeline {
     pub fn with_lexicon(mut self, lang: Lang, lexicon: Lexicon) -> Self {
@@ -36,21 +51,46 @@ impl Pipeline {
         self
     }
 
+    /// Couche 3 : analyseur syntaxique complet. Prioritaire sur le tagueur et les règles
+    /// de rattachement quand il sait analyser la phrase.
+    pub fn with_parser(mut self, lang: Lang, parser: Box<dyn SentenceParser>) -> Self {
+        self.parsers.insert(lang, parser);
+        self
+    }
+
     pub fn lexicon(&self, lang: Lang) -> Option<&Lexicon> {
         self.lexicons.get(&lang)
     }
 
-    /// Analyse une phrase déjà découpée en tokens (indices des relations relatifs à `words`).
-    pub fn annotate(&self, lang: Lang, words: &[&str]) -> (Vec<Word>, Vec<Relation>) {
+    /// Analyse un lot de phrases déjà découpées en tokens.
+    pub fn annotate(&self, lang: Lang, sentences: &[Vec<&str>]) -> Vec<Annotated> {
         let lexicon = self.lexicons.get(&lang);
+        let parsed = match self.parsers.get(&lang) {
+            Some(parser) if parser.supports(lang) => parser.parse(lang, sentences),
+            _ => vec![None; sentences.len()],
+        };
+        sentences
+            .iter()
+            .zip(parsed)
+            .map(|(words, parsed)| match parsed {
+                Some(p) if p.upos.len() == words.len() => from_parse(lexicon, words, &p),
+                _ => self.annotate_without_parser(lang, lexicon, words),
+            })
+            .collect()
+    }
+
+    fn annotate_without_parser(
+        &self,
+        lang: Lang,
+        lexicon: Option<&Lexicon>,
+        words: &[&str],
+    ) -> Annotated {
         let tags = self.taggers.get(&lang).map(|t| t.tag(words, lexicon));
         let annotated: Vec<Word> = words
             .iter()
             .enumerate()
             .map(|(i, &form)| {
-                let entries: Vec<LexEntry<'_>> = lexicon
-                    .map(|l| l.lookup(form).collect())
-                    .unwrap_or_default();
+                let entries = lookup_all(lexicon, form);
                 match &tags {
                     Some(tags) => with_tag(form, &entries, tags[i]),
                     None => without_tag(words, i, &entries),
@@ -62,6 +102,42 @@ impl Pipeline {
             .unwrap_or_default();
         (annotated, relations)
     }
+}
+
+fn lookup_all<'a>(lexicon: Option<&'a Lexicon>, form: &str) -> Vec<LexEntry<'a>> {
+    lexicon
+        .map(|l| l.lookup(form).collect())
+        .unwrap_or_default()
+}
+
+/// Mots et relations à partir de l'analyse de la couche 3 : catégorie et dépendances
+/// de l'analyseur, lemme du lexique, traits de l'analyseur à défaut de ceux du lexique.
+fn from_parse(lexicon: Option<&Lexicon>, words: &[&str], p: &ParsedSentence) -> Annotated {
+    let annotated: Vec<Word> = words
+        .iter()
+        .enumerate()
+        .map(|(i, &form)| {
+            let mut w = with_tag(form, &lookup_all(lexicon, form), p.upos[i]);
+            let predicted = p.feats[i];
+            w.feats.gender = predicted.gender.or(w.feats.gender);
+            w.feats.number = predicted.number.or(w.feats.number);
+            w
+        })
+        .collect();
+    let mut relations = Vec::new();
+    for (i, (&head, label)) in p.heads.iter().zip(&p.deprels).enumerate() {
+        if let Some(noun) = head
+            && (label == "amod" || label.starts_with("amod:"))
+        {
+            relations.push(Relation::Qualifies { adj: i, noun });
+        }
+        relations.push(Relation::Dependency {
+            dep: i,
+            head,
+            label: label.clone(),
+        });
+    }
+    (annotated, relations)
 }
 
 impl Analyzer for Pipeline {
@@ -80,36 +156,37 @@ impl Analyzer for Pipeline {
             }
         }
 
-        let mut analysis = Analysis::default();
+        let mut bounds = Vec::new();
         let mut start = 0;
         while start < spans.len() {
             let end = spans[start..]
                 .iter()
                 .position(|r| tokenize::ends_sentence(&text[r.clone()]))
                 .map_or(spans.len(), |k| start + k + 1);
-            let words: Vec<&str> = spans[start..end].iter().map(|r| &text[r.clone()]).collect();
-            let (annotated, relations) = self.annotate(lang, &words);
+            bounds.push(start..end);
+            start = end;
+        }
+        let sentences: Vec<Vec<&str>> = bounds
+            .iter()
+            .map(|b| spans[b.clone()].iter().map(|r| &text[r.clone()]).collect())
+            .collect();
+
+        let mut analysis = Analysis::default();
+        for (bound, (annotated, relations)) in
+            bounds.into_iter().zip(self.annotate(lang, &sentences))
+        {
             let offset = analysis.tokens.len();
             analysis
                 .tokens
-                .extend(
-                    spans[start..end]
-                        .iter()
-                        .zip(annotated)
-                        .map(|(span, w)| Token {
-                            span: span.clone(),
-                            lemma: w.lemma,
-                            pos: w.pos,
-                            feats: w.feats,
-                        }),
-                );
-            analysis.relations.extend(relations.into_iter().map(
-                |Relation::Qualifies { adj, noun }| Relation::Qualifies {
-                    adj: adj + offset,
-                    noun: noun + offset,
-                },
-            ));
-            start = end;
+                .extend(spans[bound].iter().zip(annotated).map(|(span, w)| Token {
+                    span: span.clone(),
+                    lemma: w.lemma,
+                    pos: w.pos,
+                    feats: w.feats,
+                }));
+            analysis
+                .relations
+                .extend(relations.into_iter().map(|r| r.shifted(offset)));
         }
         analysis
     }

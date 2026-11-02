@@ -12,6 +12,7 @@ nknown-core = { path = "crates/nknown-core" }
 nknown-nlp = { path = "crates/nknown-nlp" }
 nknown-sources = { path = "crates/nknown-sources" }
 nknown-engine = { path = "crates/nknown-engine" }
+nknown-neural = { path = "crates/nknown-neural" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
