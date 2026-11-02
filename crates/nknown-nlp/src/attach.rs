@@ -23,6 +23,12 @@ pub struct AttachRules {
     pub prefer_left: bool,
     /// Lemmes des verbes attributifs.
     pub copulas: &'static [&'static str],
+    /// Noms composés : l'adjectif antéposé qualifie le dernier nom de la suite
+    /// (anglais « red car door » → door), pas le premier.
+    pub compound_head_last: bool,
+    /// L'adjectif s'accorde en genre et nombre (français, russe) ; sinon (anglais),
+    /// les traits ne départagent pas les candidats.
+    pub agreement: bool,
 }
 
 impl AttachRules {
@@ -36,12 +42,16 @@ impl AttachRules {
             "rester",
             "demeurer",
         ],
+        compound_head_last: false,
+        agreement: true,
     };
 
     /// Anglais : adjectif avant le nom (« quiet streets »).
     pub const ENGLISH: AttachRules = AttachRules {
         prefer_left: false,
         copulas: &["be", "become", "seem", "remain", "stay", "look", "appear"],
+        compound_head_last: true,
+        agreement: false,
     };
 
     /// Russe : adjectif généralement avant le nom, accord en genre et nombre ;
@@ -49,6 +59,8 @@ impl AttachRules {
     pub const RUSSIAN: AttachRules = AttachRules {
         prefer_left: false,
         copulas: &["быть", "стать", "являться", "казаться", "оставаться"],
+        compound_head_last: false,
+        agreement: true,
     };
 
     /// Règles de la langue ; aucune pour le chinois (sans accord, la couche 3 s'en charge).
@@ -69,8 +81,11 @@ pub fn attach(words: &[Word], rules: &AttachRules) -> Vec<Relation> {
         if w.pos != Pos::Adj {
             continue;
         }
-        let agrees = |n: usize| agree(w.feats, words[n].feats);
-        let (left, right) = (scan_left(words, i), scan_right(words, i));
+        let agrees = |n: usize| !rules.agreement || agree(w.feats, words[n].feats);
+        let (left, right) = (
+            scan_left(words, i),
+            scan_right(words, i, rules.compound_head_last),
+        );
         let order = if rules.prefer_left {
             [left, right]
         } else {
@@ -109,10 +124,16 @@ fn scan_left(words: &[Word], i: usize) -> Option<usize> {
 }
 
 /// Nom à droite (adjectif antéposé : « un grand homme »).
-fn scan_right(words: &[Word], i: usize) -> Option<usize> {
+fn scan_right(words: &[Word], i: usize, compound_head_last: bool) -> Option<usize> {
     for (j, w) in words.iter().enumerate().skip(i + 1) {
         match w.pos {
-            p if is_noun(p) => return Some(j),
+            p if is_noun(p) => {
+                let mut head = j;
+                while compound_head_last && words.get(head + 1).is_some_and(|n| is_noun(n.pos)) {
+                    head += 1;
+                }
+                return Some(head);
+            }
             Pos::Adv | Pos::Adj => {}
             _ => return None,
         }
