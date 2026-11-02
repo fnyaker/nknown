@@ -65,7 +65,11 @@ configuration et documentation (`target/`, `node_modules/`, `.git/`… ignorés)
 
 Intentions reconnues dans la requête : `actu` (événements récents), `info` (référence),
 `avis`, `tuto`, `perso`, `code` (passages de code), `doc` (prose technique).
-Un identifiant tapé tel quel (`read_to_string`, `HashMap::new`) est cherché exactement. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
+Un identifiant tapé tel quel (`read_to_string`, `HashMap::new`) est cherché exactement.
+Les mots présents dans le titre d'un document pèsent plus, et un titre qui correspond suffit à
+rendre le document candidat (fichier `mst.rs` pour « mst »). Les passages proches sont reliés
+entre documents : une même information reprise par plusieurs sources est regroupée (« aussi »),
+et pour `actu`, un sujet repris par plusieurs sources récentes remonte. Un mot ambigu (« paris ») est cherché sous toutes ses lectures,
 pondérées par leur usage dans la base.
 
 ## Mesures (UD French-GSD, test)

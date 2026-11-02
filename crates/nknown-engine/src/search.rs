@@ -6,6 +6,7 @@
 //!   × couverture (part des mots de la requête trouvés, au carré)
 //!   × bonus de qualification (un adjectif de la requête qualifie un nom de la requête
 //!     dans le passage : « paris dangereux » ≠ « paris … dangereux »)
+//!   × titre (part des mots de la requête présents dans le titre du document)
 //!   × adéquation à l'intention (nature de la source) et fraîcheur, si la requête en a une.
 
 use std::collections::{HashMap, HashSet};
@@ -99,6 +100,8 @@ pub struct Hit {
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
 const QUALIFIED_BONUS: f64 = 1.5;
+/// Score multiplié jusqu'à (1 + TITLE_BOOST) quand tous les mots sont dans le titre.
+const TITLE_BOOST: f64 = 0.6;
 /// Au-delà, deux passages disent la même chose : le moins bien classé est regroupé.
 const DUPLICATE_SIMILARITY: f32 = 0.5;
 /// Emballement : voisins d'autres sources assez proches et assez récents.
@@ -187,6 +190,38 @@ impl<S: Storage> Engine<S> {
             }
         }
 
+        // Documents dont le titre contient un mot de la requête : candidats même si le mot
+        // n'apparaît pas dans leur texte (fichier « mst.rs », article « Seine »). Leur premier
+        // passage les représente, compté comme une occurrence.
+        let mut title_docs: HashMap<u64, DocRecord> = HashMap::new();
+        for (t, rs) in readings.iter().enumerate() {
+            for r in rs {
+                for (key, _) in self.scan(&Edge::prefix(r.id, EdgeKind::InTitle))? {
+                    let Some(doc_id) = Edge::target(&key) else {
+                        continue;
+                    };
+                    let doc = match title_docs.get(&doc_id.0) {
+                        Some(d) => d.clone(),
+                        None => {
+                            let Some(d) = self.doc(doc_id)? else { continue };
+                            title_docs.insert(doc_id.0, d.clone());
+                            d
+                        }
+                    };
+                    if doc.passages == 0 {
+                        continue;
+                    }
+                    let pid = NodeId(doc.first_passage);
+                    // Le titre atteste cette lecture du mot : pas de pondération par l'usage.
+                    let s = r.idf;
+                    let scores = per_passage
+                        .entry(pid)
+                        .or_insert_with(|| vec![0.0; q.terms.len()]);
+                    scores[t] = scores[t].max(s);
+                }
+            }
+        }
+
         // Paires (adjectif, nom) de la requête liées dans un passage.
         let mut qualified: HashMap<NodeId, Vec<(usize, usize)>> = HashMap::new();
         for (a, adj_rs) in readings.iter().enumerate() {
@@ -216,7 +251,7 @@ impl<S: Storage> Engine<S> {
             }
         }
 
-        let mut docs: HashMap<u64, DocRecord> = HashMap::new();
+        let mut docs: HashMap<u64, DocRecord> = title_docs;
         let mut hits = Vec::new();
         for (pid, scores) in per_passage {
             let matched: Vec<usize> = (0..scores.len()).filter(|&t| scores[t] > 0.0).collect();
@@ -239,6 +274,13 @@ impl<S: Storage> Engine<S> {
                     d
                 }
             };
+            // Mots de la requête présents dans le titre du document : le sujet du document,
+            // pas une mention en passant.
+            let in_title = readings
+                .iter()
+                .filter(|rs| rs.iter().any(|r| doc.title_lemmas.contains(&r.id.0)))
+                .count();
+            score *= 1.0 + TITLE_BOOST * in_title as f64 / q.terms.len() as f64;
             if let Some(intent) = &q.intent {
                 if let Some(prefer_code) = intent.prefer_code {
                     score *= if passage.is_code == prefer_code {

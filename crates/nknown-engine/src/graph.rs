@@ -30,6 +30,8 @@ pub enum EdgeKind {
     FromSource = 6,
     /// Passage → lemme qu'il contient (sens inverse de `Occurs`).
     Contains = 7,
+    /// Lemme → document dont le titre le contient.
+    InTitle = 8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

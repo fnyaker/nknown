@@ -139,6 +139,7 @@ mod tests {
                 "A" => Pos::Adj,
                 "V" => Pos::Verb,
                 "P" => Pos::Punct,
+                "X" => Pos::X,
                 _ => Pos::Det,
             };
             if !text.is_empty() {
@@ -692,5 +693,70 @@ mod tests {
         );
         let actu = query(&e, &paris, Some("actu"));
         assert!(actu[0].text.contains("grève"), "avec actu : {actu:#?}");
+    }
+
+    #[test]
+    fn title_words_weigh_more() {
+        let mut e = Engine::new(MemStorage::default());
+        background(&mut e);
+        let ingest_titled =
+            |e: &mut Engine<MemStorage>, src: &str, title: Option<&str>, body: &str| {
+                let (text, analysis) = doc(body, &[]);
+                let title_analysis = title.map(|t| doc(t, &[]).1);
+                let mut item = RawItem::new(SourceId(src.into()), text, NOW);
+                item.title = title.map(|t| t.split('/').next().unwrap_or_default().to_owned());
+                e.ingest(Document {
+                    item: &item,
+                    kind: SourceKind::Web,
+                    lang: Lang::FRA,
+                    analysis: &analysis,
+                    title: title_analysis.as_ref(),
+                })
+                .unwrap();
+            };
+        // Corps aussi pertinents l'un que l'autre ; un seul a « transports » dans son titre.
+        ingest_titled(
+            &mut e,
+            "sans",
+            Some("Urbanisme/N"),
+            "réseau/N bus/N transports/N/transport ville/N",
+        );
+        ingest_titled(
+            &mut e,
+            "avec",
+            Some("Transports/N/transport"),
+            "trafic/N tram/N transports/N/transport quartier/N",
+        );
+        let hits = query(&e, &[("transports", &[(Pos::Noun, "transport")])], None);
+        assert_eq!(hits[0].doc.source, "avec", "{hits:#?}");
+        assert!(hits[0].score > hits[1].score * 1.5);
+    }
+
+    #[test]
+    fn titles_alone_make_candidates() {
+        let mut e = Engine::new(MemStorage::default());
+        let (text, analysis) = doc("fn/X decode/X scores/X tree/X", &[]);
+        let title = doc("mst/X", &[]).1;
+        let mut item = RawItem::new(SourceId("files".into()), text, NOW);
+        item.title = Some("mst".into());
+        let Ingested::Added { doc: id, .. } = e
+            .ingest(Document {
+                item: &item,
+                kind: SourceKind::LocalFile,
+                lang: Lang::FRA,
+                analysis: &analysis,
+                title: Some(&title),
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let hits = query(&e, &[("mst", &[(Pos::X, "mst")])], None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, id);
+        // Le lien titre disparaît avec le document.
+        e.remove(id).unwrap();
+        assert!(query(&e, &[("mst", &[(Pos::X, "mst")])], None).is_empty());
+        assert!(e.scan(b"E").unwrap().is_empty());
     }
 }

@@ -350,6 +350,10 @@ impl<S: Storage> Engine<S> {
                 let id = tx.lemma(d.lang, term_kind(t), &t.lemma)?.0;
                 if !title_lemmas.contains(&id) {
                     title_lemmas.push(id);
+                    tx.put(
+                        Edge::key_of(NodeId(id), EdgeKind::InTitle, doc).to_vec(),
+                        Vec::new(),
+                    );
                 }
             }
         }
@@ -627,6 +631,9 @@ impl<'e, S: Storage> Tx<'e, S> {
                 self.add(schema::meta_key(schema::TOTAL_LEN), -i64::from(p.len))?;
             }
             self.del(schema::id_key(schema::PASSAGE, pid));
+        }
+        for &lemma in &rec.title_lemmas {
+            self.del(Edge::key_of(NodeId(lemma), EdgeKind::InTitle, doc).to_vec());
         }
         self.del(schema::id_key(schema::DOC, doc));
         self.del(schema::hash_key(rec.hash));
