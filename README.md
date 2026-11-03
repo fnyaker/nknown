@@ -2,7 +2,7 @@
 
 Base de connaissances en Rust. Elle collecte des sources (RSS, fichiers, sites, Wikipedia),
 analyse les textes dans toutes les langues et relie mots, sens, passages et documents
-dans un graphe pondéré interrogeable (`actu paris`, ...).
+dans un graphe pondéré interrogeable (`@actu paris`, `@code @new tokenizer`…).
 
 ## Installation
 
@@ -55,7 +55,7 @@ QT_QPA_PLATFORM=offscreen NKNOWN_APP_SNAPSHOT=/tmp/nk NKNOWN_APP_QUERY="ma requ�
 | `nknown-core` | Types et traits partagés : `Source`, `RawItem`, `Analyzer`, `Lang`, `NatureProfile`, dates |
 | `nknown-sources` | Sources : fichiers locaux, flux RSS/Atom/JSON Feed, Wikipédia (titres, recherche, catégorie) |
 | `nknown-nlp` | Segmentation prose / code (blocs imbriqués), analyse du code, pipeline linguistique : lexique (`fst`), tagueur, rattachement des adjectifs |
-| `nknown-engine` | Moteur : graphe (lemmes, passages, documents, qualifications), index BM25, intentions (`actu`, `info`…), stockage redb |
+| `nknown-engine` | Moteur : graphe (lemmes, passages, documents, qualifications), index BM25, modificateurs de requête (`@actu`, `@code`, `@new`…), stockage redb |
 | `nknown-cli` | Binaire `nknown` |
 | `nknown-api` | Types de l'API REST (requêtes, résultats, graphe, évènements de progression), compatibles WASM |
 | `nknown-service` | Façade du cœur : modèles, recherche avec progression, graphe de résultats, collecte, surveillance des dossiers, config XDG |
@@ -97,9 +97,18 @@ nknown index base.redb data/fr.lex @examples/sources.txt data/fr.tag   # ou data
 nknown index base.redb data/fr.lex rss:https://www.lemonde.fr/rss/une.xml data/fr.tag
 nknown index base.redb data/fr.lex "wiki:fr:Paris|Lyon" data/fr.tag
 nknown index base.redb data/fr.lex <dossier> data/fr.tag
-nknown search base.redb data/fr.lex "actu paris"
+nknown search base.redb data/fr.lex "@actu paris"
 nknown search base.redb data/fr.lex "paris sportifs"         # bonus si « sportifs » qualifie « paris »
 ```
+
+Modificateurs de requête, combinables, n'importe où dans la requête :
+
+| Modificateur | Effet |
+|---|---|
+| `@code` / `@doc` | passages de code / prose technique d'abord |
+| `@actu`, `@info`, `@avis`, `@tuto`, `@perso` | type de contenu (l'actualité privilégie le récent) |
+| `@new` (`@récent`) | un peu de priorité aux contenus récents |
+| `@wiki`, `@rss`, `@web`, `@fichiers` | seulement cette famille de sources |
 
 Sources : `<dossier>`, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:<édition>:<requête>`,
 `wiki-cat:<édition>:<Catégorie>`, `web:<url> [pages=<n>] [depth=<n>]` (exploration d'un site, voir

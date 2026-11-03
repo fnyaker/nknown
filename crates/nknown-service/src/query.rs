@@ -3,7 +3,7 @@
 use nknown_core::analyze::{Analysis, Pos};
 use nknown_core::lang::Lang;
 use nknown_engine::schema::TermKind;
-use nknown_engine::{Query, QueryTerm, intent_for};
+use nknown_engine::{Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, modifier_for};
 use nknown_nlp::langid::{self, LangDetector};
 use nknown_nlp::{Pipeline, segment, tokenize};
 
@@ -76,13 +76,18 @@ pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, te
         })
         .unwrap_or_default();
     let mut intent = None;
+    let mut recency = None;
+    let mut kinds: Vec<u8> = Vec::new();
     let mut terms = Vec::new();
     let mut function = Vec::new();
     for chunk in text.split_whitespace() {
-        if intent.is_none()
-            && let Some(i) = intent_for(chunk)
-        {
-            intent = Some(i);
+        // Modificateurs : `@code`, `@new`, `@wiki`… (combinables).
+        if let Some(m) = chunk.strip_prefix('@').and_then(modifier_for) {
+            match m {
+                Modifier::Intent(i) => intent = Some(i),
+                Modifier::Recent => recency = Some(RECENT_HALF_LIFE_DAYS),
+                Modifier::Kinds(k) => kinds.extend(k),
+            }
             continue;
         }
         // Identifiant manifeste (`read_to_string`, `HashMap::new`, `f()`) : on cherche
@@ -160,7 +165,35 @@ pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, te
         let mut keep = function.iter().map(|f| !f);
         terms.retain(|_| keep.next().unwrap_or(true));
     }
-    Query { terms, intent }
+    kinds.sort_unstable();
+    kinds.dedup();
+    Query {
+        terms,
+        intent,
+        recency,
+        kinds,
+    }
+}
+
+/// Nom affiché des modificateurs d'une requête (« code · récent · wiki »).
+pub fn modifiers_label(q: &Query) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(i) = &q.intent {
+        parts.push(i.name);
+    }
+    if q.recency.is_some() {
+        parts.push("récent");
+    }
+    for k in &q.kinds {
+        parts.push(match k {
+            0 => "flux",
+            1 => "wiki",
+            2 => "web",
+            3 => "fichiers",
+            _ => "autres",
+        });
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// Le mot de la requête est un identifiant de code exact (une seule lecture, de code).
@@ -220,10 +253,28 @@ mod tests {
 
     #[test]
     fn identifiers_are_exact_code_terms() {
-        let q = build_query(&Pipeline::default(), "code read_to_string map");
+        let q = build_query(&Pipeline::default(), "@code read_to_string map");
         assert_eq!(q.intent.map(|i| i.name), Some("code"));
         assert!(is_code_term(&q.terms[0]));
         assert!(!is_code_term(&q.terms[1]));
+    }
+
+    #[test]
+    fn modifiers_combine_and_bare_words_stay_words() {
+        let q = build_query(
+            &Pipeline::default(),
+            "@new code postal @wiki @fichiers @inconnu",
+        );
+        assert_eq!(q.recency, Some(RECENT_HALF_LIFE_DAYS));
+        assert_eq!(q.kinds, [1, 3]);
+        assert!(q.intent.is_none());
+        let words: Vec<&str> = q.terms.iter().map(|t| t.text.as_str()).collect();
+        // « code » sans arobase est un mot ; un modificateur inconnu aussi.
+        assert_eq!(words, ["code", "postal", "inconnu"]);
+        assert_eq!(
+            modifiers_label(&q).as_deref(),
+            Some("récent · wiki · fichiers")
+        );
     }
 
     #[test]

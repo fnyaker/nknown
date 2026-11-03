@@ -68,11 +68,42 @@ pub struct QueryTerm {
     pub readings: Vec<(Lang, TermKind, String)>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Query {
     pub terms: Vec<QueryTerm>,
     pub intent: Option<Intent>,
+    /// `@new` : un peu de priorité aux contenus récents (demi-vie de base, en jours), sans
+    /// changer le type de contenu cherché.
+    pub recency: Option<f64>,
+    /// Familles de sources retenues (codes de `DocRecord::kind`) ; vide : toutes.
+    pub kinds: Vec<u8>,
 }
+
+/// Modificateurs `@…` de la requête (sans l'arobase).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Modifier {
+    Intent(Intent),
+    /// Priorité aux contenus récents.
+    Recent,
+    /// Seulement ces familles de sources (codes de `DocRecord::kind`).
+    Kinds(Vec<u8>),
+}
+
+/// `code`, `new`, `wiki`… → le modificateur ; `None` si le mot n'en est pas un.
+pub fn modifier_for(word: &str) -> Option<Modifier> {
+    let w = word.to_lowercase();
+    Some(match w.as_str() {
+        "new" | "récent" | "recent" | "neuf" | "frais" => Modifier::Recent,
+        "rss" | "flux" | "feed" => Modifier::Kinds(vec![0]),
+        "wiki" | "wikipedia" | "wikipédia" => Modifier::Kinds(vec![1]),
+        "web" | "site" | "sites" => Modifier::Kinds(vec![2]),
+        "fichier" | "fichiers" | "file" | "files" => Modifier::Kinds(vec![3]),
+        _ => Modifier::Intent(intent_for(&w)?),
+    })
+}
+
+/// Demi-vie de base de `@new`, en jours (allongée selon l'âge des candidats).
+pub const RECENT_HALF_LIFE_DAYS: f64 = 14.0;
 
 /// Document voisin d'un résultat (passage similaire dans un autre document).
 #[derive(Debug, Clone, PartialEq)]
@@ -421,6 +452,9 @@ impl<S: Storage> Engine<S> {
                     d
                 }
             };
+            if !q.kinds.is_empty() && !q.kinds.contains(&doc.kind) {
+                continue;
+            }
             // Mots de la requête présents dans le titre : le sujet du document.
             let in_title = readings
                 .iter()
@@ -459,6 +493,7 @@ impl<S: Storage> Engine<S> {
             .intent
             .as_ref()
             .and_then(|i| i.half_life_days)
+            .or(q.recency)
             .map(|base| {
                 let mut best: Vec<&Candidate> = cands.iter().collect();
                 best.sort_by(|a, b| b.text.total_cmp(&a.text));
@@ -491,13 +526,23 @@ impl<S: Storage> Engine<S> {
                         0.6
                     };
                 }
-                if let Some(hl) = half_life {
-                    let mut fresh = 0.5f64.powf(age_days(now, c.doc.date) / hl);
-                    if c.doc.date_confidence == 2 {
-                        fresh *= 0.8; // date de collecte seulement : fraîcheur incertaine
-                    }
-                    parts.freshness = 0.2 + 0.8 * fresh;
+            }
+            if let Some(hl) = half_life {
+                let mut fresh = 0.5f64.powf(age_days(now, c.doc.date) / hl);
+                if c.doc.date_confidence == 2 {
+                    fresh *= 0.8; // date de collecte seulement : fraîcheur incertaine
                 }
+                // L'intention qui porte une date (actu) tranche ; `@new` ne fait que pencher.
+                let floor = if q
+                    .intent
+                    .as_ref()
+                    .is_some_and(|i| i.half_life_days.is_some())
+                {
+                    0.2
+                } else {
+                    0.5
+                };
+                parts.freshness = floor + (1.0 - floor) * fresh;
             }
             hits.push(Hit {
                 passage: c.pid,

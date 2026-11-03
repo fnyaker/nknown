@@ -19,6 +19,34 @@ Item {
 
     function focusInput() { input.forceActiveFocus() }
 
+    /// Modificateurs `@…` proposés à la frappe.
+    readonly property var modifiers: [
+        { key: "code", hint: "code d'abord" },
+        { key: "doc", hint: "prose technique" },
+        { key: "new", hint: "récent d'abord" },
+        { key: "actu", hint: "actualité" },
+        { key: "tuto", hint: "tutoriels" },
+        { key: "info", hint: "définitions" },
+        { key: "wiki", hint: "Wikipédia" },
+        { key: "rss", hint: "flux" },
+        { key: "web", hint: "sites" },
+        { key: "fichiers", hint: "fichiers" }
+    ]
+    /// Mot en cours de frappe s'il commence par « @ » (sans l'arobase), sinon null.
+    readonly property var partial: {
+        const before = input.text.slice(0, input.cursorPosition)
+        const m = before.match(/(^|\s)@([^\s@]*)$/)
+        return m ? m[2].toLowerCase() : null
+    }
+    readonly property var suggestions: partial === null ? []
+        : modifiers.filter(m => m.key.startsWith(partial) && m.key !== partial)
+    function complete(key) {
+        const pos = input.cursorPosition
+        const before = input.text.slice(0, pos).replace(/@[^\s@]*$/, "@" + key + " ")
+        input.text = before + input.text.slice(pos).replace(/^\s+/, "")
+        input.cursorPosition = before.length
+    }
+
     TextField {
         id: input
         anchors.left: parent.left
@@ -40,6 +68,11 @@ Item {
         focus: true
         Behavior on font.pixelSize { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
         onAccepted: if (text.trim().length > 0) root.submitted(text.trim())
+        // Tab : complète le modificateur proposé.
+        Keys.onTabPressed: (e) => {
+            if (root.suggestions.length > 0) root.complete(root.suggestions[0].key)
+            else e.accepted = false
+        }
         Accessible.name: "Rechercher"
     }
 
@@ -100,6 +133,45 @@ Item {
                         radius: 3
                         color: Qt.alpha(Theme.accent, 0.25)
                     }
+                }
+            }
+        }
+    }
+
+    // Propositions de modificateurs, sous le champ.
+    Row {
+        anchors.top: parent.bottom
+        anchors.topMargin: 10
+        anchors.horizontalCenter: root.compact ? undefined : parent.horizontalCenter
+        anchors.left: root.compact ? parent.left : undefined
+        spacing: 6
+        visible: input.activeFocus && root.suggestions.length > 0
+        z: 5
+        Repeater {
+            model: root.suggestions
+            Rectangle {
+                required property var modelData
+                required property int index
+                height: 26
+                width: chip.implicitWidth + 20
+                radius: 13
+                color: area.containsMouse || index === 0 ? Qt.alpha(Theme.accent, 0.2) : Theme.bgRaised
+                border.color: Theme.lineSubtle
+                Text {
+                    id: chip
+                    anchors.centerIn: parent
+                    textFormat: Text.StyledText
+                    text: "<font color='" + Theme.accent + "'>@" + modelData.key + "</font>  "
+                          + "<font color='" + Theme.textSecondary + "'>" + modelData.hint + "</font>"
+                    font.family: Theme.fontUi
+                    font.pixelSize: 11
+                }
+                MouseArea {
+                    id: area
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: { root.complete(modelData.key); input.forceActiveFocus() }
                 }
             }
         }

@@ -350,7 +350,7 @@ impl Service {
                 code: query::is_code_term(t),
             })
             .collect();
-        let intent = q.intent.as_ref().map(|i| i.name.to_owned());
+        let intent = query::modifiers_label(&q);
         on_event(api::SearchEvent::Terms {
             intent: intent.clone(),
             terms: terms.clone(),

@@ -21,7 +21,8 @@ pub use graph::{Edge, EdgeKind, NodeId, NodeKind};
 pub use ingest::{Document, Ingested, ItemStatus};
 pub use rank::RankStats;
 pub use search::{
-    Hit, Intent, Query, QueryTerm, Related, ScoreParts, SearchResult, Stage, Thresholds, intent_for,
+    Hit, Intent, Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, Related, ScoreParts,
+    SearchResult, Stage, Thresholds, intent_for, modifier_for,
 };
 pub use storage::{MemStorage, Op, RedbStorage, Storage};
 
@@ -214,6 +215,7 @@ mod tests {
                 })
                 .collect(),
             intent: intent.and_then(intent_for),
+            ..Query::default()
         };
         e.search(&q, NOW, 10).unwrap()
     }
@@ -526,6 +528,7 @@ mod tests {
                 ],
             }],
             intent: intent.and_then(intent_for),
+            ..Query::default()
         };
         e.search(&q, NOW, 10).unwrap()
     }
@@ -798,7 +801,7 @@ mod tests {
                         text: w.into(),
                         readings: vec![(lang, kind, w.into())],
                     }],
-                    intent: None,
+                    ..Query::default()
                 },
                 NOW,
                 5,
@@ -835,6 +838,7 @@ mod tests {
                 })
                 .collect(),
             intent: intent.and_then(intent_for),
+            ..Query::default()
         };
         e.search_explained(&q, NOW, limit).unwrap()
     }
