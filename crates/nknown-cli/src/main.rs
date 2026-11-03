@@ -38,6 +38,8 @@ usage :
            wiki:<édition>:<Titre>[|<Titre>...]   articles Wikipédia (ex. wiki:fr:Paris|Lyon)
            wiki-search:<édition>:<requête>      les 10 premiers résultats d'une recherche
            wiki-cat:<édition>:<Catégorie>       les 50 premiers articles d'une catégorie
+           \"web:<url> [pages=<n>] [depth=<n>]\"  exploration d'un site (robots.txt,
+                                           arrêt devant un captcha)
            @<fichier>                      une source par ligne (# = commentaire)
   modèle : fichier .tag (tagueur, couche 2), répertoire d'analyseur (couche 3, CPU)
            ou vulkan:<répertoire> (couche 3 sur GPU)";

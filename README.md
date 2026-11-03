@@ -102,12 +102,18 @@ nknown search base.redb data/fr.lex "paris sportifs"         # bonus si « sport
 ```
 
 Sources : `<dossier>`, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:<édition>:<requête>`,
-`wiki-cat:<édition>:<Catégorie>`, `@<fichier>` (une par ligne). Les requêtes HTTP sont espacées
+`wiki-cat:<édition>:<Catégorie>`, `web:<url> [pages=<n>] [depth=<n>]` (exploration d'un site, voir
+plus bas), `@<fichier>` (une par ligne). Les requêtes HTTP sont espacées
 (1/s pour Wikipédia) et reprises sur 429/503 ; `NKNOWN_USER_AGENT` permet d'y ajouter un contact.
 La collecte est incrémentale : un contenu inchangé n'est ni retéléchargé (Wikipédia : dates de
 révision par lots de 50) ni réanalysé ; une version modifiée remplace l'ancienne.
 `nknown watch base.redb data/fr.lex @examples/sources.txt 30m data/fr.tag` relance la collecte
 toutes les 30 minutes.
+
+Exploration de site (`web:`) : même hôte, sous le dossier de l'adresse de départ, 200 pages et
+3 niveaux de liens par défaut, HTML seulement. `robots.txt` est respecté (`Crawl-delay` compris),
+une page par seconde au plus. Devant une protection anti-robot (captcha, défi Cloudflare,
+DDoS-Guard, 429…), l'exploration s'arrête et la source passe en échec : rien n'est contourné.
 
 Tout type de contenu : une même page peut mêler prose, blocs de code (Markdown, `<pre>`, ou code
 collé sans balisage, reconnu ligne par ligne), code en ligne (`` `HashMap` ``, `read_to_string()`),

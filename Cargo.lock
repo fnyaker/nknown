@@ -5513,6 +5513,7 @@ dependencies = [
  "nknown-core",
  "serde_json",
  "ureq 3.5.0",
+ "url",
 ]
 
 [[package]]

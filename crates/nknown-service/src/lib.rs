@@ -25,7 +25,7 @@ use nknown_core::analyze::Analyzer;
 use nknown_core::item::RawItem;
 use nknown_core::lang::Lang;
 use nknown_core::nature::Nature;
-use nknown_core::source::{SourceId, SourceKind};
+use nknown_core::source::{SourceError, SourceId, SourceKind};
 use nknown_core::time::Timestamp;
 use nknown_engine::{Document, Engine, Ingested, ItemStatus, NodeId, RedbStorage};
 use nknown_nlp::Pipeline;
@@ -640,6 +640,8 @@ impl Service {
                     api::AddOutcome::Updated => stats.updated += 1,
                     api::AddOutcome::Unchanged => stats.unchanged += 1,
                 },
+                // Protection anti-robot : on s'arrête là (les pages déjà lues restent).
+                Err(e @ SourceError::Blocked(_)) => return Err(Error::Invalid(e.to_string())),
                 Err(e) => {
                     eprintln!("{name} : {e}");
                     stats.errors += 1;

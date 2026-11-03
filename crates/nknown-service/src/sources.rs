@@ -2,13 +2,13 @@
 
 use nknown_api::SourceKind;
 use nknown_core::source::{Source, SourceId};
-use nknown_sources::{LocalFiles, RssSource, Selection, WikipediaSource};
+use nknown_sources::{LocalFiles, RssSource, Selection, WebSource, WikipediaSource};
 
 use crate::Error;
 
 /// Ouvre la source décrite par `spec` :
 /// `<dossier>`, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:<édition>:<requête>`,
-/// `wiki-cat:<édition>:<Catégorie>`.
+/// `wiki-cat:<édition>:<Catégorie>`, `web:<url> [pages=<n>] [depth=<n>]`.
 pub fn open(spec: &str) -> Result<Box<dyn Source>, Error> {
     let wiki = |rest: &str| -> Result<(String, String), Error> {
         let (edition, arg) = rest
@@ -34,6 +34,8 @@ pub fn open(spec: &str) -> Result<Box<dyn Source>, Error> {
             edition,
             Selection::Category { name, limit: 50 },
         ))
+    } else if let Some(rest) = spec.strip_prefix("web:") {
+        Box::new(WebSource::parse(rest).map_err(|e| Error::Invalid(format!("{spec} : {e}")))?)
     } else if std::path::Path::new(spec).is_dir() {
         Box::new(LocalFiles::new(SourceId(format!("files:{spec}")), spec))
     } else {
@@ -47,6 +49,8 @@ pub fn kind_of(spec: &str) -> SourceKind {
         SourceKind::Feed
     } else if spec.starts_with("wiki") {
         SourceKind::Encyclopedia
+    } else if spec.starts_with("web:") {
+        SourceKind::Web
     } else {
         SourceKind::File
     }

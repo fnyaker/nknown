@@ -32,6 +32,8 @@ pub enum SourceError {
     Io(io::Error),
     Parse(String),
     Unavailable(String),
+    /// Protection anti-robot (captcha, défi) : la collecte s'arrête, sans contournement.
+    Blocked(String),
 }
 
 impl fmt::Display for SourceError {
@@ -40,6 +42,9 @@ impl fmt::Display for SourceError {
             SourceError::Io(e) => write!(f, "erreur d'E/S : {e}"),
             SourceError::Parse(m) => write!(f, "contenu invalide : {m}"),
             SourceError::Unavailable(m) => write!(f, "source indisponible : {m}"),
+            SourceError::Blocked(m) => {
+                write!(f, "accès bloqué par une protection anti-robot : {m}")
+            }
         }
     }
 }

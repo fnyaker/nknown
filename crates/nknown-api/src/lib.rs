@@ -349,7 +349,8 @@ pub struct Added {
 /// `POST /sources`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AddSource {
-    /// Dossier, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:…`, `wiki-cat:…`.
+    /// Dossier, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:…`, `wiki-cat:…`,
+    /// `web:<url> [pages=<n>] [depth=<n>]`.
     pub spec: String,
 }
 

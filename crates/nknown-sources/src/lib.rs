@@ -1,12 +1,14 @@
 //! Implémentations du trait [`Source`](nknown_core::source::Source) :
-//! fichiers locaux, flux RSS/Atom, Wikipédia.
+//! fichiers locaux, flux RSS/Atom, Wikipédia, sites web.
 
 pub mod files;
 pub mod html;
 pub mod http;
 pub mod rss;
+pub mod web;
 pub mod wikipedia;
 
 pub use files::LocalFiles;
 pub use rss::RssSource;
+pub use web::WebSource;
 pub use wikipedia::{Selection, WikipediaSource};

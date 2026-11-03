@@ -4,6 +4,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nknown_core::source::SourceError;
+use nknown_core::time::Timestamp;
+
+/// Réponse brute d'une page web, quel que soit son statut (pour l'exploration de sites).
+#[derive(Debug, Clone)]
+pub struct Page {
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
+    /// En-tête `cf-mitigated: challenge` : Cloudflare demande une vérification humaine.
+    pub challenge_header: bool,
+    pub last_modified: Option<Timestamp>,
+}
 
 /// Identification envoyée aux serveurs (Wikimedia l'exige descriptive).
 /// Remplaçable par la variable d'environnement `NKNOWN_USER_AGENT`, par exemple pour
@@ -94,10 +106,62 @@ impl Http {
         unreachable!("la boucle renvoie toujours")
     }
 
+    /// Une requête, sans reprise, quel que soit le statut : l'appelant juge de la réponse
+    /// (protection anti-robot, page absente…). Corps limité à 8 Mio.
+    pub fn get_page(&self, url: &str) -> Result<Page, SourceError> {
+        let fail = |m: String| SourceError::Unavailable(format!("{url} : {m}"));
+        self.throttle();
+        let mut resp = self
+            .agent
+            .get(url)
+            .header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1")
+            .call()
+            .map_err(|e| fail(e.to_string()))?;
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let content_type = header("content-type")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let challenge_header = header("cf-mitigated").is_some_and(|v| v.contains("challenge"));
+        let last_modified = header("last-modified").and_then(|d| parse_http_date(&d));
+        let status = resp.status().as_u16();
+        let body = resp
+            .body_mut()
+            .with_config()
+            .limit(8 << 20)
+            .read_to_vec()
+            .map_err(|e| fail(e.to_string()))?;
+        Ok(Page {
+            status,
+            content_type,
+            body,
+            challenge_header,
+            last_modified,
+        })
+    }
+
     pub fn get_json(&self, url: &str) -> Result<serde_json::Value, SourceError> {
         serde_json::from_slice(&self.get_bytes(url)?)
             .map_err(|e| SourceError::Parse(format!("{url} : {e}")))
     }
+}
+
+/// Date HTTP (`Sun, 06 Nov 1994 08:49:37 GMT`).
+pub fn parse_http_date(s: &str) -> Option<Timestamp> {
+    let mut it = s.split_whitespace().skip(1);
+    let day: u32 = it.next()?.parse().ok()?;
+    let month = it.next()?;
+    let year: u32 = it.next()?.parse().ok()?;
+    let time = it.next()?;
+    const MONTHS: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let m = MONTHS.iter().position(|n| month.eq_ignore_ascii_case(n))? + 1;
+    Timestamp::parse_rfc3339(&format!("{year:04}-{m:02}-{day:02}T{time}Z"))
 }
 
 /// Encodage d'un composant d'URL (RFC 3986 : tout sauf les caractères non réservés).
@@ -116,6 +180,13 @@ pub fn encode_component(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_http_dates() {
+        let t = parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
+        assert_eq!(t.ymd(), (1994, 11, 6));
+        assert!(parse_http_date("hier").is_none());
+    }
 
     #[test]
     fn encodes_components() {
