@@ -255,8 +255,9 @@ mod tests {
         let (w, h, px) = super::icon(32);
         assert_eq!((w, h, px.len()), (32, 32, 32 * 32 * 4));
         assert_eq!(px[0], 0, "coin transparent");
-        // Sur l'anneau (à droite du centre, à son rayon) : opaque, couleur de la requête.
-        let i = ((16 * 32 + 16 + 7) * 4) as usize;
+        // Sur l'anneau (à droite du centre, sur sa ligne médiane : rayon 7 px moins la moitié de
+        // son épaisseur) : opaque, couleur de la requête.
+        let i = ((16 * 32 + 16 + 5) * 4) as usize;
         assert!(px[i] > 200 && px[i + 1] == 0x7C, "{:?}", &px[i..i + 4]);
     }
 }
