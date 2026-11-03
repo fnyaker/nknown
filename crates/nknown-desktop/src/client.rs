@@ -1,5 +1,5 @@
-//! Moteur de l'app : le démon local (socket Unix, défaut) ou, s'il est arrêté, le cœur embarqué
-//! dans le processus. L'app ne connaît que l'API (`nknown-api`) : les deux se valent.
+//! Moteur de l'app : le démon local (socket Unix), le cœur intégré au processus, ou un serveur
+//! distant (HTTPS, jeton). L'app ne connaît que l'API (`nknown-api`) : les trois se valent.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -10,11 +10,21 @@ use std::time::Duration;
 use nknown_api as api;
 use nknown_service::{Options, Service};
 
+use crate::settings::{Mode, Settings};
+
 pub enum Engine {
     /// `nknownd` : partagé avec les autres clients (KRunner, ligne de commande).
     Daemon(PathBuf),
     /// Cœur dans l'app, quand le démon est désactivé.
     Embedded(Arc<Service>),
+    /// `nknown-server` distant.
+    Remote(Remote),
+}
+
+pub struct Remote {
+    base: String,
+    token: String,
+    agent: ureq::Agent,
 }
 
 impl std::fmt::Debug for Engine {
@@ -22,32 +32,79 @@ impl std::fmt::Debug for Engine {
         match self {
             Self::Daemon(p) => write!(f, "Daemon({})", p.display()),
             Self::Embedded(_) => f.write_str("Embedded"),
+            Self::Remote(r) => write!(f, "Remote({})", r.base),
         }
     }
 }
 
 pub type Result<T> = std::result::Result<T, String>;
 
-impl Engine {
-    /// Le démon s'il répond, sinon le cœur embarqué (qui télécharge ses modèles au besoin et
-    /// collecte les sources comme le ferait le démon).
-    pub fn connect() -> Result<Self> {
-        let socket = nknown_service::config::socket_path();
-        let daemon = Self::Daemon(socket);
-        if daemon.status().is_ok() {
-            return Ok(daemon);
+/// Le démon, démarré par systemd s'il est installé mais arrêté.
+fn daemon_now() -> Option<Engine> {
+    let daemon = Engine::Daemon(nknown_service::config::socket_path());
+    if daemon.status().is_ok() {
+        return Some(daemon);
+    }
+    let started = std::process::Command::new("systemctl")
+        .args(["--user", "start", "nknownd.service"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if started {
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(200));
+            if daemon.status().is_ok() {
+                return Some(daemon);
+            }
         }
-        let service = Service::open(Options::user().map_err(|e| e.to_string())?)
-            .map_err(|e| format!("cœur embarqué : {e}"))?;
-        let service = Arc::new(service);
-        nknown_service::watch::spawn(service.clone());
-        Ok(Self::Embedded(service))
+    }
+    None
+}
+
+fn embedded() -> Result<Engine> {
+    let service = Service::open(Options::user().map_err(|e| e.to_string())?)
+        .map_err(|e| format!("cœur intégré : {e} (le démon utilise-t-il déjà la base ?)"))?;
+    let service = Arc::new(service);
+    nknown_service::watch::spawn(service.clone());
+    Ok(Engine::Embedded(service))
+}
+
+impl Engine {
+    /// Le moteur choisi dans les réglages ; en automatique, le démon (démarré au besoin), sinon
+    /// le cœur intégré (qui télécharge ses modèles et collecte les sources comme le démon).
+    pub fn connect(settings: &Settings) -> Result<Self> {
+        match settings.engine {
+            Mode::Auto => match daemon_now() {
+                Some(d) => Ok(d),
+                None => embedded(),
+            },
+            Mode::Daemon => daemon_now().ok_or_else(|| "démon injoignable".to_owned()),
+            Mode::Embedded => embedded(),
+            Mode::Remote => {
+                let base = settings.remote_url.trim().trim_end_matches('/').to_owned();
+                if !(base.starts_with("https://") || base.starts_with("http://")) {
+                    return Err("adresse du serveur invalide".into());
+                }
+                let token = crate::secrets::token(&base)?;
+                let agent: ureq::Agent = ureq::Agent::config_builder()
+                    .timeout_connect(Some(Duration::from_secs(10)))
+                    .timeout_recv_response(Some(Duration::from_secs(60)))
+                    .http_status_as_error(false)
+                    .build()
+                    .into();
+                let remote = Self::Remote(Remote { base, token, agent });
+                remote.status()?;
+                Ok(remote)
+            }
+        }
     }
 
     pub fn name(&self) -> &'static str {
         match self {
             Self::Daemon(_) => "daemon",
             Self::Embedded(_) => "embedded",
+            Self::Remote(_) => "remote",
         }
     }
 
@@ -58,6 +115,51 @@ impl Engine {
                 serde_json::from_slice(&body).map_err(|e| e.to_string())
             }
             Self::Embedded(s) => s.status().map_err(|e| e.to_string()),
+            Self::Remote(r) => r.json("GET", api::routes::STATUS, None),
+        }
+    }
+
+    pub fn sources(&self) -> Result<Vec<api::SourceView>> {
+        match self {
+            Self::Daemon(socket) => {
+                let body = request(socket, "GET", api::routes::SOURCES, None)?.read_all()?;
+                serde_json::from_slice(&body).map_err(|e| e.to_string())
+            }
+            Self::Embedded(s) => Ok(s.sources()),
+            Self::Remote(r) => r.json("GET", api::routes::SOURCES, None),
+        }
+    }
+
+    /// Ajoute une source (dossier, `rss:…`, `wiki:…`) ; sa première collecte démarre aussitôt.
+    pub fn add_source(&self, spec: &str) -> Result<api::SourceView> {
+        let body = serde_json::to_vec(&api::AddSource {
+            spec: spec.to_owned(),
+        })
+        .map_err(|e| e.to_string())?;
+        match self {
+            Self::Daemon(socket) => {
+                let body =
+                    request(socket, "POST", api::routes::SOURCES, Some(&body))?.read_all()?;
+                serde_json::from_slice(&body).map_err(|e| e.to_string())
+            }
+            Self::Embedded(s) => {
+                let view = s.add_source(spec).map_err(|e| e.to_string())?;
+                let (s, spec) = (s.clone(), view.spec.clone());
+                std::thread::spawn(move || {
+                    let _ = s.collect(&spec);
+                });
+                Ok(view)
+            }
+            Self::Remote(r) => r.json("POST", api::routes::SOURCES, Some(&body)),
+        }
+    }
+
+    pub fn remove_source(&self, id: &str) -> Result<()> {
+        let route = format!("{}/{id}", api::routes::SOURCES);
+        match self {
+            Self::Daemon(socket) => request(socket, "DELETE", &route, None).map(drop),
+            Self::Embedded(s) => s.remove_source(id).map(drop).map_err(|e| e.to_string()),
+            Self::Remote(r) => r.call("DELETE", &route, None).map(drop),
         }
     }
 
@@ -67,28 +169,88 @@ impl Engine {
             query: query.to_owned(),
             limit: 20,
         };
-        match self {
+        let body = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
+        let mut lines: Box<dyn BufRead> = match self {
             Self::Daemon(socket) => {
-                let body = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
-                let mut resp = request(socket, "POST", api::routes::SEARCH, Some(&body))?;
-                let mut line = Vec::new();
-                loop {
-                    line.clear();
-                    if resp.read_line(&mut line)? == 0 {
-                        return Ok(());
-                    }
-                    if line.iter().all(u8::is_ascii_whitespace) {
-                        continue;
-                    }
-                    let event = serde_json::from_slice(&line).map_err(|e| e.to_string())?;
-                    on_event(event);
-                }
+                let resp = request(socket, "POST", api::routes::SEARCH, Some(&body))?;
+                Box::new(BufReader::new(resp))
             }
-            Self::Embedded(s) => s
-                .search(&req, on_event)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
+            Self::Embedded(s) => {
+                return s
+                    .search(&req, on_event)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+            }
+            Self::Remote(r) => Box::new(BufReader::new(r.call(
+                "POST",
+                api::routes::SEARCH,
+                Some(&body),
+            )?)),
+        };
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if lines.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+                return Ok(());
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+            on_event(event);
         }
+    }
+}
+
+impl Remote {
+    /// Requête au serveur : le jeton va dans l'en-tête, jamais dans l'adresse.
+    fn call(&self, method: &str, route: &str, body: Option<&[u8]>) -> Result<Box<dyn Read + Send>> {
+        let url = format!("{}{}{route}", self.base, api::PREFIX);
+        let auth = format!("Bearer {}", self.token);
+        let resp = match (method, body) {
+            ("POST", Some(b)) => self
+                .agent
+                .post(&url)
+                .header("Authorization", &auth)
+                .header("Content-Type", "application/json")
+                .header("Accept", api::NDJSON)
+                .send(b),
+            ("DELETE", _) => self
+                .agent
+                .delete(&url)
+                .header("Authorization", &auth)
+                .call(),
+            _ => self.agent.get(&url).header("Authorization", &auth).call(),
+        }
+        .map_err(|e| format!("serveur : {e}"))?;
+        let code = resp.status().as_u16();
+        let body = resp.into_body().into_reader();
+        if code >= 400 {
+            let mut text = Vec::new();
+            let _ = body.take(64 * 1024).read_to_end(&mut text);
+            let message = serde_json::from_slice::<api::ApiError>(&text)
+                .map(|e| e.error)
+                .unwrap_or_else(|_| format!("HTTP {code}"));
+            return Err(if code == 401 {
+                "jeton refusé par le serveur".into()
+            } else {
+                message
+            });
+        }
+        Ok(Box::new(body))
+    }
+
+    fn json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        route: &str,
+        body: Option<&[u8]>,
+    ) -> Result<T> {
+        let mut out = Vec::new();
+        self.call(method, route, body)?
+            .read_to_end(&mut out)
+            .map_err(|e| e.to_string())?;
+        serde_json::from_slice(&out).map_err(|e| e.to_string())
     }
 }
 
@@ -99,6 +261,12 @@ struct Response {
     /// Octets restants dans le morceau courant.
     left: usize,
     done: bool,
+}
+
+impl Read for Response {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.read_body(buf).map_err(std::io::Error::other)
+    }
 }
 
 impl Response {
@@ -149,20 +317,6 @@ impl Response {
         }
         self.left -= n;
         Ok(n)
-    }
-
-    /// Une ligne du corps (NDJSON), fin de ligne comprise ; 0 à la fin du corps.
-    fn read_line(&mut self, line: &mut Vec<u8>) -> Result<usize> {
-        let mut byte = [0u8; 1];
-        loop {
-            if self.read_body(&mut byte)? == 0 {
-                return Ok(line.len());
-            }
-            line.push(byte[0]);
-            if byte[0] == b'\n' {
-                return Ok(line.len());
-            }
-        }
     }
 }
 

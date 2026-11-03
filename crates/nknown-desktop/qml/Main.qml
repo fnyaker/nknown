@@ -58,7 +58,8 @@ ApplicationWindow {
     }
 
     function back() {
-        if (inspected) inspected = null
+        if (settings.open) settings.open = false
+        else if (inspected) inspected = null
         else if (map.selected !== "") { map.selected = ""; map.updateLit() }
         else if (searching) { searching = false; phase = ""; top.text = ""; top.focusInput() }
     }
@@ -89,6 +90,7 @@ ApplicationWindow {
             }
         }
         onFailed: (message) => { win.error = message; win.phase = "done" }
+        onNotice: (message, isError) => toast.show(message, isError)
         Component.onCompleted: start()
     }
 
@@ -311,6 +313,78 @@ ApplicationWindow {
             }
             HoverHandler { id: dotHover }
         }
+
+        // ------------------------------------------------------------------ réglages
+        // Bouton discret : en bas à droite à l'accueil, en haut à droite pendant une recherche.
+        Rectangle {
+            id: gear
+            width: 36; height: 36; radius: 18
+            x: win.width - width - 18
+            y: win.searching ? 16 : win.height - height - 16
+            Behavior on y { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
+            color: gearHover.hovered ? Theme.bgHover : "transparent"
+            // Trois curseurs.
+            Repeater {
+                model: [0.3, 0.7, 0.45]
+                Item {
+                    required property real modelData
+                    required property int index
+                    x: 9; y: 11 + index * 7; width: 18; height: 2
+                    Rectangle { anchors.fill: parent; radius: 1; color: Theme.textSecondary; opacity: 0.6 }
+                    Rectangle {
+                        width: 6; height: 6; radius: 3
+                        x: parent.width * modelData - 3; y: -2
+                        color: gearHover.hovered ? Theme.accent : Theme.textSecondary
+                    }
+                }
+            }
+            HoverHandler { id: gearHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: settings.open = !settings.open }
+            Accessible.role: Accessible.Button
+            Accessible.name: "Réglages"
+        }
+
+        Settings {
+            id: settings
+            anchors.fill: parent
+            z: 10
+            state: win.engineState
+            onAddSource: (spec) => backend.addSource(spec)
+            onRemoveSource: (id) => backend.removeSource(id)
+            onSetEngine: (mode, url, token) => backend.setEngine(mode, url, token)
+            onSetDaemonEnabled: (enabled) => backend.setDaemonEnabled(enabled)
+        }
+
+        // Message bref (source ajoutée, réglage appliqué, erreur), en bas au centre.
+        Rectangle {
+            id: toast
+            z: 20
+            property bool isError: false
+            function show(message, error) {
+                toastText.text = message
+                isError = error
+                opacity = 1
+                hide.restart()
+            }
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 56
+            width: toastText.implicitWidth + 32
+            height: 36
+            radius: 18
+            color: Theme.bgOverlay
+            border.color: isError ? Qt.alpha(Theme.danger, 0.6) : Theme.lineSubtle
+            opacity: 0
+            visible: opacity > 0
+            Behavior on opacity { NumberAnimation { duration: Theme.standard } }
+            Text {
+                id: toastText
+                anchors.centerIn: parent
+                color: toast.isError ? Theme.danger : Theme.textPrimary
+                font.pixelSize: 12
+            }
+            Timer { id: hide; interval: 3500; onTriggered: toast.opacity = 0 }
+        }
     }
 
     Component.onCompleted: top.focusInput()
@@ -343,6 +417,8 @@ ApplicationWindow {
             case 2: win.snap("2-recherche"); break
             case 3: if (win.hits.length > 0) win.inspect(map.nodes[win.hits[0].node]); break
             case 4: win.snap("3-inspecteur"); break
+            case 5: win.inspected = null; settings.open = true; break
+            case 6: win.snap("4-reglages"); break
             default: Qt.quit()
             }
         }

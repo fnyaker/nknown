@@ -9,7 +9,7 @@
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use cxx_qt::{CxxQtType, Threading};
@@ -17,6 +17,7 @@ use cxx_qt_lib::QString;
 use nknown_api::{self as api, Graph};
 
 use crate::client::Engine;
+use crate::settings::{Mode, Settings};
 use crate::view;
 
 #[cxx_qt::bridge]
@@ -40,6 +41,26 @@ pub mod qobject {
 
         #[qinvokable]
         fn search(self: Pin<&mut Backend>, query: &QString);
+
+        /// Ajoute une source : dossier, adresse de flux, page Wikipédia…
+        #[qinvokable]
+        fn add_source(self: Pin<&mut Backend>, spec: &QString);
+
+        #[qinvokable]
+        fn remove_source(self: Pin<&mut Backend>, id: &QString);
+
+        /// Change de moteur (`auto`, `daemon`, `embedded`, `remote`) ; pour un serveur distant,
+        /// son adresse et, s'il est fourni, son jeton (rangé dans KWallet).
+        #[qinvokable]
+        fn set_engine(self: Pin<&mut Backend>, mode: &QString, url: &QString, token: &QString);
+
+        /// Démarrage du démon avec la session (service systemd utilisateur).
+        #[qinvokable]
+        fn set_daemon_enabled(self: Pin<&mut Backend>, enabled: bool);
+
+        /// Message bref à montrer (source ajoutée, réglage appliqué, erreur).
+        #[qsignal]
+        fn notice(self: Pin<&mut Backend>, message: QString, error: bool);
 
         /// Étape de la recherche en cours : `analyze`, `search`, `graph`, `done`.
         #[qsignal]
@@ -79,8 +100,63 @@ pub struct BackendRust {
     /// Demande de lancement (`--query`, `--select`), la sienne puis celles des lancements
     /// suivants (JSON avec un numéro, pour que deux demandes identiques se distinguent).
     request: QString,
-    engine: Arc<OnceLock<Result<Engine, String>>>,
+    engine: Arc<Slot>,
     generation: Arc<AtomicU64>,
+}
+
+/// Le moteur courant, remplaçable (changement de réglages) : vide pendant une connexion, que
+/// les recherches attendent.
+#[derive(Default)]
+pub struct Slot {
+    current: Mutex<Option<Result<Arc<Engine>, String>>>,
+    ready: Condvar,
+}
+
+impl Slot {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Result<Arc<Engine>, String>>> {
+        self.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn wait(&self) -> Result<Arc<Engine>, String> {
+        let mut g = self.lock();
+        while g.is_none() {
+            g = self
+                .ready
+                .wait(g)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        g.clone()
+            .unwrap_or_else(|| Err("moteur indisponible".into()))
+    }
+
+    fn get(&self) -> Option<Result<Arc<Engine>, String>> {
+        self.lock().clone()
+    }
+
+    /// (Re)connexion selon les réglages, dans un fil à part.
+    fn connect(self: &Arc<Self>) {
+        *self.lock() = None;
+        let slot = self.clone();
+        std::thread::spawn(move || {
+            let engine = Engine::connect(&Settings::load()).map(Arc::new);
+            *slot.lock() = Some(engine);
+            slot.ready.notify_all();
+        });
+    }
+}
+
+/// `systemctl --user <args> nknownd.service` ; sa sortie standard.
+fn systemctl(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .arg("nknownd.service")
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
 impl qobject::Backend {
@@ -103,18 +179,36 @@ impl qobject::Backend {
         });
         let thread = self.qt_thread();
         let engine = self.rust().engine.clone();
+        engine.connect();
         std::thread::Builder::new()
             .name("nknown-moteur".into())
             .spawn(move || {
-                let engine = engine.get_or_init(Engine::connect);
                 loop {
-                    let status = match engine {
-                        Ok(e) => match e.status() {
-                            Ok(s) => serde_json::json!({ "engine": e.name(), "status": s }),
+                    let settings = Settings::load();
+                    // « enabled », « disabled »… ; vide si le service n'est pas installé.
+                    let daemon = systemctl(&["is-enabled"]).unwrap_or_default();
+                    let common = serde_json::json!({
+                        "settings": settings,
+                        "daemon": {
+                            "installed": !daemon.is_empty() && daemon != "not-found",
+                            "enabled": daemon == "enabled",
+                        },
+                    });
+                    let mut status = match engine.get() {
+                        None => serde_json::json!({ "engine": "connecting" }),
+                        Some(Ok(e)) => match e.status() {
+                            Ok(s) => serde_json::json!({
+                                "engine": e.name(),
+                                "status": s,
+                                "sources": e.sources().unwrap_or_default(),
+                            }),
                             Err(err) => serde_json::json!({ "engine": e.name(), "error": err }),
                         },
-                        Err(err) => serde_json::json!({ "engine": "none", "error": err }),
+                        Some(Err(err)) => serde_json::json!({ "engine": "none", "error": err }),
                     };
+                    if let (Some(s), Some(c)) = (status.as_object_mut(), common.as_object()) {
+                        s.extend(c.clone());
+                    }
                     let json = QString::from(&status.to_string());
                     if thread.queue(move |obj| obj.set_status(json)).is_err() {
                         return; // interface fermée
@@ -140,11 +234,14 @@ impl qobject::Backend {
                         let _ = thread.queue(f);
                     }
                 };
-                let Some(Ok(engine)) = engine.get() else {
-                    send(Box::new(|obj| {
-                        obj.failed(QString::from("moteur en démarrage"))
-                    }));
-                    return;
+                // Lancée avec une requête, l'app peut chercher avant d'être connectée : on attend.
+                let engine = match engine.wait() {
+                    Ok(e) => e,
+                    Err(err) => {
+                        let message = QString::from(&err);
+                        send(Box::new(move |obj| obj.failed(message)));
+                        return;
+                    }
                 };
                 let mut graph = Graph::default();
                 let result = engine.search(&query, &mut |event| match event {
@@ -189,6 +286,117 @@ impl qobject::Backend {
     }
 }
 
+impl qobject::Backend {
+    /// Travail bloquant (moteur, systemd, KWallet) hors du fil de Qt, puis un message.
+    fn background(
+        self: Pin<&mut Self>,
+        work: impl FnOnce(&Arc<Slot>) -> Result<String, String> + Send + 'static,
+    ) {
+        let thread = self.qt_thread();
+        let slot = self.rust().engine.clone();
+        std::thread::spawn(move || {
+            let (message, error) = match work(&slot) {
+                Ok(m) => (m, false),
+                Err(e) => (e, true),
+            };
+            if !message.is_empty() {
+                let message = QString::from(&message);
+                let _ = thread.queue(move |obj| obj.notice(message, error));
+            }
+        });
+    }
+
+    fn add_source(self: Pin<&mut Self>, spec: &QString) {
+        let spec = spec.to_string();
+        self.background(move |slot| {
+            let view = slot.wait()?.add_source(&normalize_source(&spec))?;
+            Ok(format!("Source ajoutée : {}", short(&view.spec)))
+        });
+    }
+
+    fn remove_source(self: Pin<&mut Self>, id: &QString) {
+        let id = id.to_string();
+        self.background(move |slot| {
+            slot.wait()?.remove_source(&id)?;
+            Ok("Source retirée (ses documents restent consultables)".into())
+        });
+    }
+
+    fn set_engine(self: Pin<&mut Self>, mode: &QString, url: &QString, token: &QString) {
+        let (mode, url, token) = (mode.to_string(), url.to_string(), token.to_string());
+        self.background(move |slot| {
+            let mut settings = Settings::load();
+            settings.engine = match mode.as_str() {
+                "daemon" => Mode::Daemon,
+                "embedded" => Mode::Embedded,
+                "remote" => Mode::Remote,
+                _ => Mode::Auto,
+            };
+            if settings.engine == Mode::Remote {
+                settings.remote_url = url.trim().trim_end_matches('/').to_owned();
+                if !token.trim().is_empty() {
+                    crate::secrets::store_token(&settings.remote_url, token.trim())?;
+                }
+            }
+            settings.save().map_err(|e| e.to_string())?;
+            slot.connect();
+            Ok(String::new())
+        });
+    }
+
+    fn set_daemon_enabled(self: Pin<&mut Self>, enabled: bool) {
+        self.background(move |slot| {
+            let action = if enabled { "enable" } else { "disable" };
+            let ok = std::process::Command::new("systemctl")
+                .args(["--user", action, "--now", "nknownd.service"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                return Err("le service nknownd n'a pas pu être modifié".into());
+            }
+            // Le moteur suit : démon arrêté → cœur intégré (en automatique), et inversement.
+            slot.connect();
+            Ok(if enabled {
+                "Le démon démarre avec la session".into()
+            } else {
+                "Démon désactivé : l'app utilise son cœur intégré".into()
+            })
+        });
+    }
+}
+
+/// Ce que l'utilisateur colle → spécification de source : un chemin est un dossier, une page
+/// Wikipédia un article, une autre adresse web un flux (RSS, Atom, JSON Feed).
+fn normalize_source(input: &str) -> String {
+    let s = input.trim();
+    let s = s.strip_prefix("file://").unwrap_or(s);
+    if let Some(rest) = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        && let Some((host, path)) = rest.split_once("/wiki/")
+        && let Some(edition) = host.strip_suffix(".wikipedia.org")
+    {
+        return format!("wiki:{edition}:{}", path.replace('_', " "));
+    }
+    if s.starts_with("http://") || s.starts_with("https://") {
+        return format!("rss:{s}");
+    }
+    if let Some(home) = s.strip_prefix("~/") {
+        return format!("{}/{home}", std::env::var("HOME").unwrap_or_default());
+    }
+    s.to_owned()
+}
+
+fn short(spec: &str) -> String {
+    let s = spec
+        .strip_prefix("rss:")
+        .or_else(|| spec.strip_prefix("wiki:"))
+        .unwrap_or(spec);
+    s.chars().take(60).collect()
+}
+
 fn request_json(req: &crate::instance::Request, n: u64) -> QString {
     let json = serde_json::json!({ "n": n, "query": req.query, "select": req.select });
     QString::from(&json.to_string())
@@ -204,4 +412,24 @@ fn phase_name(p: api::Phase) -> &'static str {
 
 fn map_json(graph: &Graph) -> QString {
     QString::from(&serde_json::to_string(&view::map(graph)).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_source;
+
+    #[test]
+    fn pasted_sources() {
+        assert_eq!(normalize_source(" /home/a/notes "), "/home/a/notes");
+        assert_eq!(normalize_source("file:///home/a/notes"), "/home/a/notes");
+        assert_eq!(
+            normalize_source("https://fr.wikipedia.org/wiki/Tour_Eiffel"),
+            "wiki:fr:Tour Eiffel"
+        );
+        assert_eq!(
+            normalize_source("https://example.org/feed.xml"),
+            "rss:https://example.org/feed.xml"
+        );
+        assert_eq!(normalize_source("rss:https://x/y"), "rss:https://x/y");
+    }
 }

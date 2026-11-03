@@ -10,6 +10,7 @@ fn main() {
                 "qml/ResultCard.qml",
                 "qml/Inspector.qml",
                 "qml/KindGlyph.qml",
+                "qml/Settings.qml",
             ])
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true)),
     )

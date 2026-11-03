@@ -6,6 +6,8 @@
 mod bridge;
 mod client;
 mod instance;
+mod secrets;
+mod settings;
 mod view;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
