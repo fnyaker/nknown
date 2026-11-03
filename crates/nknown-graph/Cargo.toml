@@ -1,0 +1,12 @@
+[package]
+name = "nknown-graph"
+description = "Disposition de la carte des résultats de NKnown (app native et interface web)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nknown-api.workspace = true
+
+[lints]
+workspace = true

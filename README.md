@@ -21,6 +21,22 @@ Chaque [release](https://github.com/fnyaker/nknown/releases) fournit aussi : App
 et `SHA256SUMS`. Un seul binaire : `nknown` (ligne de commande), `nknownd` ou `nknown daemon`
 (démon). Paquets construits par `packaging/build.sh`, publiés par la CI à chaque tag `v*`.
 
+## App
+
+![Recherche : la carte des résultats et la liste](docs/captures/recherche.png)
+
+`nknown-app` (Qt6/QML via cxx-qt) : un champ de recherche, puis la carte des chemins qui mènent
+aux résultats, construite en direct, et la liste. Cliquer un nœud ouvre l'inspecteur (ses liens
+par poids) ; cliquer un résultat le met en valeur dans la carte ; Échap revient en arrière.
+Le moteur est le démon local, ou le cœur embarqué si le démon est arrêté. Règles visuelles :
+[`docs/ui-guidelines.md`](docs/ui-guidelines.md).
+
+```sh
+cargo run --release -p nknown-desktop
+# captures hors écran (essais visuels) :
+QT_QPA_PLATFORM=offscreen NKNOWN_APP_SNAPSHOT=/tmp/nk NKNOWN_APP_QUERY="ma requête" nknown-app
+```
+
 ## Crates
 
 | Crate | Rôle |
@@ -33,6 +49,8 @@ et `SHA256SUMS`. Un seul binaire : `nknown` (ligne de commande), `nknownd` ou `n
 | `nknown-api` | Types de l'API REST (requêtes, résultats, graphe, évènements de progression), compatibles WASM |
 | `nknown-service` | Façade du cœur : modèles, recherche avec progression, graphe de résultats, collecte, surveillance des dossiers, config XDG |
 | `nknown-server` | Serveur HTTP (axum) : `nknown-server` (distant, jeton, interface web) et `nknownd` (démon local, socket Unix) |
+| `nknown-graph` | Disposition de la carte des résultats (radiale, déterministe), partagée app / web |
+| `nknown-desktop` | App native Qt6/QML (`nknown-app`) |
 
 Architecture de distribution (app Qt6, démon, serveur Docker, interface web) :
 [`docs/architecture.md`](docs/architecture.md). Charte d'interface :

@@ -1,0 +1,34 @@
+[package]
+name = "nknown-desktop"
+description = "App native de NKnown : Qt6/QML (cxx-qt), intégration KDE Plasma"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nknown-app"
+path = "src/main.rs"
+
+[dependencies]
+nknown-api.workspace = true
+nknown-graph.workspace = true
+nknown-service = { workspace = true, features = ["neural"] }
+cxx = "1"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+cxx-qt-build = "0.10"
+
+# Le pont Rust ↔ Qt (cxx) déclare des blocs `unsafe extern "C++"` : autorisés dans ce seul
+# module (bridge.rs), interdits partout ailleurs.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

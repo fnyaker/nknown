@@ -14,6 +14,7 @@ nknown-sources = { path = "crates/nknown-sources" }
 nknown-engine = { path = "crates/nknown-engine" }
 nknown-neural = { path = "crates/nknown-neural" }
 nknown-api = { path = "crates/nknown-api" }
+nknown-graph = { path = "crates/nknown-graph" }
 nknown-server = { path = "crates/nknown-server" }
 nknown-service = { path = "crates/nknown-service", default-features = false }
 
