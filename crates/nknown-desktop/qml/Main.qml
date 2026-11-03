@@ -387,6 +387,32 @@ ApplicationWindow {
         }
     }
 
+    // ------------------------------------------------------------------ zone de notification
+    // Fermer la fenêtre la range dans la zone (NKnown reste à portée, comme KRunner) ; un clic
+    // sur l'icône la montre ou la cache.
+    function summon() {
+        win.show(); win.raise(); win.requestActivate(); top.focusInput()
+    }
+    Connections {
+        target: backend
+        function onTrayAction(action) {
+            if (action === "quit") win.quit()
+            else if (action === "search") { win.summon(); win.back() }
+            else if (win.visible && win.active) win.hide()
+            else win.summon()
+        }
+    }
+    /// Quitter vraiment : Qt demande d'abord aux fenêtres de se fermer, ce que `onClosing`
+    /// intercepterait pour ranger la fenêtre.
+    property bool quitting: false
+    function quit() { quitting = true; Qt.quit() }
+    onClosing: (close) => {
+        if (backend.trayAvailable && !win.quitting) {
+            close.accepted = false
+            win.hide()
+        }
+    }
+
     Component.onCompleted: top.focusInput()
 
     // ------------------------------------------------------------------ captures pilotées
@@ -417,7 +443,10 @@ ApplicationWindow {
             case 2: win.snap("2-recherche"); break
             case 3: if (win.hits.length > 0) win.inspect(map.nodes[win.hits[0].node]); break
             case 4: win.snap("3-inspecteur"); break
-            case 5: win.inspected = null; settings.open = true; break
+            case 5:
+                win.inspected = null; settings.open = true
+                if (win.auto.source) backend.addSource(win.auto.source)
+                break
             case 6: win.snap("4-reglages"); break
             default: Qt.quit()
             }

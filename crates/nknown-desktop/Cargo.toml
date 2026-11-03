@@ -21,7 +21,7 @@ serde_json = "1"
 toml = "0.9"
 ureq = "3.5"
 # KWallet (jeton du serveur distant), bus de session.
-zbus = { version = "6", default-features = false, features = ["default-rt"] }
+zbus = { version = "6", default-features = false, features = ["default-rt", "service"] }
 
 [dev-dependencies]
 tempfile = "3"

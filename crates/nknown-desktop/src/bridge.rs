@@ -33,6 +33,7 @@ pub mod qobject {
         #[qproperty(QString, status)]
         #[qproperty(QString, automation)]
         #[qproperty(QString, request)]
+        #[qproperty(bool, tray_available, cxx_name = "trayAvailable")]
         type Backend = super::BackendRust;
 
         /// Connexion au moteur et suivi de son état ; à appeler une fois l'interface prête.
@@ -44,19 +45,28 @@ pub mod qobject {
 
         /// Ajoute une source : dossier, adresse de flux, page Wikipédia…
         #[qinvokable]
+        #[cxx_name = "addSource"]
         fn add_source(self: Pin<&mut Backend>, spec: &QString);
 
         #[qinvokable]
+        #[cxx_name = "removeSource"]
         fn remove_source(self: Pin<&mut Backend>, id: &QString);
 
         /// Change de moteur (`auto`, `daemon`, `embedded`, `remote`) ; pour un serveur distant,
         /// son adresse et, s'il est fourni, son jeton (rangé dans KWallet).
         #[qinvokable]
+        #[cxx_name = "setEngine"]
         fn set_engine(self: Pin<&mut Backend>, mode: &QString, url: &QString, token: &QString);
 
         /// Démarrage du démon avec la session (service systemd utilisateur).
         #[qinvokable]
+        #[cxx_name = "setDaemonEnabled"]
         fn set_daemon_enabled(self: Pin<&mut Backend>, enabled: bool);
+
+        /// Action venue de l'icône de la zone de notification : `toggle`, `search`, `quit`.
+        #[qsignal]
+        #[cxx_name = "trayAction"]
+        fn tray_action(self: Pin<&mut Backend>, action: QString);
 
         /// Message bref à montrer (source ajoutée, réglage appliqué, erreur).
         #[qsignal]
@@ -100,6 +110,8 @@ pub struct BackendRust {
     /// Demande de lancement (`--query`, `--select`), la sienne puis celles des lancements
     /// suivants (JSON avec un numéro, pour que deux demandes identiques se distinguent).
     request: QString,
+    /// Une zone de notification accueille l'icône : fermer la fenêtre l'y range.
+    tray_available: bool,
     engine: Arc<Slot>,
     generation: Arc<AtomicU64>,
 }
@@ -163,13 +175,27 @@ impl qobject::Backend {
     fn start(mut self: Pin<&mut Self>) {
         if let Ok(prefix) = std::env::var("NKNOWN_APP_SNAPSHOT") {
             let query = std::env::var("NKNOWN_APP_QUERY").unwrap_or_default();
-            let json = serde_json::json!({ "snapshot": prefix, "query": query });
+            let source = std::env::var("NKNOWN_APP_SOURCE").unwrap_or_default();
+            let json = serde_json::json!({ "snapshot": prefix, "query": query, "source": source });
             self.as_mut()
                 .set_automation(QString::from(&json.to_string()));
         }
         let first = crate::instance::Request::from_args(std::env::args().skip(1));
         if !first.is_empty() {
             self.as_mut().set_request(request_json(&first, 0));
+        }
+        // Pas d'icône pendant les captures pilotées (elles tournent hors écran).
+        if self.automation().is_empty() {
+            let tray_thread = self.qt_thread();
+            let available = crate::tray::spawn(move |action| {
+                let name = QString::from(match action {
+                    crate::tray::Action::Toggle => "toggle",
+                    crate::tray::Action::Search => "search",
+                    crate::tray::Action::Quit => "quit",
+                });
+                let _ = tray_thread.queue(move |obj| obj.tray_action(name));
+            });
+            self.as_mut().set_tray_available(available);
         }
         let forwarded = self.qt_thread();
         let counter = AtomicU64::new(1);
@@ -389,11 +415,22 @@ fn normalize_source(input: &str) -> String {
     s.to_owned()
 }
 
+/// Nom court d'une source pour un message : le dossier, l'hôte du flux, l'article.
 fn short(spec: &str) -> String {
-    let s = spec
-        .strip_prefix("rss:")
-        .or_else(|| spec.strip_prefix("wiki:"))
-        .unwrap_or(spec);
+    let s = if let Some(url) = spec.strip_prefix("rss:") {
+        let host = url.split("://").nth(1).unwrap_or(url);
+        host.split('/')
+            .next()
+            .unwrap_or(host)
+            .trim_start_matches("www.")
+    } else if let Some(wiki) = spec.strip_prefix("wiki:") {
+        wiki.split_once(':').map_or(wiki, |(_, title)| title)
+    } else {
+        spec.trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(spec)
+    };
     s.chars().take(60).collect()
 }
 
@@ -431,5 +468,16 @@ mod tests {
             "rss:https://example.org/feed.xml"
         );
         assert_eq!(normalize_source("rss:https://x/y"), "rss:https://x/y");
+    }
+
+    #[test]
+    fn short_names() {
+        use super::short;
+        assert_eq!(short("/home/a/notes/"), "notes");
+        assert_eq!(
+            short("rss:https://www.lemonde.fr/rss/une.xml"),
+            "lemonde.fr"
+        );
+        assert_eq!(short("wiki:fr:Tour Eiffel"), "Tour Eiffel");
     }
 }
