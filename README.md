@@ -127,6 +127,31 @@ nknown parser train vulkan xlm-roberta-base/ multi-ud-train.conllu multi-ud-dev.
 nknown eval data/ en_ewt-ud-test.conllu vulkan:data/parser-multi   # langue tirée du nom du corpus
 ```
 
+### En 8 bits sur CPU
+
+Sur CPU, l'encodeur est quantifié en Q8_0 (matrices des couches et table des plongements :
+blocs de 32 valeurs, une échelle par bloc ; têtes en f32). Au premier chargement, le modèle f32
+est converti puis enregistré dans `model.q8.gguf` à côté de lui ; ensuite seul ce fichier est lu.
+`f32:<dossier>` garde la pleine précision.
+
+| | f32 | 8 bits |
+|---|---|---|
+| Poids sur disque | 1 120 Mo | 307 Mo |
+| Démon avec l'analyseur (mémoire résidente) | 1 548 Mo | 762 Mo |
+| Pic au chargement | 2 318 Mo | 762 Mo |
+| French-GSD, test complet (CPU, 6 fils) | 16,8 s | 12,3 s |
+
+| LAS | f32 | 8 bits |
+|---|---|---|
+| French-GSD | 92,40 % | 92,41 % |
+| English-EWT | 93,0 % | 92,85 % |
+| Russian-GSD | 90,2 % | 90,20 % |
+| Russian-Taiga | 85,1 % | 85,01 % |
+| Chinese-GSDSimp | 84,7 % | 84,61 % |
+
+Des 762 Mo, ~157 Mo reviennent au démon sans analyseur et ~295 Mo au tokeniseur XLM-R chargé
+par `tokenizers` (son trie de 250 000 sous-mots).
+
 ## Démon local
 
 ```sh
@@ -143,8 +168,8 @@ sources = ["/home/moi/Documents", "rss:https://exemple.org/flux.xml"]
 collect_every = "30m"     # collecte périodique (minimum 1 min)
 watch_files = true        # réindexe les dossiers à chaque modification
 # models = "/chemin/des/modèles"   # défaut : $XDG_DATA_HOME/nknown/models
-# parser = "parser-multi"          # analyseur XLM-R, relatif au dossier des modèles ;
-#                                  # ~1,5 Go de mémoire sur CPU, désactivé par défaut
+# parser = "parser-multi"          # analyseur XLM-R en 8 bits, relatif au dossier des
+#                                  # modèles ; ~600 Mo de plus, désactivé par défaut
 ```
 
 

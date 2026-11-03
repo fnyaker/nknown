@@ -24,5 +24,5 @@ pub mod vulkan;
 
 pub use config::ParserConfig;
 pub use error::Error;
-pub use parser::NeuralParser;
+pub use parser::{NeuralParser, Precision};
 pub use train::{TrainOptions, train};

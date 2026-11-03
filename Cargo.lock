@@ -4719,6 +4719,7 @@ dependencies = [
  "burn",
  "candle-core",
  "candle-nn",
+ "half",
  "nknown-core",
  "nknown-nlp",
  "serde",

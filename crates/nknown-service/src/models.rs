@@ -50,10 +50,10 @@ pub fn load_pipeline(lexicon: &Path, models: &[&str]) -> Result<Pipeline, Error>
 /// Un chemin de modèle relatif (`parser-multi`, `vulkan:parser-multi`) désigne un modèle du
 /// dossier des modèles.
 pub fn resolve(spec: &str, models_dir: &Path) -> String {
-    let (prefix, path) = match spec.strip_prefix("vulkan:") {
-        Some(p) => ("vulkan:", p),
-        None => ("", spec),
-    };
+    let (prefix, path) = ["vulkan:", "f32:"]
+        .into_iter()
+        .find_map(|p| spec.strip_prefix(p).map(|rest| (p, rest)))
+        .unwrap_or(("", spec));
     if Path::new(path).is_absolute() {
         spec.to_owned()
     } else {
@@ -61,12 +61,15 @@ pub fn resolve(spec: &str, models_dir: &Path) -> String {
     }
 }
 
-/// Ajoute un modèle : tagueur (fichier), analyseur CPU (dossier) ou GPU (`vulkan:<dossier>`).
+/// Ajoute un modèle : tagueur (fichier), analyseur CPU en 8 bits (dossier) ou en pleine
+/// précision (`f32:<dossier>`), analyseur GPU (`vulkan:<dossier>`).
 pub fn add_model(pipeline: Pipeline, spec: &str) -> Result<Pipeline, Error> {
     if let Some(dir) = spec.strip_prefix("vulkan:") {
         with_vulkan_parser(pipeline, dir)
+    } else if let Some(dir) = spec.strip_prefix("f32:") {
+        with_parser(pipeline, dir, false)
     } else if Path::new(spec).is_dir() {
-        with_parser(pipeline, spec)
+        with_parser(pipeline, spec, true)
     } else {
         let lang = lang_of(Path::new(spec)).unwrap_or(Lang::FRA);
         Ok(pipeline.with_tagger(lang, Tagger::load(spec)?))
@@ -92,14 +95,20 @@ fn share_parser(
 }
 
 #[cfg(feature = "neural")]
-fn with_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Error> {
-    let parser = nknown_neural::NeuralParser::load(dir).map_err(Error::model)?;
+fn with_parser(pipeline: Pipeline, dir: &str, int8: bool) -> Result<Pipeline, Error> {
+    use nknown_neural::{NeuralParser, Precision};
+    let precision = if int8 {
+        Precision::Int8
+    } else {
+        Precision::F32
+    };
+    let parser = NeuralParser::load_with(dir, precision).map_err(Error::model)?;
     let langs = parser.langs();
     Ok(share_parser(pipeline, langs, std::sync::Arc::new(parser)))
 }
 
 #[cfg(not(feature = "neural"))]
-fn with_parser(_: Pipeline, _: &str) -> Result<Pipeline, Error> {
+fn with_parser(_: Pipeline, _: &str, _: bool) -> Result<Pipeline, Error> {
     Err(Error::Unsupported(
         "analyseur neuronal (fonctionnalité « neural »)",
     ))

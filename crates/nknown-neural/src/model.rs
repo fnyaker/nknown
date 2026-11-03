@@ -12,7 +12,7 @@ use candle_nn::{Init, Linear, VarBuilder, VarMap, linear, ops};
 
 use crate::config::ParserConfig;
 use crate::data::{Batch, GENDERS, N_UPOS, NUMBERS};
-use crate::encoder::XlmrEncoder;
+use crate::encoder::{Quantized, XlmrEncoder};
 use crate::error::Result;
 
 /// Préfixe des poids gelés pendant l'entraînement : la table d'embeddings
@@ -87,6 +87,21 @@ impl ParserModel {
     pub fn new(cfg: &ParserConfig, encoder: VarBuilder, heads: VarBuilder) -> Result<Self> {
         Ok(Self {
             encoder: XlmrEncoder::new(&cfg.encoder_config()?, encoder)?,
+            heads: Heads::new(cfg, heads)?,
+            n_labels: cfg.deprels.len(),
+        })
+    }
+
+    /// Modèle d'inférence dont l'encodeur prend en 8 bits les poids de `quant` ; les têtes,
+    /// petites, restent en f32.
+    pub fn with_quantized(
+        cfg: &ParserConfig,
+        encoder: VarBuilder,
+        heads: VarBuilder,
+        quant: &Quantized,
+    ) -> Result<Self> {
+        Ok(Self {
+            encoder: XlmrEncoder::with_quantized(&cfg.encoder_config()?, encoder, Some(quant))?,
             heads: Heads::new(cfg, heads)?,
             n_labels: cfg.deprels.len(),
         })
