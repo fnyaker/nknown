@@ -26,6 +26,11 @@ zbus = { version = "6", default-features = false, features = ["default-rt", "ser
 [dev-dependencies]
 tempfile = "3"
 
+[features]
+default = []
+# Analyse sur GPU (Vulkan, burn + wgpu).
+vulkan = ["nknown-service/vulkan"]
+
 [build-dependencies]
 cxx-qt-build = "0.10"
 

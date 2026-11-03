@@ -14,11 +14,17 @@ Item {
     signal removeSource(string id)
     signal setEngine(string mode, string url, string token)
     signal setDaemonEnabled(bool enabled)
+    signal setAnalysis(bool parser, string precision, string device)
 
     visible: open || panel.x < width
     readonly property var sources: state.sources || []
     readonly property var settings: state.settings || ({ engine: "auto", remote_url: "" })
     readonly property var daemon: state.daemon || ({ installed: false, enabled: false })
+    readonly property var analysis: state.analysis || null
+    function applyAnalysis(change) {
+        const a = Object.assign({}, root.analysis, change)
+        root.setAnalysis(a.parser, a.precision, a.device)
+    }
 
     // Fond assombri : un clic referme.
     Rectangle {
@@ -168,6 +174,63 @@ Item {
                                                 remote: "serveur distant" })[s.engine] || s.engine
                                 return name + (s.status ? " · " + s.status.docs + " documents" : "")
                             }
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------------ analyse
+                Section {
+                    title: "Analyse"
+                    visible: root.analysis !== null
+                    Row {
+                        width: column.width
+                        Text {
+                            width: parent.width - parserToggle.width
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Analyse syntaxique"
+                            color: Theme.textPrimary
+                            font.pixelSize: 13
+                        }
+                        Toggle {
+                            id: parserToggle
+                            checked: !!root.analysis && root.analysis.parser
+                            onToggled: (on) => root.applyAnalysis({ parser: on })
+                        }
+                    }
+                    Segmented {
+                        visible: !!root.analysis && root.analysis.parser
+                        width: column.width
+                        options: [
+                            { key: "auto", label: "Auto" },
+                            { key: "gpu", label: "GPU" },
+                            { key: "cpu", label: "CPU" }
+                        ]
+                        current: root.analysis ? root.analysis.device : "auto"
+                        onPicked: (key) => root.applyAnalysis({ device: key })
+                    }
+                    Segmented {
+                        visible: !!root.analysis && root.analysis.parser
+                        width: column.width
+                        options: [
+                            { key: "standard", label: "Précise" },
+                            { key: "light", label: "Légère" }
+                        ]
+                        current: root.analysis ? root.analysis.precision : "standard"
+                        onPicked: (key) => root.applyAnalysis({ precision: key })
+                    }
+                    Text {
+                        width: column.width
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.pixelSize: 12
+                        text: {
+                            const s = root.state.status
+                            if (!root.analysis || !root.analysis.parser)
+                                return "Désactivée : indexation plus légère, adjectifs moins bien reliés aux noms."
+                            const where = s && s.parser_device === "gpu" ? "Calcule sur le GPU (Vulkan) : le processeur reste libre."
+                                        : s && s.parser_device === "cpu" ? "Calcule sur le processeur, en priorité basse."
+                                        : "Chargement…"
+                            return where + (root.analysis.precision === "light" ? " Version légère (CPU)." : "")
                         }
                     }
                 }

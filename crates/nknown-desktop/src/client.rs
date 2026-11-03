@@ -163,6 +163,30 @@ impl Engine {
         }
     }
 
+    pub fn settings(&self) -> Result<api::EngineSettings> {
+        match self {
+            Self::Daemon(socket) => {
+                let body = request(socket, "GET", api::routes::SETTINGS, None)?.read_all()?;
+                serde_json::from_slice(&body).map_err(|e| e.to_string())
+            }
+            Self::Embedded(s) => Ok(s.settings()),
+            Self::Remote(r) => r.json("GET", api::routes::SETTINGS, None),
+        }
+    }
+
+    pub fn set_settings(&self, settings: api::EngineSettings) -> Result<api::EngineSettings> {
+        let body = serde_json::to_vec(&settings).map_err(|e| e.to_string())?;
+        match self {
+            Self::Daemon(socket) => {
+                let body =
+                    request(socket, "PUT", api::routes::SETTINGS, Some(&body))?.read_all()?;
+                serde_json::from_slice(&body).map_err(|e| e.to_string())
+            }
+            Self::Embedded(s) => s.update_settings(settings).map_err(|e| e.to_string()),
+            Self::Remote(r) => r.json("PUT", api::routes::SETTINGS, Some(&body)),
+        }
+    }
+
     /// Recherche ; `on_event` reçoit chaque évènement du flux (progression, carte, résultat).
     pub fn search(&self, query: &str, on_event: &mut dyn FnMut(api::SearchEvent)) -> Result<()> {
         let req = api::SearchRequest {
@@ -214,6 +238,12 @@ impl Remote {
                 .header("Authorization", &auth)
                 .header("Content-Type", "application/json")
                 .header("Accept", api::NDJSON)
+                .send(b),
+            ("PUT", Some(b)) => self
+                .agent
+                .put(&url)
+                .header("Authorization", &auth)
+                .header("Content-Type", "application/json")
                 .send(b),
             ("DELETE", _) => self
                 .agent

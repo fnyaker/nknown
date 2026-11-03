@@ -353,6 +353,7 @@ ApplicationWindow {
             onRemoveSource: (id) => backend.removeSource(id)
             onSetEngine: (mode, url, token) => backend.setEngine(mode, url, token)
             onSetDaemonEnabled: (enabled) => backend.setDaemonEnabled(enabled)
+            onSetAnalysis: (parser, precision, device) => backend.setAnalysis(parser, precision, device)
         }
 
         // Message bref (source ajoutée, réglage appliqué, erreur), en bas au centre.

@@ -73,27 +73,41 @@ enum Bits {
 /// Ajoute un modèle : tagueur (fichier), analyseur GPU (`vulkan:<dossier>`) ou CPU (dossier :
 /// précision standard ; `light:<dossier>` : allégé ; `f32:<dossier>` : pleine précision).
 pub fn add_model(pipeline: Pipeline, spec: &str) -> Result<Pipeline, Error> {
-    if let Some(dir) = spec.strip_prefix("vulkan:") {
-        with_vulkan_parser(pipeline, dir)
-    } else if let Some(dir) = spec.strip_prefix("f32:") {
-        with_parser(pipeline, dir, Bits::F32)
-    } else if let Some(dir) = spec.strip_prefix("light:") {
-        with_parser(pipeline, dir, Bits::Light)
-    } else if Path::new(spec).is_dir() {
-        with_parser(pipeline, spec, Bits::Standard)
+    if is_parser_spec(spec) {
+        let (parser, langs) = load_parser(spec)?;
+        Ok(share_parser(pipeline, langs, parser))
     } else {
         let lang = lang_of(Path::new(spec)).unwrap_or(Lang::FRA);
         Ok(pipeline.with_tagger(lang, Tagger::load(spec)?))
     }
 }
 
+fn is_parser_spec(spec: &str) -> bool {
+    ["vulkan:", "f32:", "light:"]
+        .iter()
+        .any(|p| spec.starts_with(p))
+        || Path::new(spec).is_dir()
+}
+
+/// Analyseur partagé entre ses langues.
+pub type Parser = std::sync::Arc<dyn nknown_nlp::SentenceParser>;
+
+/// Charge un analyseur sans toucher au pipeline : en cas d'échec (pas de GPU…), le pipeline
+/// reste intact et l'on peut essayer une autre spécification.
+pub fn load_parser(spec: &str) -> Result<(Parser, Vec<Lang>), Error> {
+    if let Some(dir) = spec.strip_prefix("vulkan:") {
+        vulkan_parser(dir)
+    } else if let Some(dir) = spec.strip_prefix("f32:") {
+        cpu_parser(dir, Bits::F32)
+    } else if let Some(dir) = spec.strip_prefix("light:") {
+        cpu_parser(dir, Bits::Light)
+    } else {
+        cpu_parser(spec, Bits::Standard)
+    }
+}
+
 /// Un analyseur multilingue, partagé entre toutes ses langues.
-#[cfg(feature = "neural")]
-fn share_parser(
-    mut pipeline: Pipeline,
-    langs: Vec<Lang>,
-    parser: std::sync::Arc<dyn nknown_nlp::SentenceParser>,
-) -> Pipeline {
+pub fn share_parser(mut pipeline: Pipeline, langs: Vec<Lang>, parser: Parser) -> Pipeline {
     let langs = if langs.is_empty() {
         vec![Lang::FRA]
     } else {
@@ -105,8 +119,20 @@ fn share_parser(
     pipeline
 }
 
+/// Un GPU Vulkan répond (pilote présent, périphérique utilisable).
+pub fn gpu_available() -> bool {
+    #[cfg(feature = "vulkan")]
+    {
+        nknown_neural::vulkan::available()
+    }
+    #[cfg(not(feature = "vulkan"))]
+    {
+        false
+    }
+}
+
 #[cfg(feature = "neural")]
-fn with_parser(pipeline: Pipeline, dir: &str, bits: Bits) -> Result<Pipeline, Error> {
+fn cpu_parser(dir: &str, bits: Bits) -> Result<(Parser, Vec<Lang>), Error> {
     use nknown_neural::{NeuralParser, Precision};
     let precision = match bits {
         Bits::F32 => Precision::F32,
@@ -115,25 +141,25 @@ fn with_parser(pipeline: Pipeline, dir: &str, bits: Bits) -> Result<Pipeline, Er
     };
     let parser = NeuralParser::load_with(dir, precision).map_err(Error::model)?;
     let langs = parser.langs();
-    Ok(share_parser(pipeline, langs, std::sync::Arc::new(parser)))
+    Ok((std::sync::Arc::new(parser), langs))
 }
 
 #[cfg(not(feature = "neural"))]
-fn with_parser(_: Pipeline, _: &str, _: Bits) -> Result<Pipeline, Error> {
+fn cpu_parser(_: &str, _: Bits) -> Result<(Parser, Vec<Lang>), Error> {
     Err(Error::Unsupported(
         "analyseur neuronal (fonctionnalité « neural »)",
     ))
 }
 
 #[cfg(feature = "vulkan")]
-fn with_vulkan_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Error> {
+fn vulkan_parser(dir: &str) -> Result<(Parser, Vec<Lang>), Error> {
     let parser = nknown_neural::vulkan::VulkanParser::load(dir).map_err(Error::model)?;
     let langs = parser.langs();
-    Ok(share_parser(pipeline, langs, std::sync::Arc::new(parser)))
+    Ok((std::sync::Arc::new(parser), langs))
 }
 
 #[cfg(not(feature = "vulkan"))]
-fn with_vulkan_parser(_: Pipeline, _: &str) -> Result<Pipeline, Error> {
+fn vulkan_parser(_: &str) -> Result<(Parser, Vec<Lang>), Error> {
     Err(Error::Unsupported(
         "analyseur sur GPU (fonctionnalité « vulkan »)",
     ))

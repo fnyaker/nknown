@@ -24,7 +24,7 @@ skip() { printf '\033[1;33m–\033[0m %s : %s\n' "$1" "$2"; }
 
 if [ ! -x "$binary" ]; then
   say "compilation du binaire (profil dist)"
-  (cd "$root" && cargo build --profile dist -p nknown-cli --no-default-features --features neural,plasma)
+  (cd "$root" && cargo build --profile dist -p nknown-cli --no-default-features --features neural,plasma,vulkan)
 fi
 
 # ------------------------------------------------------------------ arborescence commune

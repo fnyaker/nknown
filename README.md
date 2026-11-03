@@ -237,6 +237,8 @@ watch_files = true        # réindexe les dossiers à chaque modification
 # parser = "parser-multi"          # analyseur XLM-R quantifié (défaut) ; "" pour s'en passer
 #                                  # (~215 Mo de mémoire en moins, adjectifs moins bien reliés)
 # parser_precision = "standard"    # ou "light" : ~50 Mo de moins, ~1 point de LAS en moins
+# parser_device = "auto"           # "gpu" (Vulkan), "cpu" ; auto : GPU s'il répond, sinon CPU
+# compute_threads = 0              # fils de calcul sur CPU, en priorité basse (0 : ¼ des cœurs)
 ```
 
 

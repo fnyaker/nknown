@@ -46,7 +46,10 @@ fn quantized_weights(
     Ok((tensors, quant))
 }
 
-fn read_gguf(path: &Path, device: &Device) -> Result<(HashMap<String, Tensor>, Quantized)> {
+pub(crate) fn read_gguf(
+    path: &Path,
+    device: &Device,
+) -> Result<(HashMap<String, Tensor>, Quantized)> {
     let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
     let content = gguf_file::Content::read(&mut file)?;
     let (mut tensors, mut quant) = (HashMap::new(), Quantized::new());

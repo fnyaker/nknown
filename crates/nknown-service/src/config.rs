@@ -70,6 +70,11 @@ pub struct Config {
     pub parser: Option<String>,
     /// Précision de l'analyseur sur CPU.
     pub parser_precision: ParserPrecision,
+    /// Où calculer l'analyse : `auto` (GPU Vulkan s'il répond, sinon CPU), `gpu`, `cpu`.
+    pub parser_device: nknown_api::DeviceChoice,
+    /// Fils de calcul sur CPU (analyse) ; 0 : un quart des cœurs (au moins 2). Ils tournent en
+    /// priorité basse : l'indexation cède la place au reste de la session.
+    pub compute_threads: usize,
 }
 
 /// Précision de l'analyseur sur CPU.
@@ -109,6 +114,8 @@ impl Default for Config {
             models: None,
             parser: Some(DEFAULT_PARSER.into()),
             parser_precision: ParserPrecision::Standard,
+            parser_device: nknown_api::DeviceChoice::Auto,
+            compute_threads: 0,
         }
     }
 }

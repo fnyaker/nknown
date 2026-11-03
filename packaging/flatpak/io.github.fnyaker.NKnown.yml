@@ -31,7 +31,8 @@ modules:
       env:
         CARGO_HOME: /run/build/nknown/cargo
     build-commands:
-      - cargo build --profile dist --locked -p nknown-desktop
+      # Analyse sur GPU (Vulkan : pilotes Mesa de l'extension GL du runtime, via --device=dri).
+      - cargo build --profile dist --locked -p nknown-desktop --features vulkan
       - install -Dm755 target/dist/nknown-app /app/bin/nknown-app
       - install -Dm644 packaging/share/nknown.svg /app/share/icons/hicolor/scalable/apps/io.github.fnyaker.NKnown.svg
       - sed 's/^Icon=.*/Icon=io.github.fnyaker.NKnown/' packaging/share/nknown.desktop > io.github.fnyaker.NKnown.desktop

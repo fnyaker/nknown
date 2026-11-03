@@ -41,6 +41,7 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
         .route(DOCUMENTS, post(add_document))
         .route(&format!("{DOCUMENTS}/{{id}}"), get(document))
         .route(SOURCES, get(sources).post(add_source))
+        .route(SETTINGS, get(settings).put(update_settings))
         .route(
             &format!("{SOURCES}/{{id}}"),
             axum::routing::delete(remove_source),
@@ -238,6 +239,24 @@ async fn add_document(
 ) -> Response {
     match blocking(move || state.service.add_document(req)).await {
         Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn settings(State(state): State<AppState>) -> Response {
+    match blocking(move || Ok(state.service.settings())).await {
+        Ok(s) => Json(s).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// Réglages d'analyse ; les modèles sont rechargés avant la réponse.
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(req): Json<api::EngineSettings>,
+) -> Response {
+    match blocking(move || state.service.update_settings(req)).await {
+        Ok(s) => Json(s).into_response(),
         Err(r) => r,
     }
 }

@@ -119,7 +119,7 @@ impl Proj {
 
 /// Table des plongements de mots (250 002 × 768 pour XLM-R base : 70 % des poids).
 #[derive(Debug)]
-enum Table {
+pub(crate) enum Table {
     Full(Tensor),
     /// Lignes en blocs Q4_K, décodées à la lecture.
     Quant(Arc<QTensor>),
@@ -157,14 +157,14 @@ fn decode_q4_k(block: &[u8], out: &mut Vec<f32>) {
 }
 
 impl Table {
-    fn dim(&self) -> Result<usize> {
+    pub(crate) fn dim(&self) -> Result<usize> {
         Ok(match self {
             Self::Full(t) => t.dim(1)?,
             Self::Quant(q) => q.shape().dims2()?.1,
         })
     }
 
-    fn lookup(&self, ids: &Tensor) -> Result<Tensor> {
+    pub(crate) fn lookup(&self, ids: &Tensor) -> Result<Tensor> {
         let q = match self {
             Self::Full(t) => return Ok(t.index_select(ids, 0)?),
             Self::Quant(q) => q,
@@ -202,7 +202,7 @@ impl Table {
 /// 4 bits sans perte mesurable (contrairement aux matrices des couches).
 pub const TABLE_DTYPE: GgmlDType = GgmlDType::Q4K;
 
-const WORD_EMBEDDINGS: &str = "embeddings.word_embeddings.weight";
+pub(crate) const WORD_EMBEDDINGS: &str = "embeddings.word_embeddings.weight";
 
 /// Poids de l'encodeur gardés quantifiés, par nom Hugging Face.
 pub type Quantized = HashMap<String, Arc<QTensor>>;

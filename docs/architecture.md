@@ -63,6 +63,7 @@ identifiants opaques.
 | `GET` | `/sources` | sources configurées et leur état |
 | `POST` | `/sources` | ajout d'une source (`{spec}` : dossier, `rss:`, `wiki:`…) |
 | `DELETE` | `/sources/{id}` | retrait d'une source |
+| `GET`, `PUT` | `/settings` | réglages d'analyse : analyseur, précision, calcul (`auto`, `gpu`, `cpu`) ; les modèles sont rechargés |
 | `POST` | `/session` | interface web : échange le jeton contre un cookie `HttpOnly; Secure; SameSite=Strict` |
 
 Flux d'une recherche (`POST /search`, une ligne JSON par évènement) :

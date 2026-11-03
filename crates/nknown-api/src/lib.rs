@@ -19,6 +19,7 @@ pub mod routes {
     pub const DOCUMENTS: &str = "/documents";
     pub const SOURCES: &str = "/sources";
     pub const SESSION: &str = "/session";
+    pub const SETTINGS: &str = "/settings";
 }
 
 // ---------------------------------------------------------------- recherche
@@ -380,10 +381,50 @@ pub struct Status {
     pub langs: Vec<String>,
     /// Analyseur neuronal chargé.
     pub parser: bool,
+    /// Où il calcule : `gpu` (Vulkan) ou `cpu` ; absent sans analyseur.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser_device: Option<ComputeDevice>,
     /// Une collecte est en cours.
     pub collecting: bool,
     /// Modèles (lexiques, analyseur) : prêts, ou en cours de téléchargement.
     pub models: ModelsState,
+}
+
+/// Réglages d'analyse du moteur (`GET`/`PUT /settings`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineSettings {
+    /// Analyseur syntaxique (adjectifs mieux reliés ; coûteux à l'indexation).
+    pub parser: bool,
+    pub precision: ParserPrecision,
+    pub device: DeviceChoice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParserPrecision {
+    /// Table des mots en 4 bits, couches en 8 bits : précision intacte.
+    #[default]
+    Standard,
+    /// Tout en 4 bits : plus léger, un point d'exactitude en moins (sur CPU).
+    Light,
+}
+
+/// Où calculer l'analyse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceChoice {
+    /// GPU (Vulkan) s'il répond, sinon CPU.
+    #[default]
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeDevice {
+    Gpu,
+    Cpu,
 }
 
 /// État des modèles : téléchargés au premier lancement, rechargés quand ils sont prêts.

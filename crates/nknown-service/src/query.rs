@@ -1,6 +1,6 @@
 //! Requête tapée → requête du moteur ; extraits de résultats.
 
-use nknown_core::analyze::{Analysis, Analyzer, Pos};
+use nknown_core::analyze::{Analysis, Pos};
 use nknown_core::lang::Lang;
 use nknown_engine::schema::TermKind;
 use nknown_engine::{Query, QueryTerm, intent_for};
@@ -65,8 +65,10 @@ pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, te
         .filter(|lang| pipeline.lexicon(*lang).is_some())
         .or_else(|| detector.and_then(|_| lexicon_lang(pipeline, text)))
         .map(|lang| {
+            // Sans l'analyseur neuronal : le tagueur suffit à reconnaître les mots outils, et
+            // la requête reste instantanée (sur GPU, un aller-retour coûte des centaines de ms).
             pipeline
-                .analyze(lang, text)
+                .analyze_light(lang, text)
                 .tokens
                 .into_iter()
                 .map(|t| (t.span.start, t.pos))

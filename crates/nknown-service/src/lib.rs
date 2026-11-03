@@ -15,7 +15,7 @@ pub mod watch;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
@@ -124,8 +124,36 @@ pub struct Service {
     /// État de collecte par `spec`.
     states: Mutex<HashMap<String, api::SourceState>>,
     collecting: AtomicUsize,
-    parser: AtomicBool,
+    /// Analyseur chargé : 0 aucun, 1 CPU, 2 GPU.
+    parser: AtomicU8,
     models: Mutex<api::ModelsState>,
+}
+
+const PARSER_NONE: u8 = 0;
+const PARSER_CPU: u8 = 1;
+const PARSER_GPU: u8 = 2;
+
+/// Fils de calcul du processus (rayon, utilisé par l'analyseur sur CPU) : nombre limité, priorité
+/// basse. Réglé une fois, avant le premier calcul.
+fn tune_compute(threads: usize) {
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let n = if threads == 0 {
+            (cores / 4).max(2)
+        } else {
+            threads
+        };
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .thread_name(|i| format!("nknown-calcul-{i}"))
+            .start_handler(|_| {
+                // Priorité basse pour ce seul fil (setpriority sur l'identifiant du fil).
+                let tid = rustix::thread::gettid();
+                let _ = rustix::process::setpriority_process(Some(tid), 15);
+            })
+            .build_global();
+    });
 }
 
 impl fmt::Debug for Service {
@@ -142,6 +170,7 @@ impl Service {
     /// Sans modèles, le service fonctionne en mode dégradé (mots sans lemmes).
     pub fn open(opts: Options) -> Result<Self, Error> {
         std::fs::create_dir_all(&opts.data_dir)?;
+        tune_compute(opts.config.compute_threads);
         let (pipeline, parser) = load_models(&opts.config, &opts.data_dir)?;
         let storage = RedbStorage::open(opts.data_dir.join("base.redb"))
             .map_err(|e| Error::Storage(e.to_string()))?;
@@ -153,7 +182,7 @@ impl Service {
             config_path: opts.config_path,
             states: Mutex::new(HashMap::new()),
             collecting: AtomicUsize::new(0),
-            parser: AtomicBool::new(parser),
+            parser: AtomicU8::new(parser),
             models: Mutex::new(api::ModelsState::Missing),
             pipeline: RwLock::new(Arc::new(pipeline)),
         })
@@ -214,6 +243,46 @@ impl Service {
         Ok(())
     }
 
+    /// Réglages d'analyse en vigueur.
+    pub fn settings(&self) -> api::EngineSettings {
+        let c = self.config();
+        api::EngineSettings {
+            parser: c.parser.as_deref().is_some_and(|p| !p.trim().is_empty()),
+            precision: match c.parser_precision {
+                config::ParserPrecision::Standard => api::ParserPrecision::Standard,
+                config::ParserPrecision::Light => api::ParserPrecision::Light,
+            },
+            device: c.parser_device,
+        }
+    }
+
+    /// Change les réglages d'analyse, les enregistre et recharge les modèles (téléchargés au
+    /// besoin : la précision `light` a ses propres poids).
+    pub fn update_settings(&self, s: api::EngineSettings) -> Result<api::EngineSettings, Error> {
+        {
+            let mut c = lock(&self.config);
+            let custom = c
+                .parser
+                .as_deref()
+                .filter(|p| !p.trim().is_empty() && *p != config::DEFAULT_PARSER)
+                .map(str::to_owned);
+            c.parser = Some(if s.parser {
+                custom.unwrap_or_else(|| config::DEFAULT_PARSER.into())
+            } else {
+                String::new()
+            });
+            c.parser_precision = match s.precision {
+                api::ParserPrecision::Standard => config::ParserPrecision::Standard,
+                api::ParserPrecision::Light => config::ParserPrecision::Light,
+            };
+            c.parser_device = s.device;
+            self.save_config(&c)?;
+        }
+        self.ensure_models()?;
+        self.reload_models()?;
+        Ok(self.settings())
+    }
+
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
@@ -243,7 +312,12 @@ impl Service {
                 .iter()
                 .map(|l| l.to_string())
                 .collect(),
-            parser: self.parser.load(Ordering::Relaxed),
+            parser: self.parser.load(Ordering::Relaxed) != PARSER_NONE,
+            parser_device: match self.parser.load(Ordering::Relaxed) {
+                PARSER_GPU => Some(api::ComputeDevice::Gpu),
+                PARSER_CPU => Some(api::ComputeDevice::Cpu),
+                _ => None,
+            },
             collecting: self.collecting.load(Ordering::Relaxed) > 0,
             models: lock(&self.models).clone(),
         })
@@ -653,16 +727,17 @@ fn convert_hits(
 }
 
 /// Lexiques et tagueurs du dossier des modèles, et l'analyseur configuré s'il est là (sinon,
-/// en attendant son téléchargement, on s'en passe).
-fn load_models(config: &Config, data_dir: &Path) -> Result<(Pipeline, bool), Error> {
+/// en attendant son téléchargement, on s'en passe). L'analyseur va sur le GPU (Vulkan) si le
+/// réglage le permet et qu'un GPU répond, sinon sur le CPU.
+fn load_models(config: &Config, data_dir: &Path) -> Result<(Pipeline, u8), Error> {
     let dir = config.models_dir(data_dir);
-    let mut pipeline = if dir.is_dir() {
+    let pipeline = if dir.is_dir() {
         models::load_pipeline(&dir, &[])?
     } else {
         Pipeline::default()
     };
     let Some(spec) = config.parser.as_deref().filter(|s| !s.trim().is_empty()) else {
-        return Ok((pipeline, false));
+        return Ok((pipeline, PARSER_NONE));
     };
     let ready = if spec == config::DEFAULT_PARSER {
         let groups = fetch::groups(config);
@@ -675,12 +750,34 @@ fn load_models(config: &Config, data_dir: &Path) -> Result<(Pipeline, bool), Err
         Path::new(path).exists()
     };
     if !ready {
-        return Ok((pipeline, false));
+        return Ok((pipeline, PARSER_NONE));
     }
-    let spec = config.parser_precision.apply(&models::resolve(spec, &dir));
-    pipeline =
-        models::add_model(pipeline, &spec).map_err(|e| Error::Model(format!("{spec} : {e}")))?;
-    Ok((pipeline, true))
+    let resolved = models::resolve(spec, &dir);
+    let explicit_gpu = resolved.starts_with("vulkan:");
+    let want_gpu = explicit_gpu
+        || match config.parser_device {
+            api::DeviceChoice::Cpu => false,
+            api::DeviceChoice::Gpu => true,
+            api::DeviceChoice::Auto => models::gpu_available(),
+        };
+    if want_gpu {
+        let gpu_spec = if explicit_gpu {
+            resolved.clone()
+        } else {
+            format!("vulkan:{resolved}")
+        };
+        match models::load_parser(&gpu_spec) {
+            Ok((parser, langs)) => {
+                return Ok((models::share_parser(pipeline, langs, parser), PARSER_GPU));
+            }
+            // Pas de GPU utilisable : le CPU prend le relais.
+            Err(e) => eprintln!("analyseur sur GPU indisponible ({e}) : CPU"),
+        }
+    }
+    let spec = config.parser_precision.apply(&resolved);
+    let (parser, langs) =
+        models::load_parser(&spec).map_err(|e| Error::Model(format!("{spec} : {e}")))?;
+    Ok((models::share_parser(pipeline, langs, parser), PARSER_CPU))
 }
 
 fn dominant_nature(scores: &[f32; Nature::COUNT]) -> api::Nature {

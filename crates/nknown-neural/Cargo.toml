@@ -17,6 +17,8 @@ spm_precompiled = "0.1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 half = "2.7"
+# Poids f32 en mémoire pour la version GPU, depuis les poids quantifiés distribués.
+safetensors = "0.8"
 burn = { version = "=0.22.1", default-features = false, features = ["std", "vulkan", "autodiff", "optim", "safetensors"], optional = true }
 
 [dev-dependencies]

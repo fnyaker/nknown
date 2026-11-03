@@ -17,6 +17,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 ureq = "3.5"
 sha2 = "0.10"
+# Fils de calcul de l'analyseur (pool rayon global de candle) : nombre et priorité.
+rayon = "1.11"
+rustix = { version = "1", features = ["process", "thread"] }
 
 [dev-dependencies]
 tempfile = "3"

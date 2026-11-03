@@ -108,12 +108,22 @@ fn dense_norm(i: usize, o: usize, eps: f64, device: &Device) -> DenseNorm {
 
 impl Network {
     fn init(enc: &EncoderConfig, cfg: &ParserConfig, device: &Device) -> Self {
+        Self::init_with_vocab(enc, cfg, enc.vocab_size, device)
+    }
+
+    /// `vocab` à 1 : réseau d'inférence dont la table des mots reste sur le CPU.
+    fn init_with_vocab(
+        enc: &EncoderConfig,
+        cfg: &ParserConfig,
+        vocab: usize,
+        device: &Device,
+    ) -> Self {
         let (h, eps) = (enc.hidden_size, enc.layer_norm_eps);
         let (a, l, nl) = (cfg.arc_dim, cfg.label_dim, cfg.deprels.len());
         let zeros = |shape: [usize; 2]| Param::from_tensor(Tensor::<2>::zeros(shape, device));
         Network {
             embeddings: Embeddings {
-                word_embeddings: EmbeddingConfig::new(enc.vocab_size, h).init(device),
+                word_embeddings: EmbeddingConfig::new(vocab, h).init(device),
                 position_embeddings: EmbeddingConfig::new(enc.max_position_embeddings, h)
                     .init(device),
                 token_type_embeddings: EmbeddingConfig::new(1, h).init(device),
@@ -168,6 +178,9 @@ struct Scores {
 
 struct Inputs {
     ids: Tensor<2, Int>,
+    /// Vecteurs des sous-mots, lus dans la table gardée sur le CPU (inférence) ; sinon la
+    /// table du réseau (entraînement).
+    words: Option<Tensor<3>>,
     positions: Tensor<2, Int>,
     mask: Tensor<2>,
     first: Tensor<2, Int>,
@@ -175,7 +188,12 @@ struct Inputs {
     width: usize,
 }
 
-fn inputs(encoded: &[&Encoded], pad_id: u32, device: &Device) -> Inputs {
+fn inputs(
+    encoded: &[&Encoded],
+    pad_id: u32,
+    table: Option<&crate::encoder::Table>,
+    device: &Device,
+) -> Result<Inputs> {
     let h = HostBatch::new(encoded);
     let (b, t) = (h.batch_size, h.seq_len);
     let int = |v: Vec<u32>, shape: [usize; 2]| {
@@ -183,14 +201,27 @@ fn inputs(encoded: &[&Encoded], pad_id: u32, device: &Device) -> Inputs {
         Tensor::<2, Int>::from_data(TensorData::new(v, shape), device)
     };
     let mask: Vec<f32> = h.mask.iter().map(|&m| m as f32).collect();
-    Inputs {
+    let words = match table {
+        Some(table) => {
+            let ids = candle_core::Tensor::from_slice(&h.ids, b * t, &candle_core::Device::Cpu)?;
+            let dim = table.dim()?;
+            let rows: Vec<f32> = table.lookup(&ids)?.flatten_all()?.to_vec1()?;
+            Some(Tensor::<3>::from_data(
+                TensorData::new(rows, [b, t, dim]),
+                device,
+            ))
+        }
+        None => None,
+    };
+    Ok(Inputs {
+        words,
         positions: int(h.positions(pad_id), [b, t]),
         ids: int(h.ids, [b, t]),
         mask: Tensor::<2>::from_data(TensorData::new(mask, [b, t]), device),
         first: int(h.first, [b, h.width]),
         lengths: h.lengths,
         width: h.width,
-    }
+    })
 }
 
 impl Layer {
@@ -221,7 +252,11 @@ impl Network {
         let e = &self.embeddings;
         let [b, t] = x.ids.dims();
         let types = Tensor::<2, Int>::zeros([b, t], &x.ids.device());
-        let emb = e.word_embeddings.forward(x.ids.clone())
+        let words = match &x.words {
+            Some(w) => w.clone(),
+            None => e.word_embeddings.forward(x.ids.clone()),
+        };
+        let emb = words
             + e.position_embeddings.forward(x.positions.clone())
             + e.token_type_embeddings.forward(types);
         let mut hidden = self.dropout.forward(e.layer_norm.forward(emb));
@@ -283,7 +318,11 @@ impl Network {
 // ---------------------------------------------------------------- poids
 
 fn load_store(path: &Path, partial: bool) -> SafetensorsStore {
-    SafetensorsStore::from_file(path)
+    adapt(SafetensorsStore::from_file(path), partial)
+}
+
+fn adapt(store: SafetensorsStore, partial: bool) -> SafetensorsStore {
+    store
         .with_from_adapter(PyTorchToBurnAdapter)
         .with_key_remapping(r"^roberta\.", "")
         .with_key_remapping(r"\.self\.", ".self_.")
@@ -304,11 +343,58 @@ fn store_err(e: impl std::fmt::Display) -> Error {
     Error::Format(format!("poids : {e}"))
 }
 
+/// Poids d'inférence et table des mots. Depuis les poids quantifiés distribués
+/// (`model.q4k-q8.gguf`, ou `model.q4k.gguf`), sinon depuis le modèle f32 (entraînement, dépôt) :
+/// la table reste sur le CPU en 4 bits ; le reste, décompressé en f32, est sérialisé en mémoire
+/// pour le GPU (couches, positions, têtes : ~345 Mo au lieu de 1,1 Go).
+fn inference_weights(dir: &Path) -> Result<(SafetensorsStore, crate::encoder::Table)> {
+    use crate::encoder::{TABLE_DTYPE, Table, WORD_EMBEDDINGS};
+    let cpu = candle_core::Device::Cpu;
+    let gguf = ["model.q4k-q8.gguf", "model.q4k.gguf"]
+        .iter()
+        .map(|f| dir.join(f))
+        .find(|p| p.is_file());
+    let (mut tensors, mut quant) = match gguf {
+        Some(path) => crate::parser::read_gguf(&path, &cpu)?,
+        None => (
+            candle_core::safetensors::load(dir.join("model.safetensors"), &cpu)?,
+            crate::encoder::Quantized::new(),
+        ),
+    };
+    let table = match (
+        quant.remove(WORD_EMBEDDINGS),
+        tensors.remove(WORD_EMBEDDINGS),
+    ) {
+        (Some(q), _) if q.dtype() == TABLE_DTYPE => Table::Quant(q),
+        (Some(q), _) => Table::Quant(std::sync::Arc::new(
+            candle_core::quantized::QTensor::quantize(&q.dequantize(&cpu)?, TABLE_DTYPE)?,
+        )),
+        (None, Some(t)) => Table::Quant(std::sync::Arc::new(
+            candle_core::quantized::QTensor::quantize(&t, TABLE_DTYPE)?,
+        )),
+        (None, None) => return Err(Error::Format("table des mots absente".into())),
+    };
+    for (name, q) in quant {
+        tensors.insert(name, q.dequantize(&cpu)?);
+    }
+    let bytes = safetensors::serialize(tensors.iter().map(|(k, v)| (k.as_str(), v)), None)
+        .map_err(store_err)?;
+    drop(tensors);
+    // Partiel : la table des mots n'est pas chargée dans le réseau.
+    Ok((
+        adapt(SafetensorsStore::from_bytes(Some(bytes)), true),
+        table,
+    ))
+}
+
 // ---------------------------------------------------------------- inférence
 
 /// Analyseur exécuté sur GPU via Vulkan.
 pub struct VulkanParser {
     net: Network,
+    /// Table des mots (70 % des poids), gardée sur le CPU en 4 bits : le GPU ne reçoit que
+    /// les vecteurs des sous-mots de chaque lot.
+    table: crate::encoder::Table,
     tokenizer: Tokenizer,
     cfg: ParserConfig,
     enc: EncoderConfig,
@@ -323,6 +409,20 @@ impl std::fmt::Debug for VulkanParser {
     }
 }
 
+/// Un GPU Vulkan répond : un petit calcul y aboutit. Sans pilote ni périphérique, wgpu panique
+/// à la création du périphérique : la panique est rattrapée.
+pub fn available() -> bool {
+    std::panic::catch_unwind(|| {
+        let device = vulkan_device();
+        let t = Tensor::<1>::from_floats([1.0f32, 2.0], &device);
+        t.sum()
+            .into_data()
+            .try_to_vec::<f32>()
+            .is_ok_and(|v| v == [3.0])
+    })
+    .unwrap_or(false)
+}
+
 pub fn vulkan_device() -> Device {
     burn::backend::wgpu::WgpuDevice::default().into()
 }
@@ -333,11 +433,12 @@ impl VulkanParser {
         let cfg = ParserConfig::load(dir.join("parser.json"))?;
         let enc = cfg.encoder_config()?;
         let device = vulkan_device();
-        let mut net = Network::init(&enc, &cfg, &device);
-        net.load_from(&mut load_store(&dir.join("model.safetensors"), false))
-            .map_err(store_err)?;
+        let (mut store, table) = inference_weights(dir)?;
+        let mut net = Network::init_with_vocab(&enc, &cfg, 1, &device);
+        net.load_from(&mut store).map_err(store_err)?;
         Ok(Self {
             net,
+            table,
             tokenizer: Tokenizer::from_file(dir.join("tokenizer.json"))?,
             cfg,
             enc,
@@ -357,6 +458,7 @@ impl VulkanParser {
     pub fn parse_words(&self, sentences: &[Vec<&str>]) -> Result<Vec<Option<ParsedSentence>>> {
         parse_with(
             &self.net,
+            Some(&self.table),
             &self.tokenizer,
             &self.cfg,
             &self.enc,
@@ -403,6 +505,7 @@ fn argmax2(t: Tensor<3>) -> Vec<Vec<u32>> {
 
 fn parse_with(
     net: &Network,
+    table: Option<&crate::encoder::Table>,
     tokenizer: &Tokenizer,
     cfg: &ParserConfig,
     enc: &EncoderConfig,
@@ -421,7 +524,7 @@ fn parse_with(
     let mut out = vec![None; sentences.len()];
     for chunk in encoded.chunks(32) {
         let refs: Vec<&Encoded> = chunk.iter().map(|(_, e)| e).collect();
-        let x = inputs(&refs, enc.pad_token_id, device);
+        let x = inputs(&refs, enc.pad_token_id, table, device)?;
         let s = net.forward(&x, enc.num_attention_heads);
         let trees = data::decode_trees(&to_vec3(log_softmax(s.arcs.clone(), 2)), &x.lengths);
         let mut head_ids = vec![0i64; x.lengths.len() * x.width];
@@ -580,7 +683,7 @@ pub fn train(
             };
             let exs: Vec<&Example> = idx.iter().map(|&i| &examples[i]).collect();
             let refs: Vec<&Encoded> = exs.iter().map(|e| &e.encoded).collect();
-            let x = inputs(&refs, enc.pad_token_id, &device);
+            let x = inputs(&refs, enc.pad_token_id, None, &device)?;
             let s = net.forward(&x, enc.num_attention_heads);
             let l = loss(&net, &x, &exs, &s, &device);
             running += f64::from(l.clone().into_scalar::<f32>());
@@ -643,6 +746,6 @@ fn evaluate(
     gold: &[GoldSentence],
 ) -> Result<DevScores> {
     let inputs: Vec<Vec<&str>> = gold.iter().map(|s| s.words()).collect();
-    let parsed = parse_with(net, tokenizer, cfg, enc, device, &inputs)?;
+    let parsed = parse_with(net, None, tokenizer, cfg, enc, device, &inputs)?;
     Ok(crate::train::score(gold, &parsed))
 }

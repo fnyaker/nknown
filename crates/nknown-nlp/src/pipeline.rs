@@ -78,9 +78,13 @@ impl Pipeline {
 
     /// Analyse un lot de phrases déjà découpées en tokens.
     pub fn annotate(&self, lang: Lang, sentences: &[Vec<&str>]) -> Vec<Annotated> {
+        self.annotate_with(lang, sentences, true)
+    }
+
+    fn annotate_with(&self, lang: Lang, sentences: &[Vec<&str>], parse: bool) -> Vec<Annotated> {
         let lexicon = self.lexicons.get(&lang);
         let parsed = match self.parsers.get(&lang) {
-            Some(parser) if parser.supports(lang) => parser.parse(lang, sentences),
+            Some(parser) if parse && parser.supports(lang) => parser.parse(lang, sentences),
             _ => vec![None; sentences.len()],
         };
         sentences
@@ -175,12 +179,15 @@ fn from_parse(lexicon: Option<&Lexicon>, words: &[&str], p: &ParsedSentence) -> 
     (annotated, relations)
 }
 
-impl Analyzer for Pipeline {
-    fn supports(&self, _lang: Lang) -> bool {
-        true
+impl Pipeline {
+    /// Analyse sans l'analyseur neuronal : lexique et tagueur seulement. Pour un texte court
+    /// et interactif (une requête), où un aller-retour vers le GPU coûterait plus que tout le
+    /// reste.
+    pub fn analyze_light(&self, lang: Lang, text: &str) -> Analysis {
+        self.analyze_with(lang, text, false)
     }
 
-    fn analyze(&self, lang: Lang, text: &str) -> Analysis {
+    fn analyze_with(&self, lang: Lang, text: &str, parse: bool) -> Analysis {
         let lexicon = self.lexicons.get(&lang);
         let mut spans = Vec::new();
         for span in tokenize::tokens(text) {
@@ -207,8 +214,9 @@ impl Analyzer for Pipeline {
             .collect();
 
         let mut analysis = Analysis::default();
-        for (bound, (annotated, relations)) in
-            bounds.into_iter().zip(self.annotate(lang, &sentences))
+        for (bound, (annotated, relations)) in bounds
+            .into_iter()
+            .zip(self.annotate_with(lang, &sentences, parse))
         {
             let offset = analysis.tokens.len();
             analysis
@@ -225,6 +233,16 @@ impl Analyzer for Pipeline {
                 .extend(relations.into_iter().map(|r| r.shifted(offset)));
         }
         analysis
+    }
+}
+
+impl Analyzer for Pipeline {
+    fn supports(&self, _lang: Lang) -> bool {
+        true
+    }
+
+    fn analyze(&self, lang: Lang, text: &str) -> Analysis {
+        self.analyze_with(lang, text, true)
     }
 }
 

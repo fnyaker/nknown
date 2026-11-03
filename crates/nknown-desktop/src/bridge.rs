@@ -59,6 +59,17 @@ pub mod qobject {
         fn set_engine(self: Pin<&mut Backend>, mode: &QString, url: &QString, token: &QString);
 
         /// Démarrage du démon avec la session (service systemd utilisateur).
+        /// Réglages d'analyse du moteur : analyseur, précision (`standard`, `light`), calcul
+        /// (`auto`, `gpu`, `cpu`).
+        #[qinvokable]
+        #[cxx_name = "setAnalysis"]
+        fn set_analysis(
+            self: Pin<&mut Backend>,
+            parser: bool,
+            precision: &QString,
+            device: &QString,
+        );
+
         #[qinvokable]
         #[cxx_name = "setDaemonEnabled"]
         fn set_daemon_enabled(self: Pin<&mut Backend>, enabled: bool);
@@ -227,6 +238,7 @@ impl qobject::Backend {
                                 "engine": e.name(),
                                 "status": s,
                                 "sources": e.sources().unwrap_or_default(),
+                                "analysis": e.settings().ok(),
                             }),
                             Err(err) => serde_json::json!({ "engine": e.name(), "error": err }),
                         },
@@ -367,6 +379,26 @@ impl qobject::Backend {
             settings.save().map_err(|e| e.to_string())?;
             slot.connect();
             Ok(String::new())
+        });
+    }
+
+    fn set_analysis(self: Pin<&mut Self>, parser: bool, precision: &QString, device: &QString) {
+        let settings = api::EngineSettings {
+            parser,
+            precision: if precision.to_string() == "light" {
+                api::ParserPrecision::Light
+            } else {
+                api::ParserPrecision::Standard
+            },
+            device: match device.to_string().as_str() {
+                "gpu" => api::DeviceChoice::Gpu,
+                "cpu" => api::DeviceChoice::Cpu,
+                _ => api::DeviceChoice::Auto,
+            },
+        };
+        self.background(move |slot| {
+            slot.wait()?.set_settings(settings)?;
+            Ok("Réglages d'analyse appliqués".into())
         });
     }
 
