@@ -5,6 +5,7 @@
 //! temps d'enregistrer un document, l'analyse se faisant hors verrou.
 
 pub mod config;
+pub mod fetch;
 pub mod graph;
 pub mod models;
 pub mod query;
@@ -14,8 +15,8 @@ pub mod watch;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use nknown_api as api;
@@ -113,7 +114,8 @@ impl Options {
 const API_SOURCE: &str = "api";
 
 pub struct Service {
-    pipeline: Pipeline,
+    /// Rechargé quand les modèles arrivent (téléchargement du premier lancement).
+    pipeline: RwLock<Arc<Pipeline>>,
     detector: LangDetector,
     engine: RwLock<Engine<RedbStorage>>,
     data_dir: PathBuf,
@@ -122,7 +124,8 @@ pub struct Service {
     /// État de collecte par `spec`.
     states: Mutex<HashMap<String, api::SourceState>>,
     collecting: AtomicUsize,
-    parser: bool,
+    parser: AtomicBool,
+    models: Mutex<api::ModelsState>,
 }
 
 impl fmt::Debug for Service {
@@ -139,25 +142,10 @@ impl Service {
     /// Sans modèles, le service fonctionne en mode dégradé (mots sans lemmes).
     pub fn open(opts: Options) -> Result<Self, Error> {
         std::fs::create_dir_all(&opts.data_dir)?;
-        let models = opts.config.models_dir(&opts.data_dir);
-        let mut pipeline = if models.is_dir() {
-            models::load_pipeline(&models, &[])?
-        } else {
-            Pipeline::default()
-        };
-        let parser = opts.config.parser.is_some();
-        if let Some(spec) = &opts.config.parser {
-            let spec = opts
-                .config
-                .parser_precision
-                .apply(&models::resolve(spec, &models));
-            pipeline = models::add_model(pipeline, &spec)
-                .map_err(|e| Error::Model(format!("{spec} : {e}")))?;
-        }
+        let (pipeline, parser) = load_models(&opts.config, &opts.data_dir)?;
         let storage = RedbStorage::open(opts.data_dir.join("base.redb"))
             .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(Self {
-            pipeline,
             detector: LangDetector::new(),
             engine: RwLock::new(Engine::new(storage)),
             data_dir: opts.data_dir,
@@ -165,8 +153,65 @@ impl Service {
             config_path: opts.config_path,
             states: Mutex::new(HashMap::new()),
             collecting: AtomicUsize::new(0),
-            parser,
+            parser: AtomicBool::new(parser),
+            models: Mutex::new(api::ModelsState::Missing),
+            pipeline: RwLock::new(Arc::new(pipeline)),
         })
+    }
+
+    fn pipeline(&self) -> Arc<Pipeline> {
+        self.pipeline
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Télécharge les modèles manquants (premier lancement), puis les recharge. Sans effet
+    /// s'ils sont déjà là. La progression se lit dans [`Self::status`].
+    pub fn ensure_models(&self) -> Result<(), Error> {
+        let config = self.config();
+        let dir = config.models_dir(&self.data_dir);
+        let manifest = fetch::manifest();
+        let missing = fetch::missing(&manifest, &dir, &fetch::groups(&config));
+        if !missing.is_empty() {
+            let total = missing.iter().map(|f| f.size).sum();
+            *lock(&self.models) = api::ModelsState::Downloading { done: 0, total };
+            eprintln!(
+                "téléchargement des modèles : {} fichiers, {} Mo",
+                missing.len(),
+                total / 1_000_000
+            );
+            let fetched = fetch::fetch(&manifest, &dir, &missing, &mut |done, total| {
+                *lock(&self.models) = api::ModelsState::Downloading { done, total };
+            });
+            if let Err(e) = fetched {
+                // Ce qui est arrivé (les lexiques, souvent) sert déjà aux requêtes.
+                if let Err(e) = self.reload_models() {
+                    eprintln!("modèles : {e}");
+                }
+                *lock(&self.models) = api::ModelsState::Failed {
+                    message: e.to_string(),
+                };
+                return Err(e);
+            }
+            self.reload_models()?;
+            eprintln!("modèles prêts");
+        } else if !matches!(*lock(&self.models), api::ModelsState::Ready) {
+            self.reload_models()?;
+        }
+        *lock(&self.models) = api::ModelsState::Ready;
+        Ok(())
+    }
+
+    /// Recharge lexiques, tagueurs et analyseur selon la configuration.
+    pub fn reload_models(&self) -> Result<(), Error> {
+        let (pipeline, parser) = load_models(&self.config(), &self.data_dir)?;
+        *self
+            .pipeline
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(pipeline);
+        self.parser.store(parser, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -193,13 +238,14 @@ impl Service {
             passages: stats.passages,
             words: stats.indexed_words,
             langs: self
-                .pipeline
+                .pipeline()
                 .lexicon_langs()
                 .iter()
                 .map(|l| l.to_string())
                 .collect(),
-            parser: self.parser,
+            parser: self.parser.load(Ordering::Relaxed),
             collecting: self.collecting.load(Ordering::Relaxed) > 0,
+            models: lock(&self.models).clone(),
         })
     }
 
@@ -215,7 +261,7 @@ impl Service {
         on_event(api::SearchEvent::Phase {
             phase: api::Phase::Analyze,
         });
-        let q = query::build_query(&self.pipeline, &req.query);
+        let q = query::build_query(&self.pipeline(), &req.query);
         let terms: Vec<api::QueryTermView> = q
             .terms
             .iter()
@@ -363,18 +409,16 @@ impl Service {
             .map_or(nknown_nlp::Format::Plain, |(_, v)| {
                 nknown_nlp::Format::from_hint(v)
             });
+        let pipeline = self.pipeline();
         let analysis = nknown_nlp::analyze_document(
-            &self.pipeline,
+            &pipeline,
             lang,
             &item.text,
             &format,
             Some(&self.detector),
         );
         let lang = query::main_lang(&analysis).unwrap_or(lang);
-        let title = item
-            .title
-            .as_deref()
-            .map(|t| self.pipeline.analyze(lang, t));
+        let title = item.title.as_deref().map(|t| pipeline.analyze(lang, t));
         let ingested = self.engine_mut().ingest(Document {
             item,
             kind,
@@ -606,6 +650,37 @@ fn convert_hits(
         });
     }
     (hits, links)
+}
+
+/// Lexiques et tagueurs du dossier des modèles, et l'analyseur configuré s'il est là (sinon,
+/// en attendant son téléchargement, on s'en passe).
+fn load_models(config: &Config, data_dir: &Path) -> Result<(Pipeline, bool), Error> {
+    let dir = config.models_dir(data_dir);
+    let mut pipeline = if dir.is_dir() {
+        models::load_pipeline(&dir, &[])?
+    } else {
+        Pipeline::default()
+    };
+    let Some(spec) = config.parser.as_deref().filter(|s| !s.trim().is_empty()) else {
+        return Ok((pipeline, false));
+    };
+    let ready = if spec == config::DEFAULT_PARSER {
+        let groups = fetch::groups(config);
+        fetch::missing(&fetch::manifest(), &dir, &groups[1..]).is_empty()
+    } else {
+        let resolved = models::resolve(spec, &dir);
+        let path = resolved
+            .split_once(':')
+            .map_or(resolved.as_str(), |(_, p)| p);
+        Path::new(path).exists()
+    };
+    if !ready {
+        return Ok((pipeline, false));
+    }
+    let spec = config.parser_precision.apply(&models::resolve(spec, &dir));
+    pipeline =
+        models::add_model(pipeline, &spec).map_err(|e| Error::Model(format!("{spec} : {e}")))?;
+    Ok((pipeline, true))
 }
 
 fn dominant_nature(scores: &[f32; Nature::COUNT]) -> api::Nature {

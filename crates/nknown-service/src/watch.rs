@@ -12,13 +12,33 @@ use crate::Service;
 /// Délai de calme avant de réindexer : un enregistrement produit souvent plusieurs évènements.
 const DEBOUNCE: Duration = Duration::from_secs(3);
 
-/// Lance la collecte périodique (une première collecte immédiate) et, si la configuration le
-/// demande, la surveillance des dossiers. Les fils tournent jusqu'à la fin du processus.
+/// Délai avant un nouvel essai de téléchargement des modèles (hors ligne…).
+const MODELS_RETRY: Duration = Duration::from_secs(300);
+
+/// Télécharge au besoin les modèles, puis lance la collecte périodique (une première collecte
+/// immédiate) et, si la configuration le demande, la surveillance des dossiers. Rien n'est
+/// indexé avant que les modèles soient là : un document indexé sans lemmes le resterait. Les
+/// fils tournent jusqu'à la fin du processus.
 pub fn spawn(service: Arc<Service>) {
     let svc = service.clone();
     std::thread::Builder::new()
         .name("nknown-collecte".into())
         .spawn(move || {
+            while let Err(e) = svc.ensure_models() {
+                eprintln!("modèles : {e} ; nouvel essai dans 5 min");
+                std::thread::sleep(MODELS_RETRY);
+            }
+            if svc.config().watch_files {
+                let watched = svc.clone();
+                std::thread::Builder::new()
+                    .name("nknown-surveillance".into())
+                    .spawn(move || {
+                        if let Err(e) = watch_folders(&watched) {
+                            eprintln!("surveillance des dossiers : {e}");
+                        }
+                    })
+                    .expect("fil de surveillance");
+            }
             loop {
                 for (spec, r) in svc.collect_all() {
                     match r {
@@ -34,17 +54,6 @@ pub fn spawn(service: Arc<Service>) {
             }
         })
         .expect("fil de collecte");
-
-    if service.config().watch_files {
-        std::thread::Builder::new()
-            .name("nknown-surveillance".into())
-            .spawn(move || {
-                if let Err(e) = watch_folders(&service) {
-                    eprintln!("surveillance des dossiers : {e}");
-                }
-            })
-            .expect("fil de surveillance");
-    }
 }
 
 /// Dossiers configurés comme sources.

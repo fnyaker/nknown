@@ -175,6 +175,12 @@ nknownd                     # socket : $XDG_RUNTIME_DIR/nknown/nknownd.sock (060
 curl --unix-socket "$(nknownd --socket)" http://x/api/v1/status
 ```
 
+Au premier lancement, le démon télécharge les modèles (lexiques et tagueurs des 4 langues,
+analyseur quantifié : 291 Mo) depuis la release `models-v1` du dépôt, vérifie leur SHA-256 et les
+charge sans redémarrer ; `/status` montre la progression, et rien n'est indexé avant qu'ils soient
+là. À la main : `nknown models status`, `nknown models fetch`. Nouvelle release de modèles :
+`packaging/models/stage.sh`.
+
 Configuration `$XDG_CONFIG_HOME/nknown/config.toml` (créée au premier ajout de source) :
 
 ```toml
@@ -182,8 +188,8 @@ sources = ["/home/moi/Documents", "rss:https://exemple.org/flux.xml"]
 collect_every = "30m"     # collecte périodique (minimum 1 min)
 watch_files = true        # réindexe les dossiers à chaque modification
 # models = "/chemin/des/modèles"   # défaut : $XDG_DATA_HOME/nknown/models
-# parser = "parser-multi"          # analyseur XLM-R quantifié, relatif au dossier des
-#                                  # modèles ; ~215 Mo de plus, désactivé par défaut
+# parser = "parser-multi"          # analyseur XLM-R quantifié (défaut) ; "" pour s'en passer
+#                                  # (~215 Mo de mémoire en moins, adjectifs moins bien reliés)
 # parser_precision = "standard"    # ou "light" : ~50 Mo de moins, ~1 point de LAS en moins
 ```
 

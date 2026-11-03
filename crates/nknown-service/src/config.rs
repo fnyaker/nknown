@@ -43,6 +43,9 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Analyseur fourni (téléchargé au premier lancement avec les autres modèles).
+pub const DEFAULT_PARSER: &str = "parser-multi";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -56,7 +59,7 @@ pub struct Config {
     /// `<données>/models`.
     pub models: Option<PathBuf>,
     /// Analyseur neuronal : dossier (CPU) ou `vulkan:<dossier>` (GPU), relatif au dossier des
-    /// modèles. Aucun par défaut.
+    /// modèles. Par défaut l'analyseur fourni ; aucun avec `parser = ""`.
     pub parser: Option<String>,
     /// Précision de l'analyseur sur CPU.
     pub parser_precision: ParserPrecision,
@@ -97,7 +100,7 @@ impl Default for Config {
             collect_every: "30m".into(),
             watch_files: true,
             models: None,
-            parser: None,
+            parser: Some(DEFAULT_PARSER.into()),
             parser_precision: ParserPrecision::Standard,
         }
     }

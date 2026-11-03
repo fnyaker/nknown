@@ -16,6 +16,8 @@ use nknown_sources::LocalFiles;
 
 const USAGE: &str = "\
 usage :
+  nknown models status|fetch [dossier]          (modèles du premier lancement ; défaut :
+                                                 dossier des modèles de la configuration)
   nknown ingest <dossier> [lexique.lex]
   nknown index <base.redb> <lexique.lex> <source> [modèle]...
   nknown search <base.redb> <lexique.lex> <requête> [nombre] [--explain]
@@ -41,6 +43,49 @@ usage :
 
 type Res = Result<(), Box<dyn Error>>;
 
+/// Modèles du manifeste : ce qui manque selon la configuration, et leur téléchargement.
+fn models_cmd(action: &str, dir: Option<&str>) -> Res {
+    use nknown_service::{config, fetch};
+    let path = config::config_path();
+    let cfg = config::Config::load(&path)?;
+    let dir = match dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => cfg.models_dir(&config::data_dir()),
+    };
+    let manifest = fetch::manifest();
+    let missing = fetch::missing(&manifest, &dir, &fetch::groups(&cfg));
+    let total: u64 = missing.iter().map(|f| f.size).sum();
+    if missing.is_empty() {
+        println!("modèles complets dans {}", dir.display());
+        return Ok(());
+    }
+    println!(
+        "{} fichiers manquants dans {} ({:.0} Mo) :",
+        missing.len(),
+        dir.display(),
+        total as f64 / 1e6
+    );
+    for f in &missing {
+        println!("  {} ({:.1} Mo)", f.path, f.size as f64 / 1e6);
+    }
+    if action == "fetch" {
+        let mut shown = 0;
+        fetch::fetch(&manifest, &dir, &missing, &mut |done, total| {
+            let pct = done * 100 / total.max(1);
+            if pct >= shown + 5 || done == total {
+                shown = pct;
+                eprint!(
+                    "\r{pct:3} %  {:.0} / {:.0} Mo",
+                    done as f64 / 1e6,
+                    total as f64 / 1e6
+                );
+            }
+        })?;
+        eprintln!("\nmodèles prêts");
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -59,6 +104,9 @@ fn main() -> ExitCode {
             search(base, lexicon, query, limit, explain)
         }
         ["rank", base] => rank(base),
+        ["models", action @ ("status" | "fetch"), dir @ ..] if dir.len() <= 1 => {
+            models_cmd(action, dir.first().copied())
+        }
         ["ingest", dir] => ingest(dir, None),
         ["ingest", dir, lexicon] => ingest(dir, Some(lexicon)),
         ["lexicon", "build", out, sources @ ..] if !sources.is_empty() => {

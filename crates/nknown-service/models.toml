@@ -1,0 +1,86 @@
+# Généré par packaging/models/stage.sh : ne pas modifier à la main.
+release = "https://github.com/fnyaker/nknown/releases/download/models-v1"
+
+[[file]]
+path = "fr.lex"
+asset = "fr.lex"
+group = "base"
+size = 7756653
+sha256 = "ad4f24940a83918d636bd420c1daad88531ff706ee323df78ac747ee9772bc80"
+
+[[file]]
+path = "fr.tag"
+asset = "fr.tag"
+group = "base"
+size = 2534496
+sha256 = "caaa48fce53ee26caa8bcfef8dcf3ae215ebe35afe8addd69640986fe8a3c8a4"
+
+[[file]]
+path = "en.lex"
+asset = "en.lex"
+group = "base"
+size = 31695536
+sha256 = "6e25bac1a7a7b467b2cf1ebc745b4673bf6638bd7f98e4a21cdded65b47d389e"
+
+[[file]]
+path = "en.tag"
+asset = "en.tag"
+group = "base"
+size = 2395044
+sha256 = "5b0d7e52493724b006886f26ab7f0515ccfe36c8935288452177d328973869c1"
+
+[[file]]
+path = "ru.lex"
+asset = "ru.lex"
+group = "base"
+size = 10164522
+sha256 = "3265b804fb33fe7aa0cf3796cde88f0f06b15653d8ed91e98796d2d41c6763c1"
+
+[[file]]
+path = "ru.tag"
+asset = "ru.tag"
+group = "base"
+size = 9243280
+sha256 = "6532b0cee3b5082b27b718051303aab1c8f65336d0ac7984188f81a3035f1d3b"
+
+[[file]]
+path = "zh.lex"
+asset = "zh.lex"
+group = "base"
+size = 8317975
+sha256 = "e65d523aa90827ec75018dc6aaaa77c86e95eeb3366adba33126c388306eea2c"
+
+[[file]]
+path = "zh.tag"
+asset = "zh.tag"
+group = "base"
+size = 3364257
+sha256 = "8b60098110fef4153346a7d68ecd86a762a06f365eb9eae2f434ff85165e30c6"
+
+[[file]]
+path = "parser-multi/parser.json"
+asset = "parser-multi--parser.json"
+group = "parser"
+size = 2160
+sha256 = "092e192bcd512cd15a103065477b9308395224c80efaaec7e9fa8e8abbe281de"
+
+[[file]]
+path = "parser-multi/tokenizer.nkt"
+asset = "parser-multi--tokenizer.nkt"
+group = "parser"
+size = 4866140
+sha256 = "10f12d81d03bb3c2c3f0dbd62f874fbdf8131e06a35a69c8499e0ff040e78219"
+
+[[file]]
+path = "parser-multi/model.q4k-q8.gguf"
+asset = "parser-multi--model.q4k-q8.gguf"
+group = "standard"
+size = 210980608
+sha256 = "a0630f9ed464e37edb17250fd17cb7f649d88d88263d7d9b7e2cffbc22c3a858"
+
+[[file]]
+path = "parser-multi/model.q4k.gguf"
+asset = "parser-multi--model.q4k.gguf"
+group = "light"
+size = 168513280
+sha256 = "9d2dafaad854f00527609c108751b607dba54afa7770f6439a72c3fe48eabd49"

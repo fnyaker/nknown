@@ -133,15 +133,19 @@ fn check_pre_tokenizer(v: &serde_json::Value) -> Result<()> {
 
 impl Tokenizer {
     /// Charge `tokenizer.json`, ou sa forme compacte `tokenizer.nkt` si elle est à jour.
+    /// Sans `tokenizer.json` (modèle téléchargé), seule la forme compacte est lue.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let cache = path.with_file_name(CACHE);
         let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-        if let (Some(c), Some(j)) = (modified(&cache), modified(path))
-            && c >= j
-            && let Ok(t) = Self::read_compact(&cache)
-        {
-            return Ok(t);
+        match (modified(&cache), modified(path)) {
+            (Some(_), None) => return Self::read_compact(&cache),
+            (Some(c), Some(j)) if c >= j => {
+                if let Ok(t) = Self::read_compact(&cache) {
+                    return Ok(t);
+                }
+            }
+            _ => {}
         }
         let t = Self::from_json(&std::fs::read(path)?)?;
         if let Err(e) = t.write_compact(&cache) {

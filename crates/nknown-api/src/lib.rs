@@ -382,6 +382,26 @@ pub struct Status {
     pub parser: bool,
     /// Une collecte est en cours.
     pub collecting: bool,
+    /// Modèles (lexiques, analyseur) : prêts, ou en cours de téléchargement.
+    pub models: ModelsState,
+}
+
+/// État des modèles : téléchargés au premier lancement, rechargés quand ils sont prêts.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ModelsState {
+    Ready,
+    #[default]
+    Missing,
+    /// Octets reçus sur le total à télécharger.
+    Downloading {
+        done: u64,
+        total: u64,
+    },
+    /// Échec (hors ligne…) : nouvel essai plus tard ; le moteur fonctionne sans lemmes.
+    Failed {
+        message: String,
+    },
 }
 
 /// `POST /session` (interface web) : le jeton s'échange contre un cookie `HttpOnly`.
