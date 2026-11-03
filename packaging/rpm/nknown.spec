@@ -6,7 +6,7 @@ Summary:        %{summary}
 License:        Proprietary
 URL:            %{homepage}
 ExclusiveArch:  x86_64
-Requires:       glibc >= 2.31
+Requires:       glibc >= 2.28
 AutoReqProv:    no
 
 %description

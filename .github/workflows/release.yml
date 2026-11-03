@@ -1,7 +1,7 @@
 # Release : à chaque tag v*, construit tous les paquets et les publie avec SHA256SUMS.
 #
-# Le binaire est compilé dans Debian bullseye (glibc 2.31) pour tourner sur toutes les
-# distributions récentes ; chaque format est ensuite produit là où son outil est chez lui.
+# Le binaire est compilé dans Rocky Linux 8 (glibc 2.28) pour tourner sur toutes les
+# distributions de moins de ~6 ans ; chaque format est ensuite produit là où son outil est chez lui.
 name: Release
 
 on:
@@ -13,15 +13,12 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  binary:
     runs-on: ubuntu-latest
-    container: debian:bullseye
+    container: rockylinux:8
     steps:
       - name: Outils
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends \
-            ca-certificates curl git build-essential pkg-config zip rpm dpkg-dev file xz-utils
+        run: dnf install -y -q gcc make git curl tar
       - uses: actions/checkout@v4
       - name: Rust
         run: |
@@ -32,9 +29,33 @@ jobs:
           path: |
             ~/.cargo/registry
             target
-          key: dist-bullseye-${{ hashFiles('Cargo.lock') }}
+          key: dist-el8-${{ hashFiles('Cargo.lock') }}
       - name: Binaire (profil dist)
         run: cargo build --profile dist -p nknown-cli --no-default-features --features neural
+      - name: Essai
+        run: |
+          target/dist/nknown --version
+          objdump -T target/dist/nknown | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          tar -C target/dist -cf nknown-bin.tar nknown
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary
+          path: nknown-bin.tar
+
+  build:
+    needs: binary
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Outils
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git zip rpm dpkg-dev file xz-utils
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary
       - name: appimagetool
         run: |
           curl -fsSL -o /usr/local/bin/appimagetool \
@@ -43,11 +64,14 @@ jobs:
       - name: Paquets
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
-        run: packaging/build.sh tar zip deb rpm appimage
-      - name: Essai du binaire et de l'AppImage
         run: |
-          dist/stage/nknown-linux-x86_64/bin/nknown --version
-          APPIMAGE_EXTRACT_AND_RUN=1 dist/NKnown-x86_64.AppImage --version
+          mkdir -p bin && tar -xf nknown-bin.tar -C bin
+          NKNOWN_BINARY=$PWD/bin/nknown packaging/build.sh tar zip deb rpm appimage
+      - name: Essai des paquets
+        run: |
+          dist/NKnown-x86_64.AppImage --version
+          dpkg -i dist/nknown_*_amd64.deb && nknown --version && nknownd --socket
+          rpm -qlp dist/nknown-*.rpm
       - uses: actions/upload-artifact@v4
         with:
           name: dist-main
@@ -110,6 +134,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: dist-*
           merge-multiple: true
       - name: Sommes de contrôle
         run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NKnown : installeur universel (toute distribution Linux x86_64, glibc ≥ 2.31).
+# NKnown : installeur universel (toute distribution Linux x86_64, glibc ≥ 2.28).
 #
 # En une ligne, dernière version :
 #   curl -fsSL https://raw.githubusercontent.com/fnyaker/nknown/main/packaging/install.sh | bash

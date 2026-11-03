@@ -4,8 +4,8 @@
 #   packaging/build.sh [format...]     formats : tar zip deb rpm arch appimage flatpak
 #
 # Sans argument : tous les formats dont l'outil est présent. Le binaire est target/dist/nknown
-# (construit au besoin) ou $NKNOWN_BINARY. Pour des binaires portables (glibc ≥ 2.31), la CI
-# de release le compile dans Debian bullseye : .github/workflows/release.yml.
+# (construit au besoin) ou $NKNOWN_BINARY. Pour des binaires portables (glibc ≥ 2.28), la CI
+# de release le compile dans Rocky Linux 8 : .github/workflows/release.yml.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -81,7 +81,7 @@ Package: nknown
 Version: $version
 Architecture: amd64
 Maintainer: $maintainer
-Depends: libc6 (>= 2.31), libgcc-s1
+Depends: libc6 (>= 2.28), libgcc-s1 | libgcc1
 Section: utils
 Priority: optional
 Homepage: $homepage
