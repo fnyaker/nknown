@@ -6,7 +6,7 @@
 //! les noyaux fusionnés, plus rapides. Noms des poids identiques à Hugging Face.
 //!
 //! En inférence, l'encodeur peut être en 8 bits ([`Quantized`]) : matrices des couches et
-//! table des plongements en Q8_0 (blocs de 32 valeurs, une échelle f16 par bloc) ou Q6_K. Les
+//! table des plongements en Q8_0 (blocs de 32 valeurs, une échelle f16 par bloc) Q6_K ou Q4_K. Les
 //! couches calculent en entiers ; seules les lignes lues de la table sont décodées.
 
 use std::collections::HashMap;
@@ -121,7 +121,7 @@ impl Proj {
 #[derive(Debug)]
 enum Table {
     Full(Tensor),
-    /// Lignes en blocs quantifiés (Q8_0 ou Q6_K), décodées à la lecture.
+    /// Lignes en blocs quantifiés (Q8_0, Q6_K ou Q4_K), décodées à la lecture.
     Quant(Arc<QTensor>),
 }
 
@@ -131,6 +131,9 @@ const Q8_BLOCK_BYTES: usize = 2 + Q8_BLOCK;
 /// Q6_K : 256 valeurs de 6 bits (4 bits bas, 2 bits hauts), 16 échelles i8, échelle f16.
 const Q6_BLOCK: usize = 256;
 const Q6_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
+/// Q4_K : échelle et minimum f16, 8 couples (échelle, minimum) sur 6 bits, 256 valeurs de 4 bits.
+const Q4_BLOCK: usize = 256;
+const Q4_BLOCK_BYTES: usize = 2 + 2 + 12 + 128;
 
 /// Décode un bloc quantifié à la suite de `out`.
 type DecodeBlock = fn(&[u8], &mut Vec<f32>);
@@ -138,6 +141,33 @@ type DecodeBlock = fn(&[u8], &mut Vec<f32>);
 fn decode_q8_0(block: &[u8], out: &mut Vec<f32>) {
     let scale = half::f16::from_ne_bytes([block[0], block[1]]).to_f32();
     out.extend(block[2..].iter().map(|&v| f32::from(v as i8) * scale));
+}
+
+/// Échelle et minimum du sous-bloc `j` de Q4_K, sur 6 bits (ggml `get_scale_min_k4`).
+fn scale_min_k4(j: usize, q: &[u8]) -> (u8, u8) {
+    if j < 4 {
+        (q[j] & 63, q[j + 4] & 63)
+    } else {
+        (
+            (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4),
+            (q[j + 4] >> 4) | ((q[j] >> 6) << 4),
+        )
+    }
+}
+
+/// Même calcul que ggml (`dequantize_row_q4_K`).
+fn decode_q4_k(block: &[u8], out: &mut Vec<f32>) {
+    let d = half::f16::from_ne_bytes([block[0], block[1]]).to_f32();
+    let min = half::f16::from_ne_bytes([block[2], block[3]]).to_f32();
+    let (scales, qs) = block[4..].split_at(12);
+    for (chunk, q) in qs.chunks_exact(32).enumerate() {
+        let (sc, m) = scale_min_k4(2 * chunk, scales);
+        let (d1, m1) = (d * f32::from(sc), min * f32::from(m));
+        let (sc, m) = scale_min_k4(2 * chunk + 1, scales);
+        let (d2, m2) = (d * f32::from(sc), min * f32::from(m));
+        out.extend(q.iter().map(|&v| d1 * f32::from(v & 0xF) - m1));
+        out.extend(q.iter().map(|&v| d2 * f32::from(v >> 4) - m2));
+    }
 }
 
 /// Même calcul que ggml (`dequantize_row_q6_K`).
@@ -183,6 +213,7 @@ impl Table {
         let (block, block_bytes, decode): (usize, usize, DecodeBlock) = match q.dtype() {
             GgmlDType::Q8_0 => (Q8_BLOCK, Q8_BLOCK_BYTES, decode_q8_0),
             GgmlDType::Q6K => (Q6_BLOCK, Q6_BLOCK_BYTES, decode_q6_k),
+            GgmlDType::Q4K => (Q4_BLOCK, Q4_BLOCK_BYTES, decode_q4_k),
             other => {
                 return Err(candle_core::Error::Msg(format!(
                     "table des plongements en {other:?} : non prise en charge"
@@ -212,13 +243,32 @@ impl Table {
     }
 }
 
+/// Formats de quantification : la table des plongements (lue ligne à ligne, normalisée
+/// aussitôt) supporte mieux une faible précision que les matrices des couches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scheme {
+    pub table: GgmlDType,
+    pub layers: GgmlDType,
+}
+
+impl Scheme {
+    pub const fn uniform(dtype: GgmlDType) -> Self {
+        Self {
+            table: dtype,
+            layers: dtype,
+        }
+    }
+}
+
+const WORD_EMBEDDINGS: &str = "embeddings.word_embeddings.weight";
+
 /// Poids de l'encodeur gardés quantifiés, par nom Hugging Face.
 pub type Quantized = HashMap<String, Arc<QTensor>>;
 
 /// Poids quantifiés en inférence : la table des plongements et les matrices des couches.
 /// Biais, normalisations, positions et têtes, petits, restent en f32.
 pub fn is_quantizable(name: &str) -> bool {
-    name == "embeddings.word_embeddings.weight"
+    name == WORD_EMBEDDINGS
         || (name.starts_with("encoder.layer.")
             && [
                 "self.query.weight",
@@ -230,15 +280,20 @@ pub fn is_quantizable(name: &str) -> bool {
             .any(|s| name.ends_with(s)))
 }
 
-/// Sépare des poids f32 en poids gardés en f32 et poids quantifiés (`dtype` : Q8_0 ou Q6_K).
+/// Sépare des poids f32 en poids gardés en f32 et poids quantifiés (`dtype` : Q8_0, Q6_K ou Q4_K).
 /// Chaque tenseur f32 quantifié est libéré aussitôt.
 pub fn quantize_weights(
     tensors: HashMap<String, Tensor>,
-    dtype: GgmlDType,
+    scheme: Scheme,
 ) -> Result<(HashMap<String, Tensor>, Quantized)> {
     let mut full = HashMap::new();
     let mut quant = Quantized::new();
     for (name, t) in tensors {
+        let dtype = if name == WORD_EMBEDDINGS {
+            scheme.table
+        } else {
+            scheme.layers
+        };
         if is_quantizable(&name) && t.rank() == 2 && t.dim(1)? % dtype.block_size() == 0 {
             let q = QTensor::quantize(&t.to_dtype(DType::F32)?, dtype)?;
             quant.insert(name, Arc::new(q));
@@ -395,11 +450,15 @@ mod tests {
     fn quantized_table_matches_full_table() {
         let dev = Device::Cpu;
         let t = Tensor::randn(0f32, 1.0, (50, 512), &dev).unwrap();
-        for (dtype, tolerance) in [(GgmlDType::Q8_0, 0.03), (GgmlDType::Q6K, 0.12)] {
+        for (dtype, tolerance) in [
+            (GgmlDType::Q8_0, 0.03),
+            (GgmlDType::Q6K, 0.12),
+            (GgmlDType::Q4K, 0.5),
+        ] {
             let mut weights = HashMap::new();
             weights.insert("embeddings.word_embeddings.weight".to_owned(), t.clone());
             weights.insert("embeddings.LayerNorm.weight".to_owned(), t.clone());
-            let (full, quant) = quantize_weights(weights, dtype).unwrap();
+            let (full, quant) = quantize_weights(weights, Scheme::uniform(dtype)).unwrap();
             // Seule la table est quantifiée ; la normalisation reste en f32.
             assert!(full.contains_key("embeddings.LayerNorm.weight"));
             let qt = quant["embeddings.word_embeddings.weight"].clone();

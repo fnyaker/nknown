@@ -127,33 +127,31 @@ nknown parser train vulkan xlm-roberta-base/ multi-ud-train.conllu multi-ud-dev.
 nknown eval data/ en_ewt-ud-test.conllu vulkan:data/parser-multi   # langue tirée du nom du corpus
 ```
 
-### En 8 bits sur CPU
+### Analyseur quantifié sur CPU
 
-Sur CPU, l'encodeur est quantifié en Q8_0 (matrices des couches et table des plongements :
-blocs de 32 valeurs, une échelle par bloc ; têtes en f32). Au premier chargement, le modèle f32
-est converti puis enregistré dans `model.q8.gguf` à côté de lui ; ensuite seul ce fichier est lu.
-`f32:<dossier>` garde la pleine précision, `q6:<dossier>` passe en 6 bits (Q6_K, super-blocs de
-256 valeurs, 6,56 bits par poids, cache `model.q6k.gguf`).
+Sur CPU, l'encodeur est quantifié au chargement : par défaut, la table des plongements (70 % des
+poids, lue ligne à ligne puis normalisée) en 4 bits (Q4_K) et les matrices des couches en 8 bits
+(Q8_0) ; les têtes restent en f32. Le modèle converti est enregistré à côté du modèle f32
+(`model.q4k-q8.gguf`…) ; ensuite seul ce fichier est lu. Préfixes : `q8:`, `q6:`, `q4:` (tout
+l'encodeur en 8, 6 ou 4 bits), `f32:` (pleine précision).
 
-| | f32 | 8 bits (défaut) | 6 bits |
-|---|---|---|---|
-| Poids sur disque | 1 120 Mo | 307 Mo | 240 Mo |
-| Démon avec l'analyseur (mémoire résidente) | 1 548 Mo | 763 Mo | 688 Mo |
-| Pic au chargement | 2 318 Mo | 763 Mo | 688 Mo |
-| French-GSD, test complet (CPU, 6 fils) | 16,8 s | 12,3 s | 12,7 s |
+| | f32 | 8 bits | 6 bits | **4 + 8 bits (défaut)** | 4 bits |
+|---|---|---|---|---|---|
+| Poids sur disque | 1 120 Mo | 307 Mo | 240 Mo | **211 Mo** | 169 Mo |
+| Démon avec l'analyseur | 1 548 Mo | 763 Mo | 688 Mo | **668 Mo** | 618 Mo |
+| French-GSD, test complet (CPU, 6 fils) | 16,8 s | 12,3 s | 12,7 s | **11,8 s** | 11,6 s |
 
-| LAS | f32 | 8 bits | 6 bits |
-|---|---|---|---|
-| French-GSD | 92,40 % | 92,41 % | 92,27 % |
-| English-EWT | 93,0 % | 92,85 % | 92,87 % |
-| Russian-GSD | 90,2 % | 90,20 % | 90,23 % |
-| Russian-Taiga | 85,1 % | 85,01 % | 85,12 % |
-| Chinese-GSDSimp | 84,7 % | 84,61 % | 84,40 % |
+| LAS | f32 | 8 bits | 6 bits | **4 + 8 bits** | 4 bits |
+|---|---|---|---|---|---|
+| French-GSD | 92,40 % | 92,41 % | 92,27 % | **92,37 %** | 91,66 % |
+| English-EWT | 93,0 % | 92,85 % | 92,87 % | **92,94 %** | 92,10 % |
+| Russian-GSD | 90,2 % | 90,20 % | 90,23 % | **90,13 %** | 89,79 % |
+| Russian-Taiga | 85,1 % | 85,01 % | 85,12 % | **84,98 %** | 84,11 % |
+| Chinese-GSDSimp | 84,7 % | 84,61 % | 84,40 % | **84,59 %** | 83,16 % |
 
-Le 6 bits reste dans le bruit sauf en chinois (−0,3) pour 75 Mo de moins : le 8 bits est gardé
-par défaut.
+Toute la perte du 4 bits vient des couches : la table, elle, s'en accommode sans rien perdre.
 
-Des 762 Mo, ~157 Mo reviennent au démon sans analyseur et ~295 Mo au tokeniseur XLM-R chargé
+Des 668 Mo, ~157 Mo reviennent au démon sans analyseur et ~295 Mo au tokeniseur XLM-R chargé
 par `tokenizers` (son trie de 250 000 sous-mots).
 
 ## Démon local
@@ -172,8 +170,8 @@ sources = ["/home/moi/Documents", "rss:https://exemple.org/flux.xml"]
 collect_every = "30m"     # collecte périodique (minimum 1 min)
 watch_files = true        # réindexe les dossiers à chaque modification
 # models = "/chemin/des/modèles"   # défaut : $XDG_DATA_HOME/nknown/models
-# parser = "parser-multi"          # analyseur XLM-R en 8 bits, relatif au dossier des
-#                                  # modèles ; ~600 Mo de plus, désactivé par défaut
+# parser = "parser-multi"          # analyseur XLM-R quantifié, relatif au dossier des
+#                                  # modèles ; ~510 Mo de plus, désactivé par défaut
 ```
 
 

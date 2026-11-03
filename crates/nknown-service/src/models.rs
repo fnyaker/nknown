@@ -50,7 +50,7 @@ pub fn load_pipeline(lexicon: &Path, models: &[&str]) -> Result<Pipeline, Error>
 /// Un chemin de modèle relatif (`parser-multi`, `vulkan:parser-multi`) désigne un modèle du
 /// dossier des modèles.
 pub fn resolve(spec: &str, models_dir: &Path) -> String {
-    let (prefix, path) = ["vulkan:", "f32:", "q6:"]
+    let (prefix, path) = ["vulkan:", "f32:", "q8:", "q6:", "q4:"]
         .into_iter()
         .find_map(|p| spec.strip_prefix(p).map(|rest| (p, rest)))
         .unwrap_or(("", spec));
@@ -68,10 +68,13 @@ enum Bits {
     F32,
     Q8,
     Q6,
+    Q4,
+    Q4Table,
 }
 
-/// Ajoute un modèle : tagueur (fichier), analyseur CPU en 8 bits (dossier), en 6 bits
-/// (`q6:<dossier>`) ou en pleine précision (`f32:<dossier>`), analyseur GPU (`vulkan:<dossier>`).
+/// Ajoute un modèle : tagueur (fichier), analyseur GPU (`vulkan:<dossier>`) ou CPU (dossier :
+/// table des plongements en 4 bits et couches en 8 bits ; `q8:`, `q6:`, `q4:` : tout en 8, 6 ou
+/// 4 bits ; `f32:` : pleine précision).
 pub fn add_model(pipeline: Pipeline, spec: &str) -> Result<Pipeline, Error> {
     if let Some(dir) = spec.strip_prefix("vulkan:") {
         with_vulkan_parser(pipeline, dir)
@@ -79,8 +82,12 @@ pub fn add_model(pipeline: Pipeline, spec: &str) -> Result<Pipeline, Error> {
         with_parser(pipeline, dir, Bits::F32)
     } else if let Some(dir) = spec.strip_prefix("q6:") {
         with_parser(pipeline, dir, Bits::Q6)
+    } else if let Some(dir) = spec.strip_prefix("q8:") {
+        with_parser(pipeline, dir, Bits::Q8)
+    } else if let Some(dir) = spec.strip_prefix("q4:") {
+        with_parser(pipeline, dir, Bits::Q4)
     } else if Path::new(spec).is_dir() {
-        with_parser(pipeline, spec, Bits::Q8)
+        with_parser(pipeline, spec, Bits::Q4Table)
     } else {
         let lang = lang_of(Path::new(spec)).unwrap_or(Lang::FRA);
         Ok(pipeline.with_tagger(lang, Tagger::load(spec)?))
@@ -112,6 +119,8 @@ fn with_parser(pipeline: Pipeline, dir: &str, bits: Bits) -> Result<Pipeline, Er
         Bits::F32 => Precision::F32,
         Bits::Q8 => Precision::Int8,
         Bits::Q6 => Precision::Int6,
+        Bits::Q4 => Precision::Int4,
+        Bits::Q4Table => Precision::Int4Table,
     };
     let parser = NeuralParser::load_with(dir, precision).map_err(Error::model)?;
     let langs = parser.langs();
