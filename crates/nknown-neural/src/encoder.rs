@@ -132,6 +132,9 @@ const Q8_BLOCK_BYTES: usize = 2 + Q8_BLOCK;
 const Q6_BLOCK: usize = 256;
 const Q6_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
 
+/// Décode un bloc quantifié à la suite de `out`.
+type DecodeBlock = fn(&[u8], &mut Vec<f32>);
+
 fn decode_q8_0(block: &[u8], out: &mut Vec<f32>) {
     let scale = half::f16::from_ne_bytes([block[0], block[1]]).to_f32();
     out.extend(block[2..].iter().map(|&v| f32::from(v as i8) * scale));
@@ -177,8 +180,7 @@ impl Table {
             Self::Full(t) => return Ok(t.index_select(ids, 0)?),
             Self::Quant(q) => q,
         };
-        let (block, block_bytes, decode): (usize, usize, fn(&[u8], &mut Vec<f32>)) = match q.dtype()
-        {
+        let (block, block_bytes, decode): (usize, usize, DecodeBlock) = match q.dtype() {
             GgmlDType::Q8_0 => (Q8_BLOCK, Q8_BLOCK_BYTES, decode_q8_0),
             GgmlDType::Q6K => (Q6_BLOCK, Q6_BLOCK_BYTES, decode_q6_k),
             other => {
