@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<component type="console-application">
+<component type="desktop-application">
   <id>io.github.fnyaker.NKnown</id>
   <name>NKnown</name>
   <summary>Base de connaissances personnelle : recherche et carte des liens</summary>
@@ -7,9 +7,18 @@
   <project_license>LicenseRef-proprietary</project_license>
   <description>
     <p>Indexe vos dossiers, flux et pages, analyse les textes (français, anglais, russe, chinois)
-    et relie mots, passages et documents dans un graphe pondéré.</p>
+    et relie mots, passages et documents dans un graphe pondéré. Chaque recherche montre la carte
+    des chemins qui mènent aux résultats.</p>
   </description>
+  <launchable type="desktop-id">io.github.fnyaker.NKnown.desktop</launchable>
   <url type="homepage">https://github.com/fnyaker/nknown</url>
-  <provides><binary>nknown</binary></provides>
-  <releases><release version="0.2.0" date="2026-11-03"/><release version="0.1.0" date="2026-11-03"/></releases>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/fnyaker/nknown/main/docs/captures/recherche.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.2.0" date="2026-11-03"/>
+    <release version="0.1.0" date="2026-11-03"/>
+  </releases>
 </component>

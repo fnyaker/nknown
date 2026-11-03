@@ -1,29 +1,48 @@
-# Flatpak de NKnown (packaging/build.sh flatpak). Le démon tourne dans le bac à sable :
-#   flatpak run --command=nknownd io.github.fnyaker.NKnown
-# Données dans ~/.var/app/io.github.fnyaker.NKnown ; socket partagé dans $XDG_RUNTIME_DIR/nknown.
+# Flatpak de l'app NKnown (Qt6/QML), compilée depuis les sources dans le SDK KDE.
+#   flatpak-builder --user --install-deps-from=flathub build packaging/flatpak/io.github.fnyaker.NKnown.yml
+# Moteur : le démon de l'hôte s'il tourne (socket partagé), sinon le cœur intégré à l'app ;
+# données dans ~/.var/app/io.github.fnyaker.NKnown.
 app-id: io.github.fnyaker.NKnown
-runtime: org.freedesktop.Platform
-runtime-version: '24.08'
-sdk: org.freedesktop.Sdk
-command: nknown
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: nknown-app
 finish-args:
-  - --share=network                # téléchargement des modèles, sources RSS et web
-  - --filesystem=xdg-documents:ro  # source par défaut : ~/Documents
-  - --filesystem=xdg-run/nknown:create  # socket du démon, visible de l'hôte
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --share=network                       # modèles (premier lancement), flux, Wikipédia
+  - --filesystem=xdg-documents:ro         # source par défaut ; les autres dossiers : portail
+  - --filesystem=xdg-run/nknown           # socket du démon de l'hôte
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-*
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.kwalletd6         # jeton d'un serveur distant
 modules:
   - name: nknown
     buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      # Les dépendances Rust sont téléchargées pendant la construction.
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/nknown/cargo
     build-commands:
-      - install -Dm755 bin/nknown /app/bin/nknown
-      - ln -s nknown /app/bin/nknownd
-      - install -Dm644 share/icons/hicolor/scalable/apps/nknown.svg /app/share/icons/hicolor/scalable/apps/io.github.fnyaker.NKnown.svg
-      - sed 's/^Icon=.*/Icon=io.github.fnyaker.NKnown/' nknown.desktop > io.github.fnyaker.NKnown.desktop
+      - cargo build --profile dist --locked -p nknown-desktop
+      - install -Dm755 target/dist/nknown-app /app/bin/nknown-app
+      - install -Dm644 packaging/share/nknown.svg /app/share/icons/hicolor/scalable/apps/io.github.fnyaker.NKnown.svg
+      - sed 's/^Icon=.*/Icon=io.github.fnyaker.NKnown/' packaging/share/nknown.desktop > io.github.fnyaker.NKnown.desktop
       - install -Dm644 io.github.fnyaker.NKnown.desktop /app/share/applications/io.github.fnyaker.NKnown.desktop
-      - install -Dm644 io.github.fnyaker.NKnown.metainfo.xml /app/share/metainfo/io.github.fnyaker.NKnown.metainfo.xml
+      - install -Dm644 packaging/flatpak/io.github.fnyaker.NKnown.metainfo.xml /app/share/metainfo/io.github.fnyaker.NKnown.metainfo.xml
     sources:
       - type: dir
-        path: payload
-      - type: file
-        path: io.github.fnyaker.NKnown.metainfo.xml
-      - type: file
-        path: nknown.desktop
+        path: ../..
+        skip:
+          - target
+          - dist
+          - .flatpak-builder
+          - build

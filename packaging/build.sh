@@ -164,14 +164,13 @@ build_appimage() {
 
 build_flatpak() {
   command -v flatpak-builder >/dev/null || { skip flatpak "flatpak-builder absent"; return; }
+  # L'app graphique, compilée depuis les sources dans le SDK KDE (voir le manifeste).
   local d=$dist/stage/flatpak
   rm -rf "$d" && mkdir -p "$d"
-  cp "$pkg/flatpak/io.github.fnyaker.NKnown.yml" "$pkg/flatpak/io.github.fnyaker.NKnown.metainfo.xml" "$d/"
-  cp "$pkg/appimage/nknown.desktop" "$d/nknown.desktop"
-  cp -r "$stage" "$d/payload"
-  (cd "$d" && flatpak-builder --user --install-deps-from=flathub --force-clean \
-      --repo=repo build io.github.fnyaker.NKnown.yml >/dev/null \
-    && flatpak build-bundle repo "$dist/NKnown-x86_64.flatpak" io.github.fnyaker.NKnown)
+  (cd "$root" && flatpak-builder --user --install-deps-from=flathub --force-clean \
+      --state-dir="$d/state" --repo="$d/repo" "$d/build" \
+      packaging/flatpak/io.github.fnyaker.NKnown.yml >/dev/null \
+    && flatpak build-bundle "$d/repo" "$dist/NKnown-x86_64.flatpak" io.github.fnyaker.NKnown)
   say "dist/NKnown-x86_64.flatpak"
 }
 

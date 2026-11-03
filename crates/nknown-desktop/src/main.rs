@@ -20,7 +20,9 @@ fn main() {
         return;
     }
     let mut app = QGuiApplication::new();
-    QGuiApplication::set_desktop_file_name(&QString::from("nknown"));
+    // Identifiant de fenêtre (Wayland) : celui du lanceur, `io.github.fnyaker.NKnown` en Flatpak.
+    let desktop_id = std::env::var("FLATPAK_ID").unwrap_or_else(|_| "nknown".into());
+    QGuiApplication::set_desktop_file_name(&QString::from(&desktop_id));
     if let Some(mut app) = app.as_mut() {
         app.as_mut().set_application_name(&QString::from("NKnown"));
         app.set_organization_domain(&QString::from("nknown.org"));
