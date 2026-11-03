@@ -145,8 +145,11 @@ jobs:
           docker build -t nknown:ci .
           docker run --rm -d --name nk -e NKNOWN_TOKEN=ci -p 127.0.0.1:8080:8080 nknown:ci
           for i in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:8080/ && break; sleep 1; done
-          curl -sf http://127.0.0.1:8080/ | grep -q nknown.js
-          curl -sf -o /dev/null http://127.0.0.1:8080/nknown_bg.wasm
+          # La page charge boot.js, qui charge l'interface (nknown.js, nknown_bg.wasm).
+          curl -sf http://127.0.0.1:8080/ | grep -q boot.js
+          for f in boot.js nknown.js nknown_bg.wasm style.css; do
+            curl -sf -o /dev/null "http://127.0.0.1:8080/$f"
+          done
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/status)" = 401
           curl -sf -H 'Authorization: Bearer ci' http://127.0.0.1:8080/api/v1/status
           docker stop nk
