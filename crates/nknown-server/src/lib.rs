@@ -2,6 +2,7 @@
 //! distant, l'interface web. Le même routeur sert le démon local (socket Unix, sans jeton).
 
 pub mod auth;
+pub mod daemon;
 
 use std::path::PathBuf;
 use std::sync::Arc;

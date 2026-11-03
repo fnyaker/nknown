@@ -1,12 +1,9 @@
 # Démon local de NKnown, service utilisateur (jamais système, rien dans /etc).
 #
-# Installé par l'app dans ~/.config/systemd/user/ et activé par défaut ; l'app le désactive
-# à la demande (systemctl --user disable --now nknownd). À la main :
-#   install -Dm644 nknownd.service ~/.config/systemd/user/nknownd.service
-#   systemctl --user enable --now nknownd
+# Installé par les paquets (/usr/lib/systemd/user, activé pour chaque utilisateur) ou par
+# install.sh ; désactivable : systemctl --user disable --now nknownd.
 #
-# ExecStart suppose une installation par paquet ; pour un binaire construit à la main :
-#   systemctl --user edit nknownd   →   [Service] ExecStart= / ExecStart=%h/.cargo/bin/nknownd
+# ExecStart suit l'installation par paquet ; install.sh le réécrit pour ~/.local ou /usr/local.
 
 [Unit]
 Description=NKnown : base de connaissances locale (indexation et recherche)

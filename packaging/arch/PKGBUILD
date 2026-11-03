@@ -1,0 +1,26 @@
+# Paquet Arch Linux à partir de l'archive de release (packaging/build.sh arch).
+pkgname=nknown-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Base de connaissances personnelle : recherche et carte des liens"
+arch=('x86_64')
+url="https://github.com/fnyaker/nknown"
+license=('LicenseRef-proprietary')
+depends=('glibc' 'gcc-libs')
+provides=('nknown')
+conflicts=('nknown')
+install=nknown.install
+options=('!strip' '!debug')
+source=("nknown-linux-x86_64.tar.gz::https://github.com/fnyaker/nknown/releases/download/v${pkgver}/nknown-linux-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd nknown-linux-x86_64
+  install -Dm755 bin/nknown "$pkgdir/usr/bin/nknown"
+  ln -s nknown "$pkgdir/usr/bin/nknownd"
+  install -Dm644 share/systemd/user/nknownd.service "$pkgdir/usr/lib/systemd/user/nknownd.service"
+  install -Dm644 share/doc/README.md "$pkgdir/usr/share/doc/nknown/README.md"
+  install -Dm644 share/doc/MODELS.md "$pkgdir/usr/share/doc/nknown/MODELS.md"
+  install -Dm644 share/icons/hicolor/scalable/apps/nknown.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/nknown.svg"
+  install -Dm644 share/applications/nknown.desktop "$pkgdir/usr/share/applications/nknown.desktop"
+}

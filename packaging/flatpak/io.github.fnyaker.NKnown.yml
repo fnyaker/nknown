@@ -1,0 +1,27 @@
+# Flatpak de NKnown (packaging/build.sh flatpak). Le démon tourne dans le bac à sable :
+#   flatpak run --command=nknownd io.github.fnyaker.NKnown
+# Données dans ~/.var/app/io.github.fnyaker.NKnown ; socket partagé dans $XDG_RUNTIME_DIR/nknown.
+app-id: io.github.fnyaker.NKnown
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: nknown
+finish-args:
+  - --share=network                # téléchargement des modèles, sources RSS et web
+  - --filesystem=xdg-documents:ro  # source par défaut : ~/Documents
+  - --filesystem=xdg-run/nknown:create  # socket du démon, visible de l'hôte
+modules:
+  - name: nknown
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/nknown /app/bin/nknown
+      - ln -s nknown /app/bin/nknownd
+      - install -Dm644 share/icons/hicolor/scalable/apps/nknown.svg /app/share/icons/hicolor/scalable/apps/io.github.fnyaker.NKnown.svg
+      - sed 's/^Icon=.*/Icon=io.github.fnyaker.NKnown/' share/applications/nknown.desktop > io.github.fnyaker.NKnown.desktop
+      - install -Dm644 io.github.fnyaker.NKnown.desktop /app/share/applications/io.github.fnyaker.NKnown.desktop
+      - install -Dm644 io.github.fnyaker.NKnown.metainfo.xml /app/share/metainfo/io.github.fnyaker.NKnown.metainfo.xml
+    sources:
+      - type: dir
+        path: payload
+      - type: file
+        path: io.github.fnyaker.NKnown.metainfo.xml

@@ -1,0 +1,129 @@
+# Release : à chaque tag v*, construit tous les paquets et les publie avec SHA256SUMS.
+#
+# Le binaire est compilé dans Debian bullseye (glibc 2.31) pour tourner sur toutes les
+# distributions récentes ; chaque format est ensuite produit là où son outil est chez lui.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:bullseye
+    steps:
+      - name: Outils
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config zip rpm dpkg-dev file xz-utils
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: |
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: dist-bullseye-${{ hashFiles('Cargo.lock') }}
+      - name: Binaire (profil dist)
+        run: cargo build --profile dist -p nknown-cli --no-default-features --features neural
+      - name: appimagetool
+        run: |
+          curl -fsSL -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /usr/local/bin/appimagetool
+      - name: Paquets
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: packaging/build.sh tar zip deb rpm appimage
+      - name: Essai du binaire et de l'AppImage
+        run: |
+          dist/stage/nknown-linux-x86_64/bin/nknown --version
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/NKnown-x86_64.AppImage --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-main
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+  arch:
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-main
+          path: incoming
+      - name: Paquet Arch
+        run: |
+          useradd -m builder
+          mkdir -p x && tar -xzf incoming/nknown-linux-x86_64.tar.gz -C x
+          chown -R builder: .
+          su builder -c "NKNOWN_BINARY=$PWD/x/nknown-linux-x86_64/bin/nknown packaging/build.sh arch"
+          pacman -U --noconfirm dist/nknown-bin-*.pkg.tar.zst
+          nknown --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-arch
+          path: dist/*.pkg.tar.zst
+
+  flatpak:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-main
+          path: incoming
+      - name: Flatpak
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          mkdir -p x && tar -xzf incoming/nknown-linux-x86_64.tar.gz -C x
+          NKNOWN_BINARY=$PWD/x/nknown-linux-x86_64/bin/nknown packaging/build.sh flatpak
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-flatpak
+          path: dist/*.flatpak
+
+  publish:
+    needs: [build, arch, flatpak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Sommes de contrôle
+        run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "NKnown ${GITHUB_REF_NAME#v}" --notes "Installation en une ligne :
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/packaging/install.sh | bash
+          \`\`\`
+
+          Ou : AppImage, Flatpak, .deb, .rpm, paquet Arch, archive portable (tar.gz / zip avec install.sh).
+          Les modèles (291 Mo) sont téléchargés au premier lancement du démon."

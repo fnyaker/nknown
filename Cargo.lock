@@ -4694,6 +4694,7 @@ dependencies = [
  "nknown-engine",
  "nknown-neural",
  "nknown-nlp",
+ "nknown-server",
  "nknown-service",
  "nknown-sources",
 ]

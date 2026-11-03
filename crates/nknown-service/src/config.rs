@@ -24,10 +24,17 @@ pub fn config_path() -> PathBuf {
 
 /// `$XDG_RUNTIME_DIR/nknown/nknownd.sock` : socket du démon local.
 pub fn socket_path() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    runtime.join("nknown").join("nknownd.sock")
+    match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        Some(runtime) => PathBuf::from(runtime).join("nknown").join("nknownd.sock"),
+        // Sans session (conteneur, cron) : un dossier temporaire propre à l'utilisateur.
+        None => {
+            use std::os::unix::fs::MetadataExt;
+            let uid = std::fs::metadata("/proc/self").map_or(0, |m| m.uid());
+            std::env::temp_dir()
+                .join(format!("nknown-{uid}"))
+                .join("nknownd.sock")
+        }
+    }
 }
 
 fn xdg(var: &str, fallback: &str) -> PathBuf {

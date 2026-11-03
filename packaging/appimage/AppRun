@@ -1,0 +1,8 @@
+#!/bin/sh
+# NKnown en AppImage : la ligne de commande, ou le démon (lancé sous le nom nknownd, ou
+# `NKnown-x86_64.AppImage daemon`).
+here=$(dirname "$(readlink -f "$0")")
+case $(basename "${ARGV0:-$0}") in
+  nknownd*) exec "$here/usr/bin/nknown" daemon "$@" ;;
+  *) exec "$here/usr/bin/nknown" "$@" ;;
+esac

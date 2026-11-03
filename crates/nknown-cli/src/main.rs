@@ -16,6 +16,7 @@ use nknown_sources::LocalFiles;
 
 const USAGE: &str = "\
 usage :
+  nknown daemon [--socket]                      (démon local ; aussi lancé sous le nom nknownd)
   nknown models status|fetch [dossier]          (modèles du premier lancement ; défaut :
                                                  dossier des modèles de la configuration)
   nknown ingest <dossier> [lexique.lex]
@@ -87,9 +88,22 @@ fn models_cmd(action: &str, dir: Option<&str>) -> Res {
 }
 
 fn main() -> ExitCode {
+    // Un seul binaire pour la ligne de commande et le démon (les modèles de détection de langue
+    // embarqués pèsent ~40 Mo) : `nknownd` est un lien vers `nknown`.
+    let invoked = std::env::args_os().next().unwrap_or_default();
+    let name = std::path::Path::new(&invoked)
+        .file_name()
+        .unwrap_or_default();
+    if name == "nknownd" || std::env::args().nth(1).as_deref() == Some("daemon") {
+        return nknown_server::daemon::main();
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
+        ["--version" | "-V"] => {
+            println!("nknown {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         ["index", base, lexicon, spec, models @ ..] => index(base, lexicon, spec, models),
         ["watch", base, lexicon, spec, every, models @ ..] => {
             watch(base, lexicon, spec, every, models)

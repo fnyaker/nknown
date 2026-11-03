@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- NKnown : la requête (anneau) reliée à un mot, un texte et un bout de code. Jetons de design/tokens.toml. -->
+  <rect width="256" height="256" rx="56" fill="#0A0D13"/>
+  <g stroke-linecap="round">
+    <line x1="128" y1="128" x2="70" y2="78" stroke="#6AA8FF" stroke-width="7" opacity=".9"/>
+    <line x1="128" y1="128" x2="192" y2="92" stroke="#FFC46B" stroke-width="10" opacity=".9"/>
+    <line x1="128" y1="128" x2="164" y2="196" stroke="#5CF0A6" stroke-width="5" opacity=".9"/>
+  </g>
+  <circle cx="70" cy="78" r="16" fill="#6AA8FF"/>
+  <rect x="174" y="74" width="36" height="36" rx="9" fill="#FFC46B"/>
+  <rect x="148" y="180" width="32" height="32" rx="8" fill="#5CF0A6"/>
+  <circle cx="128" cy="128" r="30" fill="#0A0D13" stroke="#7CF3FF" stroke-width="12"/>
+</svg>

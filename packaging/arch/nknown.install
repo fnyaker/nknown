@@ -1,0 +1,9 @@
+post_install() {
+  systemctl --global enable nknownd.service >/dev/null 2>&1 || true
+  echo "NKnown : démon activé pour chaque utilisateur (à la prochaine connexion)."
+  echo "Tout de suite : systemctl --user enable --now nknownd"
+}
+
+pre_remove() {
+  systemctl --global disable nknownd.service >/dev/null 2>&1 || true
+}

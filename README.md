@@ -4,6 +4,23 @@ Base de connaissances en Rust. Elle collecte des sources (RSS, fichiers, sites, 
 analyse les textes dans toutes les langues et relie mots, sens, passages et documents
 dans un graphe pondéré interrogeable (`actu paris`, ...).
 
+## Installation
+
+En une ligne (toute distribution Linux x86_64) :
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fnyaker/nknown/main/packaging/install.sh | bash
+```
+
+Installe `nknown` dans `~/.local/bin` (`--system` : `/usr/local`), active le démon `nknownd`
+(service systemd utilisateur, `--no-service` pour s'en passer) ; `--uninstall` désinstalle. Rien
+n'est écrit dans `/etc`. Les modèles (291 Mo) sont téléchargés au premier lancement du démon.
+
+Chaque [release](https://github.com/fnyaker/nknown/releases) fournit aussi : AppImage, Flatpak,
+`.deb`, `.rpm`, paquet Arch (`pacman -U`), archive portable (`tar.gz` ou `zip`, avec `install.sh`),
+et `SHA256SUMS`. Un seul binaire : `nknown` (ligne de commande), `nknownd` ou `nknown daemon`
+(démon). Paquets construits par `packaging/build.sh`, publiés par la CI à chaque tag `v*`.
+
 ## Crates
 
 | Crate | Rôle |
