@@ -2,3 +2,4 @@
 /data
 *.fst
 /dist/
+.qmlls.ini
