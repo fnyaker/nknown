@@ -8,11 +8,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
+use crate::tokenizer::Tokenizer;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::loss::cross_entropy;
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap};
 use nknown_nlp::conllu::GoldSentence;
-use tokenizers::Tokenizer;
 
 use crate::config::ParserConfig;
 use crate::data::{self, Example, GENDERS, IGNORE, N_UPOS, NUMBERS};

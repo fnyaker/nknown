@@ -144,7 +144,8 @@ essayées :
 | | f32 | 8 bits | 6 bits | **4 + 8 bits (`standard`)** | 4 bits (`light`) |
 |---|---|---|---|---|---|
 | Poids sur disque | 1 120 Mo | 307 Mo | 240 Mo | **211 Mo** | 169 Mo |
-| Démon avec l'analyseur | 1 548 Mo | 763 Mo | 688 Mo | **668 Mo** | 618 Mo |
+| Démon avec l'analyseur (tokeniseur `tokenizers`) | 1 548 Mo | 763 Mo | 688 Mo | 668 Mo | 618 Mo |
+| Démon avec l'analyseur (tokeniseur NKnown) | | | | **371 Mo** | **328 Mo** |
 | French-GSD, test complet (CPU, 6 fils) | 16,8 s | 12,3 s | 12,7 s | **11,8 s** | 11,6 s |
 
 | LAS | f32 | 8 bits | 6 bits | **4 + 8 bits** | 4 bits |
@@ -159,8 +160,11 @@ Toute la perte du 4 bits vient des couches : la table, elle, s'en accommode sans
 8 et le 6 bits uniformes, moins bons que `standard` en mémoire à précision égale, ne sont pas
 gardés.
 
-Des 668 Mo, ~157 Mo reviennent au démon sans analyseur et ~295 Mo au tokeniseur XLM-R chargé
-par `tokenizers` (son trie de 250 000 sous-mots).
+Le tokeniseur XLM-R est réimplémenté (`nknown_neural::tokenizer`) : chargé par `tokenizers`, il
+occupait ~295 Mo (un trie de tables de hachage pour 250 002 sous-mots) ; ici les sous-mots tiennent
+dans un automate `fst`, et `tokenizer.json` est converti une fois en `tokenizer.nkt` (4,9 Mo).
+Découpage identique à `tokenizers` sur les 164 958 phrases des corpus UD (4 616 034 sous-mots) et
+sur des cas limites (`cargo test --release -p nknown-neural same_as_huggingface -- --ignored`).
 
 ## Démon local
 
@@ -179,7 +183,7 @@ collect_every = "30m"     # collecte périodique (minimum 1 min)
 watch_files = true        # réindexe les dossiers à chaque modification
 # models = "/chemin/des/modèles"   # défaut : $XDG_DATA_HOME/nknown/models
 # parser = "parser-multi"          # analyseur XLM-R quantifié, relatif au dossier des
-#                                  # modèles ; ~510 Mo de plus, désactivé par défaut
+#                                  # modèles ; ~215 Mo de plus, désactivé par défaut
 # parser_precision = "standard"    # ou "light" : ~50 Mo de moins, ~1 point de LAS en moins
 ```
 

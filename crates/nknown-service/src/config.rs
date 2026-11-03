@@ -66,7 +66,7 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ParserPrecision {
-    /// Table des plongements en 4 bits, couches en 8 bits : précision intacte (~510 Mo).
+    /// Table des plongements en 4 bits, couches en 8 bits : précision intacte (~215 Mo).
     #[default]
     Standard,
     /// Tout en 4 bits : ~50 Mo de moins, environ un point d'exactitude en moins.

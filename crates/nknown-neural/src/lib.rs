@@ -18,6 +18,7 @@ pub mod error;
 pub mod model;
 pub mod mst;
 pub mod parser;
+pub mod tokenizer;
 pub mod train;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;

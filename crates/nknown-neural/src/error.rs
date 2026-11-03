@@ -50,10 +50,4 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-impl From<tokenizers::Error> for Error {
-    fn from(e: tokenizers::Error) -> Self {
-        Error::Tokenizer(e.to_string())
-    }
-}
-
 pub type Result<T> = std::result::Result<T, Error>;

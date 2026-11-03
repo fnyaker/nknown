@@ -4719,11 +4719,13 @@ dependencies = [
  "burn",
  "candle-core",
  "candle-nn",
+ "fst",
  "half",
  "nknown-core",
  "nknown-nlp",
  "serde",
  "serde_json",
+ "spm_precompiled",
  "tokenizers 0.22.2",
 ]
 

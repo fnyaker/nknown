@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::tokenizer::Tokenizer;
 use candle_core::quantized::{GgmlDType, QTensor, gguf_file};
 use candle_core::{D, DType, Device, Tensor};
 use candle_nn::{VarBuilder, ops};
 use nknown_core::lang::Lang;
 use nknown_nlp::{ParsedSentence, SentenceParser};
-use tokenizers::Tokenizer;
 
 use crate::config::ParserConfig;
 use crate::data::{self, Batch, Encoded};

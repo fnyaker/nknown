@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::time::Instant;
 
+use crate::tokenizer::Tokenizer;
 use burn::module::{Module, Param};
 use burn::nn::loss::CrossEntropyLossConfig;
 use burn::nn::{
@@ -21,7 +22,6 @@ use burn::tensor::{Device, Int, Tensor, TensorData};
 use nknown_core::lang::Lang;
 use nknown_nlp::conllu::GoldSentence;
 use nknown_nlp::{ParsedSentence, SentenceParser};
-use tokenizers::Tokenizer;
 
 use crate::config::ParserConfig;
 use crate::data::{self, Encoded, Example, GENDERS, HostBatch, IGNORE, N_UPOS, NUMBERS};

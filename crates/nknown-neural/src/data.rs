@@ -4,10 +4,10 @@
 //! la position 0 est le token `<s>` de l'encodeur et sert de racine de l'arbre,
 //! le mot k (1-indexé) est représenté par son premier sous-mot.
 
+use crate::tokenizer::Tokenizer;
 use candle_core::{Device, Tensor};
 use nknown_core::analyze::{Feats, Gender, Number, Pos};
 use nknown_nlp::conllu::GoldSentence;
-use tokenizers::{EncodeInput, InputSequence, Tokenizer};
 
 use crate::error::Result;
 
@@ -42,14 +42,13 @@ pub fn encode(
     words: &[&str],
     max_subwords: usize,
 ) -> Result<Option<Encoded>> {
-    let input = EncodeInput::Single(InputSequence::from(words.to_vec()));
-    let enc = tokenizer.encode(input, true)?;
-    if enc.get_ids().len() > max_subwords {
+    let enc = tokenizer.encode_words(words);
+    if enc.ids.len() > max_subwords {
         return Ok(None);
     }
     let mut first = vec![u32::MAX; words.len() + 1];
     first[0] = 0;
-    for (pos, w) in enc.get_word_ids().iter().enumerate() {
+    for (pos, w) in enc.word_ids.iter().enumerate() {
         if let Some(w) = w {
             let slot = &mut first[*w as usize + 1];
             if *slot == u32::MAX {
@@ -65,7 +64,7 @@ pub fn encode(
         }
     }
     Ok(Some(Encoded {
-        ids: enc.get_ids().to_vec(),
+        ids: enc.ids,
         first,
     }))
 }
