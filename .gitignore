@@ -3,3 +3,4 @@
 *.fst
 /dist/
 .qmlls.ini
+/crates/nknown-web/dist/

@@ -1,0 +1,234 @@
+/* Interface web de NKnown : mêmes jetons, formes et mouvements que l'app (docs/ui-guidelines.md). */
+
+:root {
+  --bg-base: #0a0d13;
+  --bg-raised: #11151e;
+  --bg-hover: #161b26;
+  --line-subtle: rgb(255 255 255 / 6%);
+  --text-primary: #e8ecf4;
+  --text-secondary: #8d96a8;
+  --accent: #7cf3ff;
+  --term: #6aa8ff;
+  --qualifier: #b58cff;
+  --prose: #ffc46b;
+  --code: #5cf0a6;
+  --source: #8d96a8;
+  --danger: #ff6b81;
+  --ok: #5cf0a6;
+  --quick: 120ms;
+  --standard: 240ms;
+  --emphasis: 420ms;
+  --ease: cubic-bezier(0.33, 1, 0.68, 1);
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-base: #f4f6fa;
+    --bg-raised: #ffffff;
+    --bg-hover: #f7f9fc;
+    --line-subtle: rgb(10 13 19 / 8%);
+    --text-primary: #121722;
+    --text-secondary: #5a6375;
+    --accent: #0091a8;
+    --term: #2d6be0;
+    --qualifier: #7a4de0;
+    --prose: #c98200;
+    --code: #0e9f63;
+    --source: #7a8394;
+    --danger: #d63352;
+    --ok: #0e9f63;
+    color-scheme: light;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --standard: 120ms; --emphasis: 120ms; }
+  * { animation-duration: 120ms !important; }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font: 14px/1.4 Inter, system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ champ de recherche */
+.top {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  width: min(620px, calc(100% - 48px));
+  transform: translateX(-50%);
+  transition: top var(--emphasis) var(--ease-expo), width var(--emphasis) var(--ease-expo);
+}
+.searching .top { top: 18px; width: min(760px, calc(100% - 48px)); }
+.logo {
+  position: absolute;
+  bottom: calc(100% + 36px);
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  font-weight: 300;
+  font-size: 22px;
+  letter-spacing: 2px;
+  transition: opacity var(--standard);
+}
+.logo svg { display: block; margin: 0 auto 10px; }
+.searching .logo { opacity: 0; pointer-events: none; }
+.field {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  font: 300 28px Inter, system-ui, sans-serif;
+  text-align: center;
+  padding: 4px 2px 10px;
+  outline: none;
+  transition: font-size var(--emphasis) var(--ease-expo);
+}
+.field::placeholder { color: var(--text-secondary); }
+.searching .field { font-size: 18px; font-weight: 400; text-align: left; }
+.gauge { display: flex; gap: 0; height: 2px; transition: gap var(--standard); }
+.gauge.running { gap: 4px; }
+.gauge span { flex: 1; background: var(--line-subtle); border-radius: 1px; position: relative; }
+.field:focus + .gauge span { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.gauge span i {
+  position: absolute; inset: 0; width: 0; background: var(--accent); border-radius: 1px;
+  transition: width var(--standard) var(--ease), opacity var(--emphasis);
+}
+.gauge span.on i { width: 100%; }
+.gauge.done span i { opacity: 0; }
+.error { margin-top: 10px; text-align: center; color: var(--danger); font-size: 12px; }
+
+/* ------------------------------------------------------------------ carte et liste */
+.content {
+  position: absolute; inset: 86px 0 0 0;
+  display: flex;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--emphasis);
+}
+.searching .content { opacity: 1; pointer-events: auto; }
+.map { flex: 0 0 62%; position: relative; overflow: hidden; }
+.map svg { width: 100%; height: 100%; display: block; cursor: grab; }
+.camera { transition: transform var(--emphasis) var(--ease); }
+.side { flex: 1; position: relative; padding: 0 24px 24px 0; min-width: 0; }
+.meta { color: var(--text-secondary); font-size: 11px; font-weight: 500; height: 20px; font-variant-numeric: tabular-nums; }
+.list { position: absolute; inset: 24px 24px 24px 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-subtle) transparent; display: flex; flex-direction: column; gap: 8px; transition: opacity var(--quick); }
+.list.hidden { opacity: 0; pointer-events: none; }
+.empty { color: var(--text-secondary); text-align: center; margin-top: 40%; font-size: 13px; }
+
+.card {
+  position: relative;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-subtle);
+  border-radius: 10px;
+  padding: 12px 14px 12px 22px;
+  cursor: pointer;
+  transition: background var(--quick), border-color var(--quick);
+  animation: appear var(--standard) var(--ease) both;
+}
+.card:hover { background: var(--bg-hover); }
+.card.selected { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: var(--bg-hover); }
+.card .bar { position: absolute; left: 8px; top: 50%; width: 3px; border-radius: 2px; transform: translateY(-50%); opacity: .85; }
+.card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; display: flex; gap: 8px; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .src { color: var(--text-secondary); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.card p {
+  margin: 5px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.card.code p { font: 12.5px/1.45 "JetBrains Mono", ui-monospace, monospace; }
+mark { background: none; color: var(--term); }
+@keyframes appear { from { opacity: 0; transform: translateY(4px); } }
+
+/* Forme d'une nature de nœud (aussi dans la liste et l'inspecteur). */
+.glyph { width: 10px; height: 10px; flex: none; display: inline-block; }
+.glyph.term, .glyph.query, .glyph.source { border-radius: 50%; }
+.glyph.prose, .glyph.related, .glyph.code { border-radius: 3px; }
+.glyph.qualifier { transform: rotate(45deg) scale(.75); border-radius: 2px; }
+.glyph.term { background: var(--term); }
+.glyph.qualifier { background: var(--qualifier); }
+.glyph.prose { background: var(--prose); }
+.glyph.code { background: var(--code); }
+.glyph.query { border: 2px solid var(--accent); }
+.glyph.source { border: 1.5px solid var(--source); }
+.glyph.related { border: 1.5px solid var(--prose); }
+
+/* ------------------------------------------------------------------ nœuds et liens (SVG) */
+.node { transition: transform var(--emphasis) var(--spring), opacity var(--standard); cursor: pointer; }
+.node > .shape { animation: hatch var(--emphasis) var(--spring) both; transform-box: fill-box; transform-origin: center; transition: transform var(--quick); }
+.node:hover > .shape { transform: scale(1.15); }
+.node.dim, .edge.dim { opacity: .25; }
+@keyframes hatch { from { transform: scale(0); opacity: 0; } }
+.node .label { fill: var(--text-secondary); font-size: 11px; font-weight: 500; text-anchor: middle; paint-order: stroke; stroke: var(--bg-base); stroke-width: 3px; pointer-events: none; }
+.node.term .label, .node.qualifier .label { fill: var(--text-primary); font-size: 13px; font-weight: 600; }
+.node.selected .label { fill: var(--text-primary); }
+.node .halo { fill: none; stroke: color-mix(in srgb, var(--accent) 55%, transparent); stroke-width: 2; }
+.s-query { fill: var(--bg-base); stroke: var(--accent); }
+.s-term { fill: var(--term); }
+.s-qualifier { fill: var(--qualifier); }
+.s-prose { fill: var(--prose); }
+.s-code { fill: var(--code); }
+.s-source { fill: var(--bg-base); stroke: var(--source); stroke-width: 1.5; }
+.s-related { fill: var(--bg-base); stroke: var(--prose); stroke-width: 1.5; }
+.code-mark { fill: var(--bg-base); font: 700 9px "JetBrains Mono", ui-monospace, monospace; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+@keyframes pulse { 50% { transform: scale(1.12); } }
+.busy .node.query > .shape { animation: pulse 1.04s ease-in-out infinite; }
+
+.edge { fill: none; stroke-linecap: round; transition: d var(--emphasis) var(--spring), opacity var(--standard); animation: draw var(--emphasis) var(--ease) both; }
+.edge.query_term { stroke: var(--accent); }
+.edge.term_hit { stroke: var(--term); }
+.edge.qualifies { stroke: var(--qualifier); }
+.edge.hit_source { stroke: var(--source); stroke-dasharray: 1 3; }
+.edge.similar { stroke: var(--prose); stroke-dasharray: 4 3; }
+@keyframes draw { from { opacity: 0; } }
+
+/* ------------------------------------------------------------------ inspecteur */
+.inspector {
+  position: absolute; inset: 0 24px 24px 0; scrollbar-width: thin; scrollbar-color: var(--line-subtle) transparent;
+  background: var(--bg-raised); border: 1px solid var(--line-subtle); border-radius: 14px;
+  padding: 24px; overflow-y: auto;
+  animation: appear var(--standard) var(--ease) both;
+}
+.inspector header { display: flex; gap: 14px; align-items: center; }
+.inspector header .glyph { width: 26px; height: 26px; }
+.inspector h2 { margin: 0; font-size: 17px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspector .kind { font-size: 11px; font-weight: 500; }
+.actions { display: flex; gap: 8px; margin: 16px 0; }
+.pill {
+  border: 0; border-radius: 15px; height: 30px; padding: 0 14px; cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+  font: 500 12px Inter, system-ui, sans-serif; transition: background var(--quick);
+}
+.pill:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.close {
+  width: 28px; height: 28px; border-radius: 14px; border: 0; background: none;
+  color: var(--text-secondary); cursor: pointer; font-size: 13px;
+}
+.close:hover { background: var(--bg-hover); }
+.links { border-top: 1px solid var(--line-subtle); padding-top: 12px; display: flex; flex-direction: column; gap: 2px; }
+.link { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px; border-radius: 8px; cursor: pointer; }
+.link:hover { background: var(--bg-hover); }
+.link span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.weight { width: 64px; height: 4px; border-radius: 2px; background: var(--line-subtle); overflow: hidden; }
+.weight i { display: block; height: 100%; border-radius: 2px; }
+
+/* ------------------------------------------------------------------ connexion, état */
+.login {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(380px, calc(100% - 48px)); text-align: center;
+}
+.login p { color: var(--text-secondary); font-size: 13px; margin: 0 0 18px; }
+.login input {
+  width: 100%; height: 40px; border-radius: 8px; border: 1px solid var(--line-subtle);
+  background: var(--bg-raised); color: var(--text-primary); padding: 0 12px; margin-bottom: 12px;
+  font: 13px Inter, system-ui, sans-serif; outline: none;
+}
+.login input:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.dot { position: absolute; left: 50%; bottom: 22px; width: 8px; height: 8px; border-radius: 4px; transition: opacity var(--standard); }
+.searching .dot { opacity: 0; }

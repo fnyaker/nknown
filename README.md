@@ -243,3 +243,11 @@ curl -H "Authorization: Bearer $JETON" http://127.0.0.1:8080/api/v1/status
 Modèles dans `/data/models` ; l'analyseur neuronal s'ajoute avec
 `docker build --build-arg FEATURES=neural`. L'interface web utilise un cookie `Secure` :
 exposez-la derrière un proxy HTTPS.
+
+L'interface web (Leptos, WebAssembly) reprend la charte de l'app : champ seul, carte en direct,
+liste, inspecteur, thèmes clair et sombre. Le jeton s'échange contre un cookie de session
+`HttpOnly` ; aucun script en ligne (CSP stricte). Construction : `crates/nknown-web/build.sh`
+(cible `wasm32-unknown-unknown`, `wasm-bindgen` 0.2.128, `wasm-opt`), servie via `NKNOWN_WEB`.
+
+![Interface web](docs/captures/web.png)
+
