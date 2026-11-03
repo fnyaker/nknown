@@ -1,0 +1,209 @@
+# Catalogue de sources proposées à l'import (app, interface web). Rien n'est collecté sans
+# l'accord de l'utilisateur. Lu par le moteur depuis la branche main du dépôt (au plus une fois
+# par jour), avec une copie intégrée au binaire pour fonctionner hors ligne.
+#
+# Une entrée par source ; chaque flux est vérifié avant d'entrer ici (réponse 200, RSS / Atom).
+version = 1
+
+[themes]
+actualites = "Actualités"
+sciences = "Sciences"
+technologie = "Technologie"
+developpement = "Développement"
+
+# ---------------------------------------------------------------- français
+[[source]]
+name = "Le Monde — À la une"
+spec = "rss:https://www.lemonde.fr/rss/une.xml"
+lang = "fr"
+theme = "actualites"
+
+[[source]]
+name = "France 24"
+spec = "rss:https://www.france24.com/fr/rss"
+lang = "fr"
+theme = "actualites"
+
+[[source]]
+name = "Franceinfo — Titres"
+spec = "rss:https://www.francetvinfo.fr/titres.rss"
+lang = "fr"
+theme = "actualites"
+
+[[source]]
+name = "Le Monde — Sciences"
+spec = "rss:https://www.lemonde.fr/sciences/rss_full.xml"
+lang = "fr"
+theme = "sciences"
+
+[[source]]
+name = "The Conversation"
+spec = "rss:https://theconversation.com/fr/articles.atom"
+lang = "fr"
+theme = "sciences"
+description = "Articles de chercheurs, toutes disciplines"
+
+[[source]]
+name = "CNRS Le journal"
+spec = "rss:https://lejournal.cnrs.fr/rss"
+lang = "fr"
+theme = "sciences"
+
+[[source]]
+name = "Futura Sciences"
+spec = "rss:https://www.futura-sciences.com/rss/actualites.xml"
+lang = "fr"
+theme = "sciences"
+
+[[source]]
+name = "LinuxFr.org"
+spec = "rss:https://linuxfr.org/news.atom"
+lang = "fr"
+theme = "technologie"
+
+[[source]]
+name = "Next"
+spec = "rss:https://next.ink/feed/"
+lang = "fr"
+theme = "technologie"
+
+[[source]]
+name = "Numerama"
+spec = "rss:https://www.numerama.com/feed/"
+lang = "fr"
+theme = "technologie"
+
+[[source]]
+name = "Korben"
+spec = "rss:https://korben.info/feed"
+lang = "fr"
+theme = "technologie"
+
+# ---------------------------------------------------------------- anglais
+[[source]]
+name = "BBC News — World"
+spec = "rss:https://feeds.bbci.co.uk/news/world/rss.xml"
+lang = "en"
+theme = "actualites"
+
+[[source]]
+name = "NPR News"
+spec = "rss:https://feeds.npr.org/1001/rss.xml"
+lang = "en"
+theme = "actualites"
+
+[[source]]
+name = "The Guardian — World"
+spec = "rss:https://www.theguardian.com/world/rss"
+lang = "en"
+theme = "actualites"
+
+[[source]]
+name = "Nature"
+spec = "rss:https://www.nature.com/nature.rss"
+lang = "en"
+theme = "sciences"
+
+[[source]]
+name = "Quanta Magazine"
+spec = "rss:https://www.quantamagazine.org/feed/"
+lang = "en"
+theme = "sciences"
+
+[[source]]
+name = "NASA — News releases"
+spec = "rss:https://www.nasa.gov/news-release/feed/"
+lang = "en"
+theme = "sciences"
+
+[[source]]
+name = "ScienceDaily"
+spec = "rss:https://www.sciencedaily.com/rss/all.xml"
+lang = "en"
+theme = "sciences"
+
+[[source]]
+name = "Ars Technica"
+spec = "rss:https://feeds.arstechnica.com/arstechnica/index"
+lang = "en"
+theme = "technologie"
+
+[[source]]
+name = "Hacker News — Front page"
+spec = "rss:https://hnrss.org/frontpage"
+lang = "en"
+theme = "technologie"
+
+[[source]]
+name = "LWN.net"
+spec = "rss:https://lwn.net/headlines/rss"
+lang = "en"
+theme = "technologie"
+
+[[source]]
+name = "Rust Blog"
+spec = "rss:https://blog.rust-lang.org/feed.xml"
+lang = "en"
+theme = "developpement"
+
+[[source]]
+name = "Planet KDE"
+spec = "rss:https://planet.kde.org/global/atom.xml"
+lang = "en"
+theme = "developpement"
+
+# ---------------------------------------------------------------- russe
+[[source]]
+name = "Meduza"
+spec = "rss:https://meduza.io/rss/all"
+lang = "ru"
+theme = "actualites"
+
+[[source]]
+name = "ТАСС"
+spec = "rss:https://tass.ru/rss/v2.xml"
+lang = "ru"
+theme = "actualites"
+
+[[source]]
+name = "BBC Русская служба"
+spec = "rss:https://feeds.bbci.co.uk/russian/rss.xml"
+lang = "ru"
+theme = "actualites"
+
+[[source]]
+name = "N + 1"
+spec = "rss:https://nplus1.ru/rss"
+lang = "ru"
+theme = "sciences"
+
+[[source]]
+name = "Хабр"
+spec = "rss:https://habr.com/ru/rss/articles/"
+lang = "ru"
+theme = "technologie"
+
+# ---------------------------------------------------------------- chinois
+[[source]]
+name = "BBC 中文"
+spec = "rss:https://feeds.bbci.co.uk/zhongwen/simp/rss.xml"
+lang = "zh"
+theme = "actualites"
+
+[[source]]
+name = "RFI 华语"
+spec = "rss:https://www.rfi.fr/cn/rss"
+lang = "zh"
+theme = "actualites"
+
+[[source]]
+name = "DW 中文"
+spec = "rss:https://rss.dw.com/rdf/rss-chi-all"
+lang = "zh"
+theme = "actualites"
+
+[[source]]
+name = "少数派"
+spec = "rss:https://sspai.com/feed"
+lang = "zh"
+theme = "technologie"

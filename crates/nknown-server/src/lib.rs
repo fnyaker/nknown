@@ -42,6 +42,7 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
         .route(&format!("{DOCUMENTS}/{{id}}"), get(document))
         .route(SOURCES, get(sources).post(add_source))
         .route(SETTINGS, get(settings).put(update_settings))
+        .route(CATALOG, get(catalog))
         .route(
             &format!("{SOURCES}/{{id}}"),
             axum::routing::delete(remove_source),
@@ -239,6 +240,13 @@ async fn add_document(
 ) -> Response {
     match blocking(move || state.service.add_document(req)).await {
         Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn catalog(State(state): State<AppState>) -> Response {
+    match blocking(move || Ok(state.service.catalog())).await {
+        Ok(c) => Json(c).into_response(),
         Err(r) => r,
     }
 }

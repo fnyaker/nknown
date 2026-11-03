@@ -4,6 +4,7 @@
 //! font en parallèle (verrou en lecture) et la collecte ne prend le verrou en écriture que le
 //! temps d'enregistrer un document, l'analyse se faisant hors verrou.
 
+pub mod catalog;
 pub mod config;
 pub mod fetch;
 pub mod graph;
@@ -241,6 +242,11 @@ impl Service {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(pipeline);
         self.parser.store(parser, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Catalogue de sources proposées à l'import (réseau au plus une fois par jour).
+    pub fn catalog(&self) -> api::Catalog {
+        catalog::load(&self.data_dir, &self.config().sources)
     }
 
     /// Réglages d'analyse en vigueur.

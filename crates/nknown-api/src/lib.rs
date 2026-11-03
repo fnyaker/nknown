@@ -20,6 +20,7 @@ pub mod routes {
     pub const SOURCES: &str = "/sources";
     pub const SESSION: &str = "/session";
     pub const SETTINGS: &str = "/settings";
+    pub const CATALOG: &str = "/catalog";
 }
 
 // ---------------------------------------------------------------- recherche
@@ -388,6 +389,27 @@ pub struct Status {
     pub collecting: bool,
     /// Modèles (lexiques, analyseur) : prêts, ou en cours de téléchargement.
     pub models: ModelsState,
+}
+
+/// Catalogue de sources proposées à l'import.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Catalog {
+    /// (clé, libellé), dans l'ordre d'affichage.
+    pub themes: Vec<(String, String)>,
+    pub entries: Vec<CatalogEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogEntry {
+    pub name: String,
+    pub spec: String,
+    pub kind: SourceKind,
+    pub lang: String,
+    pub theme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Déjà parmi les sources configurées.
+    pub added: bool,
 }
 
 /// Réglages d'analyse du moteur (`GET`/`PUT /settings`).
