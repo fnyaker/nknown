@@ -17,8 +17,7 @@ finish-args:
   - --share=network                       # modèles (premier lancement), flux, Wikipédia
   - --filesystem=xdg-documents:ro         # source par défaut ; les autres dossiers : portail
   - --filesystem=xdg-run/nknown           # socket du démon de l'hôte
-  - --talk-name=org.kde.StatusNotifierWatcher
-  - --own-name=org.kde.StatusNotifierItem-*
+  - --talk-name=org.kde.StatusNotifierWatcher   # icône (nom unique de connexion : pas d'own-name)
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.kde.kwalletd6         # jeton d'un serveur distant
 modules:

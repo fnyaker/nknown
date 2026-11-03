@@ -179,10 +179,16 @@ pub fn spawn(on: impl Fn(Action) + Send + Sync + 'static) -> bool {
     std::thread::Builder::new()
         .name("nknown-zone".into())
         .spawn(move || {
+            // En Flatpak, réserver un nom exige une permission que le joker ne peut exprimer :
+            // on s'inscrit sous le nom unique de la connexion, que le protocole admet.
+            let sandboxed = std::env::var_os("FLATPAK_ID").is_some();
             let name = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
+            let mut builder = zbus::connection::Builder::session();
+            if !sandboxed {
+                builder = builder.name(name.as_str());
+            }
             let conn = zbus::block_on(
-                zbus::connection::Builder::session()
-                    .name(name.as_str())
+                builder
                     .serve_at(ITEM_PATH, Item { on: on.clone() })
                     .serve_at(MENU_PATH, Menu { on })
                     .build(),
@@ -191,12 +197,16 @@ pub fn spawn(on: impl Fn(Action) + Send + Sync + 'static) -> bool {
                 let _ = tx.send(false);
                 return;
             };
+            let service = match conn.unique_name() {
+                Some(unique) if sandboxed => unique.to_string(),
+                _ => name,
+            };
             let registered = zbus::block_on(conn.call_method(
                 Some("org.kde.StatusNotifierWatcher"),
                 "/StatusNotifierWatcher",
                 Some("org.kde.StatusNotifierWatcher"),
                 "RegisterStatusNotifierItem",
-                &(name.as_str(),),
+                &(service.as_str(),),
             ))
             .is_ok();
             let _ = tx.send(registered);
