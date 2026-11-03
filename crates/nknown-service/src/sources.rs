@@ -2,14 +2,22 @@
 
 use nknown_api::SourceKind;
 use nknown_core::source::{Source, SourceId};
-use nknown_sources::{LocalFiles, RssSource, Selection, WebSource, WikipediaSource};
+use nknown_sources::{LocalFiles, RssSource, Selection, WebSource, WikiDump, WikipediaSource};
 
 use crate::Error;
 
 /// Ouvre la source décrite par `spec` :
 /// `<dossier>`, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:<édition>:<requête>`,
-/// `wiki-cat:<édition>:<Catégorie>`, `web:<url> [pages=<n>] [depth=<n>]`.
+/// `wiki-cat:<édition>:<Catégorie>`, `wiki-top:<édition>:<N>` (les N plus lus),
+/// `wiki-dump:<édition>[:<N>]` (l'édition entière ou ses N premiers articles),
+/// `web:<url> [pages=<n>] [depth=<n>]`. L'avancement des dumps est gardé dans le dossier de
+/// données de l'utilisateur.
 pub fn open(spec: &str) -> Result<Box<dyn Source>, Error> {
+    open_in(spec, &crate::config::data_dir())
+}
+
+/// Comme [`open`], avec le dossier de données (avancement des dumps de Wikipédia).
+pub fn open_in(spec: &str, data_dir: &std::path::Path) -> Result<Box<dyn Source>, Error> {
     let wiki = |rest: &str| -> Result<(String, String), Error> {
         let (edition, arg) = rest
             .split_once(':')
@@ -34,6 +42,28 @@ pub fn open(spec: &str) -> Result<Box<dyn Source>, Error> {
             edition,
             Selection::Category { name, limit: 50 },
         ))
+    } else if let Some(rest) = spec.strip_prefix("wiki-top:") {
+        let (edition, n) = wiki(rest)?;
+        let limit = n
+            .trim()
+            .parse()
+            .map_err(|_| Error::Invalid(format!("nombre d'articles attendu : {spec}")))?;
+        Box::new(WikipediaSource::new(edition, Selection::TopRead { limit }))
+    } else if let Some(rest) = spec.strip_prefix("wiki-dump:") {
+        let (edition, limit) =
+            match rest.split_once(':') {
+                Some((e, n)) => (
+                    e,
+                    Some(n.trim().parse().map_err(|_| {
+                        Error::Invalid(format!("nombre d'articles attendu : {spec}"))
+                    })?),
+                ),
+                None => (rest, None),
+            };
+        if edition.is_empty() || !edition.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') {
+            return Err(Error::Invalid(format!("édition invalide : {spec}")));
+        }
+        Box::new(WikiDump::new(edition, limit, data_dir.join("wikipedia")))
     } else if let Some(rest) = spec.strip_prefix("web:") {
         Box::new(WebSource::parse(rest).map_err(|e| Error::Invalid(format!("{spec} : {e}")))?)
     } else if std::path::Path::new(spec).is_dir() {

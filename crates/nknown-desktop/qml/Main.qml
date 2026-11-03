@@ -77,7 +77,8 @@ ApplicationWindow {
     }
 
     function back() {
-        if (settings.open) settings.open = false
+        if (importer.open) importer.open = false
+        else if (settings.open) settings.open = false
         else if (reader.open) reader.open = false
         else if (inspected) inspected = null
         else if (map.selected !== "") { map.selected = ""; map.updateLit() }
@@ -110,6 +111,8 @@ ApplicationWindow {
             }
         }
         onFailed: (message) => { win.error = message; win.phase = "done" }
+        onCatalog: (json) => { try { importer.catalog = JSON.parse(json) } catch (e) {} }
+        onEstimate: (json) => { try { importer.estimate = JSON.parse(json) } catch (e) {} }
         onFeeds: (json) => { try { win.feeds = JSON.parse(json) } catch (e) {} }
         onDocument: (json) => { reader.doc = JSON.parse(json); reader.loading = false }
         onNotice: (message, isError) => toast.show(message, isError)
@@ -416,8 +419,48 @@ ApplicationWindow {
             Accessible.name: "Réglages"
         }
 
+        // Importer : à côté des réglages.
+        Rectangle {
+            id: importButton
+            width: 36; height: 36; radius: 18
+            x: gear.x - width - 6
+            y: gear.y
+            color: importArea.containsMouse ? Theme.bgHover : "transparent"
+            Text {
+                anchors.centerIn: parent
+                text: "+"
+                color: importArea.containsMouse ? Theme.accent : Theme.textSecondary
+                font.pixelSize: 22
+                font.weight: Font.Light
+            }
+            MouseArea {
+                id: importArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: importer.show(win.engineState.sources && win.engineState.sources.length ? "suivi" : "flux")
+            }
+            ToolTip.visible: importArea.containsMouse
+            ToolTip.delay: 600
+            ToolTip.text: "Importer des sources"
+        }
+
+        Import {
+            id: importer
+            anchors.fill: parent
+            z: 15
+            state: win.engineState
+            onAddSource: (spec) => backend.addSource(spec)
+            onAddSources: (specs) => backend.addSources(specs)
+            onRemoveSource: (id) => backend.removeSource(id)
+            onPauseSource: (id, paused) => backend.pauseSource(id, paused)
+            onLoadCatalog: backend.loadCatalog()
+            onEstimateWikipedia: (edition, tier, limit) => backend.estimateWikipedia(edition, tier, limit)
+        }
+
         Settings {
             id: settings
+            onOpenImport: { settings.open = false; importer.show("suivi") }
             anchors.fill: parent
             z: 10
             state: win.engineState
@@ -521,7 +564,11 @@ ApplicationWindow {
                 win.inspected = null; settings.open = true
                 if (win.auto.source) backend.addSource(win.auto.source)
                 break
-            case 7: win.snap("5-reglages"); break
+            case 7: win.snap("5-reglages"); settings.open = false; importer.show("suivi"); break
+            case 8: win.snap("6-import-suivi"); importer.tab = "flux"; break
+            case 9: win.snap("7-import-flux"); importer.tab = "wiki"; break
+            case 10: win.snap("8-import-wiki"); importer.tab = "web"; break
+            case 11: win.snap("9-import-web"); break
             default: Qt.quit()
             }
         }

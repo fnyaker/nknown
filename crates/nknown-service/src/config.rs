@@ -77,6 +77,8 @@ pub struct Config {
     pub compute_threads: usize,
     /// Flux d'info de l'accueil : mots-clés surveillés.
     pub feeds: Vec<Feed>,
+    /// Sources en pause (leurs spécifications) : ni collecte périodique ni reprise.
+    pub paused: Vec<String>,
 }
 
 /// Un flux d'info : titre, mots-clés (chacun est une requête), date de dernière consultation.
@@ -130,6 +132,7 @@ impl Default for Config {
             parser_device: nknown_api::DeviceChoice::Auto,
             compute_threads: 0,
             feeds: Vec::new(),
+            paused: Vec::new(),
         }
     }
 }

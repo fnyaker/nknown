@@ -25,6 +25,65 @@ pub enum Selection {
         name: String,
         limit: usize,
     },
+    /// Les `limit` articles les plus lus (pages vues des derniers mois, API Wikimedia).
+    TopRead {
+        limit: usize,
+    },
+}
+
+/// Espaces de noms (préfixes) des pages qui ne sont pas des articles.
+const NOT_ARTICLES: &[&str] = &[
+    "special:",
+    "spécial:",
+    "wikipedia:",
+    "wikipédia:",
+    "file:",
+    "fichier:",
+    "portal:",
+    "portail:",
+    "category:",
+    "catégorie:",
+    "help:",
+    "aide:",
+    "template:",
+    "modèle:",
+    "user:",
+    "utilisateur:",
+    "talk:",
+    "discussion:",
+    "служебная:",
+    "википедия:",
+    "портал:",
+    "файл:",
+    "категория:",
+    "special:",
+    "特殊:",
+    "wikipedia:",
+    "portal:",
+    "file:",
+    "project:",
+];
+
+/// Pages vues : liste mensuelle des 1000 plus lues → total par article sur les mois parcourus.
+pub fn add_top_month(json: &Value, totals: &mut std::collections::HashMap<String, u64>) {
+    let articles = json["items"][0]["articles"]
+        .as_array()
+        .into_iter()
+        .flatten();
+    for a in articles {
+        let (Some(title), Some(views)) = (a["article"].as_str(), a["views"].as_u64()) else {
+            continue;
+        };
+        let lower = title.to_lowercase();
+        if title == "-"
+            || lower.contains("main_page")
+            || lower.contains("accueil_principal")
+            || NOT_ARTICLES.iter().any(|p| lower.starts_with(p))
+        {
+            continue;
+        }
+        *totals.entry(title.replace('_', " ")).or_default() += views;
+    }
 }
 
 #[derive(Debug)]
@@ -42,9 +101,13 @@ impl WikipediaSource {
         Self {
             id: SourceId(format!("wikipedia:{edition}")),
             edition,
+            // Politesse envers l'API Wikimedia : une requête à la fois, une par seconde au plus
+            // (cinq pour un palier, qui compte des milliers d'articles).
+            http: Http::with_interval(match selection {
+                Selection::TopRead { .. } => std::time::Duration::from_millis(200),
+                _ => std::time::Duration::from_secs(1),
+            }),
             selection,
-            // Politesse envers l'API Wikimedia : une requête par seconde au plus.
-            http: Http::with_interval(std::time::Duration::from_secs(1)),
         }
     }
 
@@ -55,9 +118,41 @@ impl WikipediaSource {
         )
     }
 
+    /// Les plus lus : listes mensuelles (1000 articles chacune) en remontant jusqu'à trois ans,
+    /// cumulées, jusqu'à en avoir assez.
+    fn top_read(&self, limit: usize) -> Result<Vec<String>, SourceError> {
+        let mut totals = std::collections::HashMap::new();
+        let (mut year, mut month, _) = Timestamp::now().ymd();
+        for _ in 0..36 {
+            // Mois précédent (le mois courant n'est pas encore publié).
+            if month == 1 {
+                year -= 1;
+                month = 12;
+            } else {
+                month -= 1;
+            }
+            let url = format!(
+                "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/{}.wikipedia/all-access/{year}/{month:02}/all-days",
+                self.edition
+            );
+            match self.http.get_json(&url) {
+                Ok(json) => add_top_month(&json, &mut totals),
+                Err(e) if totals.is_empty() => return Err(e),
+                Err(_) => break,
+            }
+            if totals.len() >= limit + limit / 10 {
+                break;
+            }
+        }
+        let mut ranked: Vec<(String, u64)> = totals.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(ranked.into_iter().take(limit).map(|(t, _)| t).collect())
+    }
+
     fn titles(&self) -> Result<Vec<String>, SourceError> {
         let (url, list) = match &self.selection {
             Selection::Titles(t) => return Ok(t.clone()),
+            Selection::TopRead { limit } => return self.top_read(*limit),
             Selection::Search { query, limit } => (
                 self.api(&format!(
                     "action=query&list=search&srnamespace=0&srlimit={}&srsearch={}",
@@ -124,6 +219,7 @@ impl Source for WikipediaSource {
             Selection::Titles(t) => format!("titres:{}", t.join("|")),
             Selection::Search { query, limit } => format!("recherche:{query}:{limit}"),
             Selection::Category { name, limit } => format!("catégorie:{name}:{limit}"),
+            Selection::TopRead { limit } => format!("plus-lus:{limit}"),
         };
         format!("{}:{sel}", self.id.0)
     }
@@ -133,7 +229,12 @@ impl Source for WikipediaSource {
         since: Option<Timestamp>,
         known: &dyn Fn(&str) -> Option<Timestamp>,
     ) -> Result<ItemStream<'_>, SourceError> {
-        let _ = since;
+        // Un palier se met à jour chaque semaine (des milliers d'articles à revérifier).
+        if let (Selection::TopRead { .. }, Some(since)) = (&self.selection, since)
+            && Timestamp::now().0 - since.0 < 5 * 86_400
+        {
+            return Ok(Box::new(std::iter::empty()));
+        }
         // Dates de révision par lots de 50 : on ne télécharge que les articles
         // inconnus ou révisés depuis la version indexée.
         let mut wanted = Vec::new();
@@ -161,8 +262,17 @@ impl Source for WikipediaSource {
             }
         }
         let fetched_at = Timestamp::now();
+        let light = matches!(self.selection, Selection::TopRead { .. });
         Ok(Box::new(wanted.into_iter().filter_map(move |t| {
-            self.article(&t, None, fetched_at).transpose()
+            self.article(&t, None, fetched_at).transpose().map(|r| {
+                r.map(|mut item| {
+                    if light {
+                        // Gros volume : analyse légère (sans l'analyseur neuronal).
+                        item.meta.push(("analysis".into(), "light".into()));
+                    }
+                    item
+                })
+            })
         })))
     }
 
@@ -267,6 +377,27 @@ mod tests {
     use super::*;
 
     const EXTRACT: &str = "Paris est la capitale de la France.\nElle compte deux millions d'habitants.\n\n\n== Géographie ==\nLa Seine traverse Paris.\n\n=== Climat ===\nTempéré.\n\n\n== Voir aussi ==\n\n=== Articles connexes ===\nLyon\n\n\n== Notes et références ==\nRéf. 1";
+
+    #[test]
+    fn top_read_months_add_up() {
+        let month = |items: &str| -> Value {
+            serde_json::from_str(&format!(r#"{{"items":[{{"articles":[{items}]}}]}}"#)).unwrap()
+        };
+        let mut totals = std::collections::HashMap::new();
+        add_top_month(
+            &month(
+                r#"{"article":"Paris","views":10},{"article":"Spécial:Recherche","views":99},{"article":"Wikipédia:Accueil_principal","views":99},{"article":"Tour_Eiffel","views":5}"#,
+            ),
+            &mut totals,
+        );
+        add_top_month(
+            &month(r#"{"article":"Tour_Eiffel","views":7},{"article":"-","views":50}"#),
+            &mut totals,
+        );
+        assert_eq!(totals.len(), 2);
+        assert_eq!(totals["Tour Eiffel"], 12);
+        assert_eq!(totals["Paris"], 10);
+    }
 
     #[test]
     fn cleans_extracts() {

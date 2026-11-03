@@ -23,6 +23,8 @@ pub mod routes {
     pub const CATALOG: &str = "/catalog";
     /// Flux d'info : mots-clés surveillés.
     pub const FEEDS: &str = "/feeds";
+    /// Estimation d'un import de Wikipédia (taille, durée) avant de le lancer.
+    pub const WIKIPEDIA_ESTIMATE: &str = "/wikipedia/estimate";
 }
 
 // ---------------------------------------------------------------- recherche
@@ -371,6 +373,56 @@ pub struct SourceView {
     pub state: SourceState,
     /// Dernière collecte réussie (secondes Unix).
     pub last_run: Option<i64>,
+    /// En pause : ni collecte périodique, ni reprise, jusqu'à la reprise.
+    #[serde(default)]
+    pub paused: bool,
+}
+
+/// `POST /sources/{id}/pause`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseSource {
+    pub paused: bool,
+}
+
+/// Palier d'import de Wikipédia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "tier", rename_all = "snake_case")]
+pub enum WikiTier {
+    /// Les `limit` articles les plus lus (API, quelques articles par seconde).
+    TopRead { limit: u64 },
+    /// L'édition entière, ou ses `limit` premiers articles (dump).
+    Dump { limit: Option<u64> },
+}
+
+impl WikiTier {
+    /// Spécification de source correspondante.
+    pub fn spec(&self, edition: &str) -> String {
+        match self {
+            Self::TopRead { limit } => format!("wiki-top:{edition}:{limit}"),
+            Self::Dump { limit: Some(n) } => format!("wiki-dump:{edition}:{n}"),
+            Self::Dump { limit: None } => format!("wiki-dump:{edition}"),
+        }
+    }
+}
+
+/// `POST /wikipedia/estimate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WikiEstimateRequest {
+    pub edition: String,
+    #[serde(flatten)]
+    pub tier: WikiTier,
+}
+
+/// Ordre de grandeur d'un import, montré avant de le lancer.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WikiEstimate {
+    pub articles: u64,
+    /// Téléchargé (rien n'est gardé sur le disque hors de la base).
+    pub download_bytes: u64,
+    /// Place prise dans la base, à peu près.
+    pub disk_bytes: u64,
+    /// Durée totale (téléchargement et indexation), à peu près.
+    pub seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -216,6 +216,52 @@ impl Engine {
         }
     }
 
+    /// Catalogue de sources proposées (flux par thème et par langue).
+    pub fn catalog(&self) -> Result<api::Catalog> {
+        match self {
+            Self::Embedded(s) => Ok(s.catalog()),
+            _ => self.route_json("GET", api::routes::CATALOG, None),
+        }
+    }
+
+    /// Pause ou reprise d'une source (une reprise relance sa collecte).
+    pub fn pause_source(&self, id: &str, paused: bool) -> Result<api::SourceView> {
+        match self {
+            Self::Embedded(s) => {
+                let view = s
+                    .set_paused(id, paused)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "source inconnue".to_owned())?;
+                if !paused {
+                    let (s, spec) = (s.clone(), view.spec.clone());
+                    std::thread::spawn(move || {
+                        let _ = s.collect(&spec);
+                    });
+                }
+                Ok(view)
+            }
+            _ => {
+                let body =
+                    serde_json::to_vec(&api::PauseSource { paused }).map_err(|e| e.to_string())?;
+                self.route_json(
+                    "POST",
+                    &format!("{}/{id}/pause", api::routes::SOURCES),
+                    Some(&body),
+                )
+            }
+        }
+    }
+
+    pub fn wikipedia_estimate(&self, req: &api::WikiEstimateRequest) -> Result<api::WikiEstimate> {
+        match self {
+            Self::Embedded(s) => s.wikipedia_estimate(req).map_err(|e| e.to_string()),
+            _ => {
+                let body = serde_json::to_vec(req).map_err(|e| e.to_string())?;
+                self.route_json("POST", api::routes::WIKIPEDIA_ESTIMATE, Some(&body))
+            }
+        }
+    }
+
     pub fn feeds(&self) -> Result<Vec<api::FeedView>> {
         match self {
             Self::Embedded(s) => s.feeds().map_err(|e| e.to_string()),

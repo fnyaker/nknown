@@ -84,6 +84,31 @@ pub mod qobject {
 
         /// Flux d'info : relecture (réponse : `feeds`), création (`id` vide) ou modification,
         /// suppression, marque « vu ». Mots-clés séparés par des virgules.
+        /// Plusieurs sources d'un coup (une par ligne), par exemple depuis le catalogue.
+        #[qinvokable]
+        #[cxx_name = "addSources"]
+        fn add_sources(self: Pin<&mut Backend>, specs: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "pauseSource"]
+        fn pause_source(self: Pin<&mut Backend>, id: &QString, paused: bool);
+
+        /// Catalogue des sources proposées ; réponse : `catalog`.
+        #[qinvokable]
+        #[cxx_name = "loadCatalog"]
+        fn load_catalog(self: Pin<&mut Backend>);
+
+        /// Estimation d'un palier de Wikipédia (`tier` : `top` ou `dump`, `limit` 0 = tout) ;
+        /// réponse : `estimate`.
+        #[qinvokable]
+        #[cxx_name = "estimateWikipedia"]
+        fn estimate_wikipedia(
+            self: Pin<&mut Backend>,
+            edition: &QString,
+            tier: &QString,
+            limit: f64,
+        );
+
         #[qinvokable]
         #[cxx_name = "refreshFeeds"]
         fn refresh_feeds(self: Pin<&mut Backend>);
@@ -131,6 +156,14 @@ pub mod qobject {
 
         #[qsignal]
         fn failed(self: Pin<&mut Backend>, message: QString);
+
+        /// Catalogue des sources proposées (JSON).
+        #[qsignal]
+        fn catalog(self: Pin<&mut Backend>, json: QString);
+
+        /// Estimation d'un import de Wikipédia (JSON ; `error` en cas d'échec).
+        #[qsignal]
+        fn estimate(self: Pin<&mut Backend>, json: QString);
 
         /// Flux d'info et leurs contenus (JSON).
         #[qsignal]
@@ -499,6 +532,88 @@ impl qobject::Backend {
         });
     }
 
+    fn add_sources(self: Pin<&mut Self>, specs: &QString) {
+        let specs: Vec<String> = specs
+            .to_string()
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(normalize_source)
+            .collect();
+        self.background(move |slot| {
+            let engine = slot.wait()?;
+            let (mut ok, mut errors) = (0, Vec::new());
+            for spec in &specs {
+                match engine.add_source(spec) {
+                    Ok(_) => ok += 1,
+                    Err(e) => errors.push(format!("{} : {e}", short(spec))),
+                }
+            }
+            match errors.first() {
+                None => Ok(format!(
+                    "{ok} source{} ajoutée{}",
+                    if ok > 1 { "s" } else { "" },
+                    if ok > 1 { "s" } else { "" }
+                )),
+                Some(e) => Err(format!("{ok} ajoutée(s), {} en échec — {e}", errors.len())),
+            }
+        });
+    }
+
+    fn pause_source(self: Pin<&mut Self>, id: &QString, paused: bool) {
+        let id = id.to_string();
+        self.background(move |slot| {
+            let view = slot.wait()?.pause_source(&id, paused)?;
+            Ok(format!(
+                "{} : {}",
+                short(&view.spec),
+                if paused { "en pause" } else { "reprise" }
+            ))
+        });
+    }
+
+    fn load_catalog(self: Pin<&mut Self>) {
+        let thread = self.qt_thread();
+        let slot = self.rust().engine.clone();
+        std::thread::spawn(move || {
+            let json = match slot.wait().and_then(|e| e.catalog()) {
+                Ok(c) => serde_json::to_string(&c).unwrap_or_default(),
+                Err(e) => serde_json::json!({ "error": e }).to_string(),
+            };
+            let _ = thread.queue(move |obj| obj.catalog(QString::from(&json)));
+        });
+    }
+
+    fn estimate_wikipedia(self: Pin<&mut Self>, edition: &QString, tier: &QString, limit: f64) {
+        let limit = limit.max(0.0) as u64;
+        let req = api::WikiEstimateRequest {
+            edition: edition.to_string(),
+            tier: if tier.to_string() == "top" {
+                api::WikiTier::TopRead { limit }
+            } else {
+                api::WikiTier::Dump {
+                    limit: (limit > 0).then_some(limit),
+                }
+            },
+        };
+        let thread = self.qt_thread();
+        let slot = self.rust().engine.clone();
+        std::thread::spawn(move || {
+            let json = match slot.wait().and_then(|e| e.wikipedia_estimate(&req)) {
+                Ok(e) => serde_json::json!({
+                    "spec": req.tier.spec(&req.edition),
+                    "articles": e.articles,
+                    "download_bytes": e.download_bytes,
+                    "disk_bytes": e.disk_bytes,
+                    "seconds": e.seconds,
+                }),
+                Err(e) => serde_json::json!({ "spec": req.tier.spec(&req.edition), "error": e }),
+            };
+            let json = json.to_string();
+            let _ = thread.queue(move |obj| obj.estimate(QString::from(&json)));
+        });
+    }
+
     fn refresh_feeds(self: Pin<&mut Self>) {
         self.rust().feeds_dirty.store(true, Ordering::SeqCst);
     }
@@ -593,7 +708,20 @@ fn normalize_source(input: &str) -> String {
 
 /// Nom court d'une source pour un message : le dossier, l'hôte du flux, l'article.
 fn short(spec: &str) -> String {
-    let s = if let Some(url) = spec.strip_prefix("rss:") {
+    if let Some(rest) = spec.strip_prefix("wiki-top:") {
+        let (ed, n) = rest.split_once(':').unwrap_or((rest, ""));
+        return format!("Wikipédia {ed} · {n} plus lus");
+    }
+    if let Some(rest) = spec.strip_prefix("wiki-dump:") {
+        return match rest.split_once(':') {
+            Some((ed, n)) => format!("Wikipédia {ed} · {n} articles"),
+            None => format!("Wikipédia {rest} · édition complète"),
+        };
+    }
+    let s = if let Some(url) = spec
+        .strip_prefix("rss:")
+        .or_else(|| spec.strip_prefix("web:"))
+    {
         let host = url.split("://").nth(1).unwrap_or(url);
         host.split('/')
             .next()
@@ -680,5 +808,8 @@ mod tests {
             "lemonde.fr"
         );
         assert_eq!(short("wiki:fr:Tour Eiffel"), "Tour Eiffel");
+        assert_eq!(short("wiki-top:fr:10000"), "Wikipédia fr · 10000 plus lus");
+        assert_eq!(short("wiki-dump:en"), "Wikipédia en · édition complète");
+        assert_eq!(short("web:https://doc.rs/x pages=5"), "doc.rs");
     }
 }

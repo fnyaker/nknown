@@ -25,6 +25,19 @@ pub fn analyze_document(
     format: &Format,
     detector: Option<&LangDetector>,
 ) -> Analysis {
+    analyze_document_with(pipeline, lang, text, format, detector, false)
+}
+
+/// Comme [`analyze_document`] ; `light` : sans l'analyseur neuronal (lexique et tagueur
+/// seulement), pour les gros volumes (dumps de Wikipédia).
+pub fn analyze_document_with(
+    pipeline: &Pipeline,
+    lang: Lang,
+    text: &str,
+    format: &Format,
+    detector: Option<&LangDetector>,
+    light: bool,
+) -> Analysis {
     let mut out = Analysis::default();
     let mut current = lang;
     for block in segment::blocks(text, format) {
@@ -36,7 +49,12 @@ pub fn analyze_document(
                     current = found;
                 }
                 block_lang = Some(current);
-                let mut a = pipeline.analyze(current, &text[block.span.clone()]);
+                let prose = &text[block.span.clone()];
+                let mut a = if light {
+                    pipeline.analyze_light(current, prose)
+                } else {
+                    pipeline.analyze(current, prose)
+                };
                 for t in &mut a.tokens {
                     t.span = t.span.start + block.span.start..t.span.end + block.span.start;
                 }

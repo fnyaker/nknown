@@ -111,13 +111,24 @@ Modificateurs de requête, combinables, n'importe où dans la requête :
 | `@wiki`, `@rss`, `@web`, `@fichiers` | seulement cette famille de sources |
 
 Sources : `<dossier>`, `rss:<url>`, `wiki:<édition>:<Titre>|<Titre>`, `wiki-search:<édition>:<requête>`,
-`wiki-cat:<édition>:<Catégorie>`, `web:<url> [pages=<n>] [depth=<n>]` (exploration d'un site, voir
-plus bas), `@<fichier>` (une par ligne). Les requêtes HTTP sont espacées
+`wiki-cat:<édition>:<Catégorie>`, `wiki-top:<édition>:<N>` (les N articles les plus lus),
+`wiki-dump:<édition>[:<N>]` (l'édition entière, ou ses N premiers articles, lue dans le dump),
+`web:<url> [pages=<n>] [depth=<n>]` (exploration d'un site, voir plus bas), `@<fichier>` (une par
+ligne). Les requêtes HTTP sont espacées
 (1/s pour Wikipédia) et reprises sur 429/503 ; `NKNOWN_USER_AGENT` permet d'y ajouter un contact.
 La collecte est incrémentale : un contenu inchangé n'est ni retéléchargé (Wikipédia : dates de
 révision par lots de 50) ni réanalysé ; une version modifiée remplace l'ancienne.
 `nknown watch base.redb data/fr.lex @examples/sources.txt 30m data/fr.tag` relance la collecte
 toutes les 30 minutes.
+
+Paliers de Wikipédia : `wiki-top` cumule les listes mensuelles des articles les plus consultés
+(API Wikimedia) puis télécharge les articles, cinq par seconde au plus, et se remet à jour chaque
+semaine. `wiki-dump` lit le dump « multistream » bloc par bloc (requêtes `Range`, bzip2 en Rust pur) :
+rien n'est stocké hors de la base, l'avancement l'est (`<données>/wikipedia/`), une collecte
+interrompue ou mise en pause reprend au bloc suivant, et un dump terminé n'est relu qu'à la
+publication du suivant. Ces gros volumes sont indexés sans l'analyseur neuronal. Une source se met
+en pause (`POST /sources/{id}/pause`) ; `POST /wikipedia/estimate` donne l'ordre de grandeur
+(articles, téléchargement, place, durée) avant de lancer.
 
 Exploration de site (`web:`) : même hôte, sous le dossier de l'adresse de départ, 200 pages et
 3 niveaux de liens par défaut, HTML seulement. `robots.txt` est respecté (`Crawl-delay` compris),

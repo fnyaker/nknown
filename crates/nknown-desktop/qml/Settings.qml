@@ -2,8 +2,6 @@
 // côté le referme. Peu de mots : chaque ligne dit ce qu'elle règle, l'état se lit aux signes.
 import QtQuick
 import QtQuick.Controls.Basic
-import QtQuick.Dialogs
-import QtQuick.Shapes
 
 Item {
     id: root
@@ -12,6 +10,7 @@ Item {
     property var state: ({})
     signal addSource(string spec)
     signal removeSource(string id)
+    signal openImport()
     signal setEngine(string mode, string url, string token)
     signal setDaemonEnabled(bool enabled)
     signal setAnalysis(bool parser, string precision, string device)
@@ -73,37 +72,19 @@ Item {
                 // ------------------------------------------------------------ sources
                 Section {
                     title: "Sources"
-                    Repeater {
-                        model: root.sources
-                        SourceRow {
-                            required property var modelData
-                            source: modelData
-                            width: column.width
-                            onRemove: root.removeSource(modelData.id)
-                        }
-                    }
                     Text {
-                        visible: root.sources.length === 0
-                        text: "Aucune source : ajoutez un dossier, un flux ou une page."
+                        width: column.width
+                        wrapMode: Text.Wrap
                         color: Theme.textSecondary
                         font.pixelSize: 12
+                        text: root.sources.length === 0 ? "Aucune source pour l'instant."
+                            : root.sources.length + (root.sources.length > 1 ? " sources suivies" : " source suivie")
+                              + (root.sources.some(s => s.state.state === "collecting") ? " · collecte en cours" : "")
                     }
-                    Row {
-                        width: column.width
-                        spacing: 8
-                        Field {
-                            id: newSource
-                            width: parent.width - browse.width - 8
-                            placeholder: "Dossier, flux ou page Wikipédia"
-                            onAccepted: if (text.trim() !== "") { root.addSource(text.trim()); text = "" }
-                        }
-                        Pill {
-                            id: browse
-                            quiet: true
-                            implicitHeight: 36
-                            text: "Parcourir"
-                            onClicked: folders.open()
-                        }
+                    Pill {
+                        implicitHeight: 36
+                        text: "Importer et gérer les sources"
+                        onClicked: root.openImport()
                     }
                 }
 
@@ -268,12 +249,6 @@ Item {
         }
     }
 
-    FolderDialog {
-        id: folders
-        title: "Ajouter un dossier"
-        onAccepted: root.addSource(decodeURIComponent(selectedFolder.toString().replace("file://", "")))
-    }
-
     // ------------------------------------------------------------------ composants
     component Section: Column {
         property string title
@@ -395,113 +370,5 @@ Item {
         }
         Accessible.role: Accessible.CheckBox
         Accessible.checked: checked
-    }
-
-    // Une source : nature (dossier, flux, page), nom, état de collecte ; retrait au survol.
-    component SourceRow: Item {
-        id: row
-        property var source
-        signal remove()
-        height: 44
-        readonly property string kind: source.kind
-        readonly property string name: {
-            const spec = source.spec
-            if (spec.startsWith("rss:")) return spec.slice(4).replace(/^https?:\/\/(www\.)?/, "").split("/")[0]
-            if (spec.startsWith("wiki")) return spec.split(":").slice(2).join(":") || spec
-            return spec.split("/").filter(p => p).pop() || spec
-        }
-        readonly property bool collecting: source.state.state === "collecting"
-        readonly property bool failed: source.state.state === "failed"
-
-        Rectangle {
-            anchors.fill: parent
-            radius: 8
-            color: rowHover.hovered ? Theme.bgHover : "transparent"
-        }
-        SourceIcon {
-            id: icon
-            anchors.left: parent.left
-            anchors.leftMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            kind: row.kind
-        }
-        Column {
-            anchors.left: icon.right
-            anchors.leftMargin: 12
-            anchors.right: tail.left
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 2
-            Text {
-                width: parent.width
-                text: row.name
-                elide: Text.ElideRight
-                color: Theme.textPrimary
-                font.pixelSize: 13
-            }
-            Text {
-                width: parent.width
-                text: row.failed ? row.source.state.message
-                    : row.collecting ? "collecte · " + row.source.state.done
-                    : row.source.last_run ? "à jour · " + Theme.ago(row.source.last_run) : "en attente"
-                elide: Text.ElideMiddle
-                color: row.failed ? Theme.danger : Theme.textSecondary
-                font.pixelSize: 11
-                font.features: { "tnum": 1 }
-            }
-        }
-        Item {
-            id: tail
-            anchors.right: parent.right
-            anchors.rightMargin: 4
-            anchors.verticalCenter: parent.verticalCenter
-            width: 28
-            height: 28
-            // Collecte en cours : un point qui pulse ; au survol : retirer.
-            Rectangle {
-                anchors.centerIn: parent
-                visible: row.collecting && !rowHover.hovered
-                width: 7; height: 7; radius: 3.5
-                color: Theme.accent
-                SequentialAnimation on opacity {
-                    running: row.collecting
-                    loops: Animation.Infinite
-                    NumberAnimation { to: 0.3; duration: 700 }
-                    NumberAnimation { to: 1; duration: 700 }
-                }
-            }
-            CloseButton {
-                anchors.centerIn: parent
-                visible: rowHover.hovered
-                onClicked: row.remove()
-                Accessible.name: "Retirer la source"
-            }
-        }
-        HoverHandler { id: rowHover }
-    }
-
-    // Icône de nature de source, dessinée (dossier, flux, page web / encyclopédie).
-    component SourceIcon: Item {
-        id: sicon
-        property string kind
-        width: 22; height: 22
-        Shape {
-            anchors.fill: parent
-            preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                strokeColor: Theme.kindColor("source")
-                strokeWidth: 1.6
-                fillColor: "transparent"
-                capStyle: ShapePath.RoundCap
-                joinStyle: ShapePath.RoundJoin
-                PathSvg {
-                    path: sicon.kind === "feed"
-                        ? "M5 17 a0.5 0.5 0 1 0 0.01 0 M5 11 a6 6 0 0 1 6 6 M5 5 a12 12 0 0 1 12 12"
-                        : sicon.kind === "file"
-                        ? "M3 7 v10 a1.5 1.5 0 0 0 1.5 1.5 h13 a1.5 1.5 0 0 0 1.5 -1.5 v-8 a1.5 1.5 0 0 0 -1.5 -1.5 h-7 l-2 -2 h-4 a1.5 1.5 0 0 0 -1.5 1.5 z"
-                        : "M11 3 a8 8 0 1 0 0.01 0 M3 11 h16 M11 3 c-3 3 -3 13 0 16 M11 3 c3 3 3 13 0 16"
-                }
-            }
-        }
     }
 }

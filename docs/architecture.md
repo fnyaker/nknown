@@ -63,6 +63,12 @@ identifiants opaques.
 | `GET` | `/sources` | sources configurées et leur état |
 | `POST` | `/sources` | ajout d'une source (`{spec}` : dossier, `rss:`, `wiki:`…) |
 | `DELETE` | `/sources/{id}` | retrait d'une source |
+| `POST` | `/sources/{id}/pause` | `{paused}` : pause (la collecte en cours s'arrête) ou reprise (relancée) |
+| `GET` | `/catalog` | sources proposées (flux par thème et par langue), marquées si déjà suivies |
+| `POST` | `/wikipedia/estimate` | `{edition, tier, limit}` → articles, téléchargement, place, durée |
+| `GET`, `POST` | `/feeds` | flux d'info (mots-clés surveillés) et leurs contenus ; création `{title, keywords}` |
+| `PUT`, `DELETE` | `/feeds/{id}` | modification, retrait d'un flux d'info |
+| `POST` | `/feeds/{id}/seen` | flux consulté : ses contenus ne sont plus « nouveaux » |
 | `GET`, `PUT` | `/settings` | réglages d'analyse : analyseur, précision, calcul (`auto`, `gpu`, `cpu`) ; les modèles sont rechargés |
 | `POST` | `/session` | interface web : échange le jeton contre un cookie `HttpOnly; Secure; SameSite=Strict` |
 

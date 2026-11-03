@@ -491,12 +491,18 @@ impl Service {
                 nknown_nlp::Format::from_hint(v)
             });
         let pipeline = self.pipeline();
-        let analysis = nknown_nlp::analyze_document(
+        // Gros volumes (paliers de Wikipédia) : sans l'analyseur neuronal.
+        let light = item
+            .meta
+            .iter()
+            .any(|(k, v)| k == "analysis" && v == "light");
+        let analysis = nknown_nlp::document::analyze_document_with(
             &pipeline,
             lang,
             &item.text,
             &format,
             Some(&self.detector),
+            light,
         );
         let lang = query::main_lang(&analysis).unwrap_or(lang);
         let title = item.title.as_deref().map(|t| pipeline.analyze(lang, t));
@@ -517,12 +523,15 @@ impl Service {
     // ------------------------------------------------------------ sources
 
     pub fn sources(&self) -> Vec<api::SourceView> {
-        let specs = lock(&self.config).sources.clone();
+        let (specs, paused) = {
+            let c = lock(&self.config);
+            (c.sources.clone(), c.paused.clone())
+        };
         let states = lock(&self.states);
         specs
             .into_iter()
             .map(|spec| {
-                let last_run = sources::open(&spec)
+                let last_run = sources::open_in(&spec, &self.data_dir)
                     .ok()
                     .and_then(|s| self.engine().checkpoint(&s.checkpoint_key()).ok().flatten())
                     .map(|t| t.0);
@@ -531,6 +540,7 @@ impl Service {
                     kind: sources::kind_of(&spec),
                     state: states.get(&spec).cloned().unwrap_or(api::SourceState::Idle),
                     last_run,
+                    paused: paused.contains(&spec),
                     spec,
                 }
             })
@@ -540,7 +550,7 @@ impl Service {
     /// Ajoute une source à la configuration (sans la collecter : voir [`Self::collect`]).
     pub fn add_source(&self, spec: &str) -> Result<api::SourceView, Error> {
         let spec = spec.trim();
-        sources::open(spec)?;
+        sources::open_in(spec, &self.data_dir)?;
         {
             let mut config = lock(&self.config);
             if !config.sources.iter().any(|s| s == spec) {
@@ -675,11 +685,70 @@ impl Service {
         Ok(true)
     }
 
+    /// Met une source en pause ou la reprend ; `None` si elle est inconnue.
+    pub fn set_paused(&self, id: &str, paused: bool) -> Result<Option<api::SourceView>, Error> {
+        {
+            let mut c = lock(&self.config);
+            let Some(spec) = c.sources.iter().find(|s| sources::id_of(s) == id).cloned() else {
+                return Ok(None);
+            };
+            c.paused.retain(|p| *p != spec);
+            if paused {
+                c.paused.push(spec);
+            }
+            self.save_config(&c)?;
+        }
+        Ok(self.sources().into_iter().find(|s| s.id == id))
+    }
+
+    /// Ordre de grandeur d'un import de Wikipédia (réseau : taille du dump, nombre d'articles).
+    pub fn wikipedia_estimate(
+        &self,
+        req: &api::WikiEstimateRequest,
+    ) -> Result<api::WikiEstimate, Error> {
+        if req.edition.is_empty()
+            || !req
+                .edition
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b == b'-')
+        {
+            return Err(Error::Invalid(format!(
+                "édition invalide : {}",
+                req.edition
+            )));
+        }
+        Ok(match req.tier {
+            api::WikiTier::TopRead { limit } => api::WikiEstimate {
+                articles: limit,
+                download_bytes: limit * WIKI_API_BYTES,
+                disk_bytes: limit * WIKI_DISK_BYTES,
+                // Cinq articles par seconde au plus côté API ; l'indexation suit.
+                seconds: limit / 5 + limit / WIKI_INDEX_RATE,
+            },
+            api::WikiTier::Dump { limit } => {
+                let http = nknown_sources::http::Http::new();
+                let (size, total) = nknown_sources::wikidump::estimate(&http, &req.edition)
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+                let total = total.max(1);
+                let articles = limit.map_or(total, |n| n.min(total));
+                // Le dump contient aussi les redirections et autres pages : au prorata.
+                let download = (size as f64 * articles as f64 / total as f64) as u64 + size / 40;
+                api::WikiEstimate {
+                    articles,
+                    download_bytes: download,
+                    disk_bytes: articles * WIKI_DISK_BYTES,
+                    seconds: download / WIKI_DOWNLOAD_RATE + articles / WIKI_INDEX_RATE,
+                }
+            }
+        })
+    }
+
     /// Retire une source de la configuration. Ses documents restent dans la base.
     pub fn remove_source(&self, id: &str) -> Result<bool, Error> {
         let mut config = lock(&self.config);
         let before = config.sources.len();
         config.sources.retain(|s| sources::id_of(s) != id);
+        config.paused.retain(|s| sources::id_of(s) != id);
         let removed = config.sources.len() != before;
         if removed {
             self.save_config(&config)?;
@@ -698,7 +767,14 @@ impl Service {
 
     /// Collecte toutes les sources configurées, puis recalcule l'autorité des documents.
     pub fn collect_all(&self) -> Vec<(String, Result<CollectStats, Error>)> {
-        let specs = lock(&self.config).sources.clone();
+        let specs: Vec<String> = {
+            let c = lock(&self.config);
+            c.sources
+                .iter()
+                .filter(|s| !c.paused.contains(s))
+                .cloned()
+                .collect()
+        };
         let out: Vec<_> = specs
             .into_iter()
             .map(|spec| {
@@ -736,7 +812,7 @@ impl Service {
         spec: &str,
         set_state: &dyn Fn(api::SourceState),
     ) -> Result<CollectStats, Error> {
-        let mut source = sources::open(spec)?;
+        let mut source = sources::open_in(spec, &self.data_dir)?;
         let (kind, name, checkpoint) = (
             source.kind(),
             source.id().0.clone(),
@@ -754,6 +830,11 @@ impl Service {
             .map_err(|e| Error::Invalid(format!("{name} : {e}")))?;
         let mut stats = CollectStats::default();
         for (i, item) in items.enumerate() {
+            // Mise en pause pendant la collecte : on s'arrête là (un dump reprendra au bloc
+            // suivant).
+            if lock(&self.config).paused.iter().any(|p| p == spec) {
+                return Ok(stats);
+            }
             match item {
                 Ok(item) => match self.ingest_item(&item, kind)?.1 {
                     api::AddOutcome::Added => stats.added += 1,
@@ -775,6 +856,13 @@ impl Service {
         Ok(stats)
     }
 }
+
+/// Ordres de grandeur des imports de Wikipédia : réponse de l'API par article, place dans la
+/// base par article, articles indexés par seconde (analyse légère), débit des dumps (o/s).
+const WIKI_API_BYTES: u64 = 30_000;
+const WIKI_DISK_BYTES: u64 = 20_000;
+const WIKI_INDEX_RATE: u64 = 25;
+const WIKI_DOWNLOAD_RATE: u64 = 4_000_000;
 
 /// Contenus cherchés par mot-clé d'un flux, et gardés par flux.
 const FEED_PER_KEYWORD: usize = 20;
@@ -950,6 +1038,28 @@ mod tests {
         })
         .unwrap();
         (dir, svc)
+    }
+
+    #[test]
+    fn paused_sources_are_skipped_and_wiki_tiers_parse() {
+        let (dir, svc) = service();
+        let folder = dir.path().join("notes");
+        std::fs::create_dir_all(&folder).unwrap();
+        let view = svc.add_source(folder.to_str().unwrap()).unwrap();
+        assert!(!view.paused);
+        let paused = svc.set_paused(&view.id, true).unwrap().unwrap();
+        assert!(paused.paused);
+        assert!(svc.collect_all().is_empty());
+        assert!(!svc.set_paused(&view.id, false).unwrap().unwrap().paused);
+        assert_eq!(svc.collect_all().len(), 1);
+        assert!(svc.set_paused("inconnue", true).unwrap().is_none());
+        // Paliers de Wikipédia.
+        for ok in ["wiki-top:fr:1000", "wiki-dump:en", "wiki-dump:ru:100000"] {
+            assert!(sources::open_in(ok, dir.path()).is_ok(), "{ok}");
+        }
+        for bad in ["wiki-top:fr:beaucoup", "wiki-dump:", "wiki-dump:FR/../x"] {
+            assert!(sources::open_in(bad, dir.path()).is_err(), "{bad}");
+        }
     }
 
     #[test]

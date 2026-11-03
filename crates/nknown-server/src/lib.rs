@@ -49,6 +49,8 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
             axum::routing::put(update_feed).delete(remove_feed),
         )
         .route(&format!("{FEEDS}/{{id}}/seen"), post(feed_seen))
+        .route(&format!("{SOURCES}/{{id}}/pause"), post(pause_source))
+        .route(WIKIPEDIA_ESTIMATE, post(wikipedia_estimate))
         .route(
             &format!("{SOURCES}/{{id}}"),
             axum::routing::delete(remove_source),
@@ -345,6 +347,40 @@ async fn remove_source(State(state): State<AppState>, Path(id): Path<String>) ->
     match blocking(move || state.service.remove_source(&id)).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error(StatusCode::NOT_FOUND, "source inconnue"),
+        Err(r) => r,
+    }
+}
+
+/// Pause ou reprise d'une source ; une reprise relance sa collecte.
+async fn pause_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<api::PauseSource>,
+) -> Response {
+    let svc = state.service.clone();
+    match blocking(move || svc.set_paused(&id, req.paused)).await {
+        Ok(Some(view)) => {
+            if !req.paused {
+                let (svc, spec) = (state.service.clone(), view.spec.clone());
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = svc.collect(&spec) {
+                        eprintln!("{spec} : {e}");
+                    }
+                });
+            }
+            Json(view).into_response()
+        }
+        Ok(None) => error(StatusCode::NOT_FOUND, "source inconnue"),
+        Err(r) => r,
+    }
+}
+
+async fn wikipedia_estimate(
+    State(state): State<AppState>,
+    Json(req): Json<api::WikiEstimateRequest>,
+) -> Response {
+    match blocking(move || state.service.wikipedia_estimate(&req)).await {
+        Ok(e) => Json(e).into_response(),
         Err(r) => r,
     }
 }

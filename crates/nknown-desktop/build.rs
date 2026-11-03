@@ -13,6 +13,7 @@ fn main() {
                 "qml/Settings.qml",
                 "qml/Reader.qml",
                 "qml/FeedBoard.qml",
+                "qml/Import.qml",
                 "qml/Pill.qml",
                 "qml/IconButton.qml",
             ])

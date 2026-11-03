@@ -144,6 +144,91 @@ impl Http {
         })
     }
 
+    /// Taille et date de modification (`Last-Modified`, telle quelle) d'une ressource.
+    pub fn head(&self, url: &str) -> Result<(u64, String), SourceError> {
+        let fail = |m: String| SourceError::Unavailable(format!("{url} : {m}"));
+        self.throttle();
+        let resp = self
+            .agent
+            .head(url)
+            .call()
+            .map_err(|e| fail(e.to_string()))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(fail(format!("HTTP {status}")));
+        }
+        let header = |n: &str| {
+            resp.headers()
+                .get(n)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let len = header("content-length")
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| fail("taille inconnue".into()))?;
+        Ok((len, header("last-modified").unwrap_or_default()))
+    }
+
+    /// Octets `start..end` (fin exclue) d'une ressource (requête `Range`), avec reprises.
+    pub fn get_range(&self, url: &str, start: u64, end: u64) -> Result<Vec<u8>, SourceError> {
+        let fail = |m: String| SourceError::Unavailable(format!("{url} : {m}"));
+        let mut last = String::new();
+        for attempt in 0..=RETRIES {
+            self.throttle();
+            let result = self
+                .agent
+                .get(url)
+                .header("Range", &format!("bytes={start}-{}", end.saturating_sub(1)))
+                .call();
+            match result {
+                Ok(mut resp) if resp.status().as_u16() == 206 => {
+                    match resp
+                        .body_mut()
+                        .with_config()
+                        .limit(end - start + 1)
+                        .read_to_vec()
+                    {
+                        Ok(v) => return Ok(v),
+                        Err(e) => last = e.to_string(),
+                    }
+                }
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    if !matches!(status, 429 | 500..=599) {
+                        return Err(fail(format!("HTTP {status} (plage refusée)")));
+                    }
+                    last = format!("HTTP {status}");
+                }
+                Err(e) => last = e.to_string(),
+            }
+            if attempt < RETRIES {
+                std::thread::sleep(Duration::from_secs(2 << attempt));
+            }
+        }
+        Err(fail(last))
+    }
+
+    /// Corps d'une réponse en flux (gros fichiers), sans limite de taille.
+    pub fn open(&self, url: &str) -> Result<Box<dyn std::io::Read + Send>, SourceError> {
+        let fail = |m: String| SourceError::Unavailable(format!("{url} : {m}"));
+        self.throttle();
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(None)
+            .timeout_recv_body(Some(Duration::from_secs(120)))
+            .user_agent(
+                std::env::var("NKNOWN_USER_AGENT").unwrap_or_else(|_| DEFAULT_USER_AGENT.into()),
+            )
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let resp = agent.get(url).call().map_err(|e| fail(e.to_string()))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(fail(format!("HTTP {status}")));
+        }
+        Ok(Box::new(resp.into_body().into_reader()))
+    }
+
     pub fn get_json(&self, url: &str) -> Result<serde_json::Value, SourceError> {
         serde_json::from_slice(&self.get_bytes(url)?)
             .map_err(|e| SourceError::Parse(format!("{url} : {e}")))
