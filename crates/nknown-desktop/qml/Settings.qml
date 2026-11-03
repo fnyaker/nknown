@@ -32,7 +32,7 @@ Item {
         color: "#000000"
         opacity: root.open ? 0.4 : 0
         Behavior on opacity { NumberAnimation { duration: Theme.standard } }
-        TapHandler { onTapped: root.open = false }
+        MouseArea { anchors.fill: parent; enabled: root.open; onClicked: root.open = false }
     }
 
     Rectangle {
@@ -44,7 +44,7 @@ Item {
         color: Theme.bgRaised
         border.color: Theme.lineSubtle
         // Le panneau garde les clics pour lui.
-        TapHandler {}
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (w) => w.accepted = false }
 
         Flickable {
             anchors.fill: parent
@@ -99,7 +99,9 @@ Item {
                         }
                         Pill {
                             id: browse
-                            label: "Parcourir"
+                            quiet: true
+                            implicitHeight: 36
+                            text: "Parcourir"
                             onClicked: folders.open()
                         }
                     }
@@ -149,8 +151,8 @@ Item {
                             secret: true
                         }
                         Pill {
-                            label: "Se connecter"
-                            accent: true
+                            implicitHeight: 36
+                            text: "Se connecter"
                             onClicked: { root.setEngine("remote", url.text, token.text); token.text = "" }
                         }
                     }
@@ -306,38 +308,18 @@ Item {
         }
     }
 
-    component Pill: Rectangle {
-        id: pill
-        property string label
-        property bool accent: false
-        signal clicked()
-        height: 36
-        width: pillText.implicitWidth + 28
-        radius: 18
-        color: pillHover.hovered ? Qt.alpha(Theme.accent, accent ? 0.28 : 0.16)
-                                 : Qt.alpha(Theme.accent, accent ? 0.2 : 0.1)
-        Behavior on color { ColorAnimation { duration: Theme.quick } }
-        Text {
-            id: pillText
-            anchors.centerIn: parent
-            text: pill.label
-            color: Theme.accent
-            font.pixelSize: 12
-            font.weight: Font.Medium
-        }
-        HoverHandler { id: pillHover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: pill.clicked() }
-        Accessible.role: Accessible.Button
-        Accessible.name: label
-    }
-
     component CloseButton: Rectangle {
         signal clicked()
         width: 28; height: 28; radius: 14
-        color: closeHover.hovered ? Theme.bgHover : "transparent"
+        color: closeHover.containsMouse ? Theme.bgHover : "transparent"
         Text { anchors.centerIn: parent; text: "✕"; color: Theme.textSecondary; font.pixelSize: 13 }
-        HoverHandler { id: closeHover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: parent.clicked() }
+        MouseArea {
+            id: closeHover
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: parent.clicked()
+        }
         Accessible.role: Accessible.Button
         Accessible.name: "Fermer"
     }
@@ -382,8 +364,11 @@ Item {
                         font.pixelSize: 12
                         font.weight: Font.Medium
                     }
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: { seg.shown = modelData.key; seg.picked(modelData.key) } }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { seg.shown = modelData.key; seg.picked(modelData.key) }
+                    }
                 }
             }
         }
@@ -403,8 +388,11 @@ Item {
             color: toggleRoot.checked ? Theme.accent : Theme.textSecondary
             Behavior on x { NumberAnimation { duration: Theme.standard; easing.type: Easing.OutCubic } }
         }
-        HoverHandler { cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: toggleRoot.toggled(!toggleRoot.checked) }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: toggleRoot.toggled(!toggleRoot.checked)
+        }
         Accessible.role: Accessible.CheckBox
         Accessible.checked: checked
     }

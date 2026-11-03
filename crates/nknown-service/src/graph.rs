@@ -250,6 +250,7 @@ mod tests {
             source: "rss:x".into(),
             source_kind: SourceKind::Feed,
             url: None,
+            path: None,
             date: 0,
             score: relative as f64,
             relative,

@@ -57,8 +57,25 @@ ApplicationWindow {
         select(node.id)
     }
 
+    /// Ouvre un résultat dans le lecteur.
+    function read(hit) {
+        if (!hit) return
+        reader.doc = null
+        reader.matched = hit.matched || []
+        reader.focusPassage = hit.passage || ""
+        reader.loading = true
+        reader.open = true
+        backend.openDocument(hit.doc, hit.passage || "")
+    }
+
+    function hitOf(node) {
+        const i = node ? hitIndexOf(node.id) : -1
+        return i >= 0 ? hits[i] : null
+    }
+
     function back() {
         if (settings.open) settings.open = false
+        else if (reader.open) reader.open = false
         else if (inspected) inspected = null
         else if (map.selected !== "") { map.selected = ""; map.updateLit() }
         else if (searching) { searching = false; phase = ""; top.text = ""; top.focusInput() }
@@ -90,12 +107,15 @@ ApplicationWindow {
             }
         }
         onFailed: (message) => { win.error = message; win.phase = "done" }
+        onDocument: (json) => { reader.doc = JSON.parse(json); reader.loading = false }
         onNotice: (message, isError) => toast.show(message, isError)
         Component.onCompleted: start()
     }
 
     Shortcut { sequence: "Esc"; onActivated: win.back() }
-    Shortcut { sequences: ["Ctrl+L", "Ctrl+F", "/"]; onActivated: top.focusInput() }
+    Shortcut { sequences: ["Ctrl+L", "/"]; onActivated: top.focusInput() }
+    // Ctrl+F : dans le lecteur, chercher dans le document ; sinon, le champ de recherche.
+    Shortcut { sequence: "Ctrl+F"; onActivated: reader.open ? reader.focusFind() : top.focusInput() }
 
     // Toute l'interface, dans un élément QML (capturable, voir plus bas).
     Item {
@@ -168,6 +188,7 @@ ApplicationWindow {
                 width: parent.width * 0.62
                 busy: win.phase !== "" && win.phase !== "done"
                 onNodeClicked: (node) => win.inspect(node)
+                onNodeDoubleClicked: (node) => { const h = win.hitOf(node); if (h) win.read(h) }
                 onBackgroundClicked: { win.inspected = null }
             }
 
@@ -203,8 +224,9 @@ ApplicationWindow {
                     spacing: 8
                     model: win.hits
                     boundsBehavior: Flickable.StopAtBounds
-                    // L'inspecteur prend la place de la liste.
+                    // L'inspecteur prend la place de la liste (qui ne reçoit alors plus rien).
                     opacity: win.inspected ? 0 : 1
+                    enabled: !win.inspected
                     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
                     delegate: ResultCard {
                         required property var modelData
@@ -213,7 +235,7 @@ ApplicationWindow {
                         width: ListView.view.width
                         selected: map.selected === modelData.node
                         onPicked: win.inspect(map.nodes[modelData.node])
-                        onOpen: if (modelData.url) Qt.openUrlExternally(modelData.url)
+                        onRead: win.read(modelData)
                         // Entrées décalées de 30 ms, plafonnées à 300 ms.
                         opacity: 0
                         Component.onCompleted: appear.start()
@@ -245,11 +267,7 @@ ApplicationWindow {
                     anchors.fill: parent
                     node: win.inspected
                     links: win.inspected ? map.linksOf(win.inspected.id) : []
-                    url: {
-                        if (!win.inspected) return ""
-                        const i = win.hitIndexOf(win.inspected.id)
-                        return i >= 0 && win.hits[i].url ? win.hits[i].url : ""
-                    }
+                    hit: win.hitOf(win.inspected)
                     opacity: win.inspected ? 1 : 0
                     visible: opacity > 0
                     scale: win.inspected ? 1 : 0.98
@@ -258,7 +276,27 @@ ApplicationWindow {
                     onCloseRequested: win.inspected = null
                     onLinkPicked: (id) => win.inspect(map.nodes[id])
                     onSearchWord: (word) => { top.text = word; win.launch(word) }
+                    onRead: win.read(inspector.hit)
+                    onReveal: (path) => backend.revealFile(path)
                 }
+            }
+
+            // Lecteur : par-dessus la carte et la liste, glisse depuis la droite.
+            Reader {
+                id: reader
+                property bool open: false
+                width: Math.min(parent.width - 2 * Theme.margin, Math.max(760, parent.width * 0.62))
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Theme.margin
+                x: open ? parent.width - width - Theme.margin : parent.width + 20
+                opacity: open ? 1 : 0
+                visible: opacity > 0
+                Behavior on x { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
+                Behavior on opacity { NumberAnimation { duration: Theme.standard } }
+                onCloseRequested: reader.open = false
+                onSearchText: (text) => { reader.open = false; top.text = text; win.launch(text) }
+                onReveal: (path) => backend.revealFile(path)
             }
         }
 
@@ -322,7 +360,7 @@ ApplicationWindow {
             x: win.width - width - 18
             y: win.searching ? 16 : win.height - height - 16
             Behavior on y { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
-            color: gearHover.hovered ? Theme.bgHover : "transparent"
+            color: gearHover.containsMouse ? Theme.bgHover : "transparent"
             // Trois curseurs.
             Repeater {
                 model: [0.3, 0.7, 0.45]
@@ -334,12 +372,17 @@ ApplicationWindow {
                     Rectangle {
                         width: 6; height: 6; radius: 3
                         x: parent.width * modelData - 3; y: -2
-                        color: gearHover.hovered ? Theme.accent : Theme.textSecondary
+                        color: gearHover.containsMouse ? Theme.accent : Theme.textSecondary
                     }
                 }
             }
-            HoverHandler { id: gearHover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: settings.open = !settings.open }
+            MouseArea {
+                id: gearHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: settings.open = !settings.open
+            }
             Accessible.role: Accessible.Button
             Accessible.name: "Réglages"
         }
@@ -443,12 +486,13 @@ ApplicationWindow {
             case 1: break
             case 2: win.snap("2-recherche"); break
             case 3: if (win.hits.length > 0) win.inspect(map.nodes[win.hits[0].node]); break
-            case 4: win.snap("3-inspecteur"); break
-            case 5:
+            case 4: win.snap("3-inspecteur"); if (win.hits.length > 0) win.read(win.hits[0]); break
+            case 5: win.snap("4-lecteur"); reader.open = false; break
+            case 6:
                 win.inspected = null; settings.open = true
                 if (win.auto.source) backend.addSource(win.auto.source)
                 break
-            case 6: win.snap("4-reglages"); break
+            case 7: win.snap("5-reglages"); break
             default: Qt.quit()
             }
         }

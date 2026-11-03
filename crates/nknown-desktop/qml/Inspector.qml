@@ -7,16 +7,21 @@ Rectangle {
     /// Nœud inspecté (données de la carte) et ses liens (MapView.linksOf).
     property var node: null
     property var links: []
-    /// Adresse à ouvrir, si le nœud est un résultat qui en a une.
-    property string url: ""
+    /// Résultat correspondant au nœud (liste des résultats), s'il en est un.
+    property var hit: null
     signal closeRequested()
     signal linkPicked(string id)
     signal searchWord(string word)
+    signal read()
+    signal reveal(string path)
 
     radius: Theme.radiusPanel
     color: Theme.bgRaised
     border.color: Theme.lineSubtle
     border.width: 1
+
+    // Le panneau garde ses clics : rien n'atteint la liste en dessous.
+    MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (w) => w.accepted = true }
 
     Column {
         id: content
@@ -33,7 +38,7 @@ Rectangle {
                 size: 26
             }
             Column {
-                width: parent.width - 26 - 14 - 28
+                width: parent.width - 26 - 14 - 14 - 30
                 spacing: 2
                 Text {
                     width: parent.width
@@ -51,55 +56,50 @@ Rectangle {
                     font.pixelSize: 11
                     font.weight: Font.Medium
                 }
+                // Fichier : la fin de son chemin.
+                Text {
+                    width: parent.width
+                    visible: !!panel.hit && !!panel.hit.location
+                    text: panel.hit && panel.hit.location ? panel.hit.location : ""
+                    elide: Text.ElideLeft
+                    color: Theme.textSecondary
+                    font.family: Theme.fontCode
+                    font.pixelSize: 11
+                }
             }
             // Fermer (Échap fait de même).
-            Rectangle {
-                width: 28
-                height: 28
-                radius: 14
-                color: closeHover.hovered ? Theme.bgHover : "transparent"
-                Text {
-                    anchors.centerIn: parent
-                    text: "✕"
-                    color: Theme.textSecondary
-                    font.pixelSize: 13
-                }
-                HoverHandler { id: closeHover; cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: panel.closeRequested() }
-                Accessible.role: Accessible.Button
-                Accessible.name: "Fermer"
+            IconButton {
+                anchors.verticalCenter: parent.verticalCenter
+                tip: "Fermer (Échap)"
+                onClicked: panel.closeRequested()
             }
         }
 
         // Actions.
-        Row {
+        Flow {
+            width: parent.width
             spacing: 8
-            visible: children.length > 0
-            Repeater {
-                model: [
-                    { label: "Ouvrir", show: panel.url !== "", act: () => Qt.openUrlExternally(panel.url) },
-                    { label: "Chercher ce mot",
-                      show: !!panel.node && (panel.node.kind === "term" || panel.node.kind === "qualifier"),
-                      act: () => panel.searchWord(panel.node.label) }
-                ].filter(a => a.show)
-                Rectangle {
-                    required property var modelData
-                    height: 30
-                    width: actText.implicitWidth + 24
-                    radius: 15
-                    color: actHover.hovered ? Qt.alpha(Theme.accent, 0.2) : Qt.alpha(Theme.accent, 0.12)
-                    Text {
-                        id: actText
-                        anchors.centerIn: parent
-                        text: modelData.label
-                        color: Theme.accent
-                        font.family: Theme.fontUi
-                        font.pixelSize: 12
-                        font.weight: Font.Medium
-                    }
-                    HoverHandler { id: actHover; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: modelData.act() }
-                }
+            Pill {
+                visible: !!panel.hit
+                text: "Lire"
+                onClicked: panel.read()
+            }
+            Pill {
+                visible: !!panel.hit && !!panel.hit.url
+                quiet: true
+                text: panel.hit && panel.hit.path ? "Ouvrir dans l'éditeur" : "Ouvrir"
+                onClicked: Qt.openUrlExternally(panel.hit.url)
+            }
+            Pill {
+                visible: !!panel.hit && !!panel.hit.path
+                quiet: true
+                text: "Dossier"
+                onClicked: panel.reveal(panel.hit.path)
+            }
+            Pill {
+                visible: !!panel.node && (panel.node.kind === "term" || panel.node.kind === "qualifier")
+                text: "Chercher ce mot"
+                onClicked: panel.searchWord(panel.node.label)
             }
         }
 
@@ -119,7 +119,7 @@ Rectangle {
                 Rectangle {
                     anchors.fill: parent
                     radius: 8
-                    color: rowHover.hovered ? Theme.bgHover : "transparent"
+                    color: rowArea.containsMouse ? Theme.bgHover : "transparent"
                 }
                 KindGlyph {
                     id: g
@@ -158,8 +158,13 @@ Rectangle {
                         color: Theme.kindColor(modelData.node.kind)
                     }
                 }
-                HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: panel.linkPicked(modelData.id) }
+                MouseArea {
+                    id: rowArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: panel.linkPicked(modelData.id)
+                }
             }
         }
     }

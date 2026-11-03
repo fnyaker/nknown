@@ -187,6 +187,22 @@ impl Engine {
         }
     }
 
+    /// Un document entier (lecteur intégré).
+    pub fn document(&self, id: u64) -> Result<api::DocumentView> {
+        let route = format!("{}/{id}", api::routes::DOCUMENTS);
+        match self {
+            Self::Daemon(socket) => {
+                let body = request(socket, "GET", &route, None)?.read_all()?;
+                serde_json::from_slice(&body).map_err(|e| e.to_string())
+            }
+            Self::Embedded(s) => s
+                .document(id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "document introuvable".into()),
+            Self::Remote(r) => r.json("GET", &route, None),
+        }
+    }
+
     /// Recherche ; `on_event` reçoit chaque évènement du flux (progression, carte, résultat).
     pub fn search(&self, query: &str, on_event: &mut dyn FnMut(api::SearchEvent)) -> Result<()> {
         let req = api::SearchRequest {

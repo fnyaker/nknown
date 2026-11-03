@@ -20,6 +20,7 @@ finish-args:
   - --talk-name=org.kde.StatusNotifierWatcher   # icône (nom unique de connexion : pas d'own-name)
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.kde.kwalletd6         # jeton d'un serveur distant
+  - --talk-name=org.freedesktop.FileManager1    # « Montrer dans le dossier »
 modules:
   - name: nknown
     buildsystem: simple

@@ -7,11 +7,12 @@ Rectangle {
     required property var hit
     property bool selected: false
     signal picked()
-    signal open()
+    /// Double clic : lire le document.
+    signal read()
 
     implicitHeight: body.implicitHeight + 24
     radius: Theme.radiusCard
-    color: selected ? Theme.bgHover : hover.hovered ? Qt.alpha(Theme.bgHover, 0.7) : Theme.bgRaised
+    color: selected ? Theme.bgHover : hover.containsMouse ? Qt.alpha(Theme.bgHover, 0.7) : Theme.bgRaised
     border.color: selected ? Qt.alpha(Theme.accent, 0.6) : Theme.lineSubtle
     border.width: 1
     Behavior on color { ColorAnimation { duration: Theme.quick } }
@@ -59,9 +60,10 @@ Rectangle {
         }
         Text {
             width: parent.width
-            text: card.hit.source + (card.hit.date ? "  ·  " + Theme.ago(card.hit.date) : "")
+            // Un fichier se reconnaît à la fin de son chemin.
+            text: (card.hit.location || card.hit.source) + (card.hit.date ? "  ·  " + Theme.ago(card.hit.date) : "")
                   + (card.hit.code_lang ? "  ·  " + card.hit.code_lang : "")
-            elide: Text.ElideRight
+            elide: Text.ElideMiddle
             color: Theme.textSecondary
             font.family: Theme.fontUi
             font.pixelSize: 11
@@ -82,10 +84,13 @@ Rectangle {
         }
     }
 
-    HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
-    TapHandler {
-        onTapped: card.picked()
-        onDoubleTapped: card.open()
+    MouseArea {
+        id: hover
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: card.picked()
+        onDoubleClicked: card.read()
     }
     Accessible.role: Accessible.ListItem
     Accessible.name: hit.title

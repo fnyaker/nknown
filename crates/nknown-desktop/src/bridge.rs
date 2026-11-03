@@ -70,6 +70,17 @@ pub mod qobject {
             device: &QString,
         );
 
+        /// Charge un document pour le lecteur (identifiants en texte : document, passage à mettre
+        /// en vue) ; réponse : `document`.
+        #[qinvokable]
+        #[cxx_name = "openDocument"]
+        fn open_document(self: Pin<&mut Backend>, doc: &QString, passage: &QString);
+
+        /// Montre un fichier dans le gestionnaire de fichiers (sélectionné si possible).
+        #[qinvokable]
+        #[cxx_name = "revealFile"]
+        fn reveal_file(self: Pin<&mut Backend>, path: &QString);
+
         #[qinvokable]
         #[cxx_name = "setDaemonEnabled"]
         fn set_daemon_enabled(self: Pin<&mut Backend>, enabled: bool);
@@ -101,6 +112,10 @@ pub mod qobject {
 
         #[qsignal]
         fn failed(self: Pin<&mut Backend>, message: QString);
+
+        /// Document chargé pour le lecteur (JSON).
+        #[qsignal]
+        fn document(self: Pin<&mut Backend>, json: QString);
     }
 
     impl cxx_qt::Threading for Backend {}
@@ -402,6 +417,42 @@ impl qobject::Backend {
         });
     }
 
+    fn open_document(self: Pin<&mut Self>, doc: &QString, passage: &QString) {
+        let thread = self.qt_thread();
+        let slot = self.rust().engine.clone();
+        let Ok(id) = doc.to_string().parse::<u64>() else {
+            return;
+        };
+        let passage = passage.to_string();
+        std::thread::spawn(move || {
+            let result = slot.wait().and_then(|e| e.document(id));
+            let _ = thread.queue(move |obj| match result {
+                Ok(d) => {
+                    let json = view::document(&d, &passage, view::read_file);
+                    obj.document(QString::from(&json.to_string()));
+                }
+                Err(e) => obj.notice(QString::from(&format!("Lecture impossible : {e}")), true),
+            });
+        });
+    }
+
+    fn reveal_file(self: Pin<&mut Self>, path: &QString) {
+        let path = path.to_string();
+        std::thread::spawn(move || {
+            if show_in_file_manager(&path).is_err() {
+                // Sans gestionnaire D-Bus : le dossier, avec l'application par défaut.
+                let dir = std::path::Path::new(&path)
+                    .parent()
+                    .map_or(path.clone(), |p| p.display().to_string());
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(dir)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+        });
+    }
+
     fn set_daemon_enabled(self: Pin<&mut Self>, enabled: bool) {
         self.background(move |slot| {
             let action = if enabled { "enable" } else { "disable" };
@@ -464,6 +515,31 @@ fn short(spec: &str) -> String {
             .unwrap_or(spec)
     };
     s.chars().take(60).collect()
+}
+
+/// `org.freedesktop.FileManager1.ShowItems` : Dolphin (ou un autre) ouvre le dossier et
+/// sélectionne le fichier.
+fn show_in_file_manager(path: &str) -> zbus::Result<()> {
+    let mut uri = String::from("file://");
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    zbus::block_on(async {
+        let conn = zbus::Connection::session().await?;
+        conn.call_method(
+            Some("org.freedesktop.FileManager1"),
+            "/org/freedesktop/FileManager1",
+            Some("org.freedesktop.FileManager1"),
+            "ShowItems",
+            &(vec![uri], ""),
+        )
+        .await
+        .map(drop)
+    })
 }
 
 fn request_json(req: &crate::instance::Request, n: u64) -> QString {

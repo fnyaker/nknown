@@ -68,8 +68,9 @@ pub fn id_of(spec: &str) -> String {
 /// Nom court d'une source pour la carte : dernier dossier, hôte d'un flux, édition de Wikipédia.
 pub fn label(source: &str) -> String {
     if let Some(path) = source.strip_prefix("files:") {
-        let path = path.trim_end_matches('/');
-        return path.rsplit('/').next().unwrap_or(path).to_owned();
+        // Les deux derniers dossiers : « dev/NKnown » dit plus que « NKnown ».
+        let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+        return parts[parts.len().saturating_sub(2)..].join("/");
     }
     if let Some(edition) = source.strip_prefix("wikipedia:") {
         return format!("{edition}.wikipedia");
@@ -122,6 +123,13 @@ pub fn display_title(
     })
 }
 
+/// Chemin complet d'un fichier local (sources `files:`).
+pub fn local_path(external_id: Option<&str>, source: &str) -> Option<String> {
+    external_id
+        .filter(|p| source.starts_with("files:") && p.starts_with('/'))
+        .map(str::to_owned)
+}
+
 /// Adresse à ouvrir : celle du document, ou `file://` pour un fichier local.
 pub fn open_url(url: Option<&str>, external_id: Option<&str>, source: &str) -> Option<String> {
     if let Some(url) = url {
@@ -155,7 +163,8 @@ mod tests {
 
     #[test]
     fn labels() {
-        assert_eq!(label("files:/home/a/notes/"), "notes");
+        assert_eq!(label("files:/home/a/notes/"), "a/notes");
+        assert_eq!(label("files:/notes"), "notes");
         assert_eq!(
             label("rss:https://www.lemonde.fr/rss/une.xml"),
             "lemonde.fr"

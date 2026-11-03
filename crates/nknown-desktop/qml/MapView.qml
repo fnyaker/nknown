@@ -14,6 +14,8 @@ Item {
     /// Recherche en cours : la requête pulse.
     property bool busy: false
     signal nodeClicked(var node)
+    /// Double clic sur un résultat : le lire.
+    signal nodeDoubleClicked(var node)
     signal backgroundClicked()
 
     // Caméra : déplacement et zoom ; recadrée sur la carte tant qu'on n'y a pas touché.
@@ -276,7 +278,7 @@ Item {
                 // Étiquette : toujours pour les mots et les sources ; pour un résultat, au survol,
                 // à la sélection, ou s'il est parmi les trois premiers.
                 readonly property bool labelled: kind === "term" || kind === "qualifier" || kind === "source"
-                    || hover.hovered || isSelected || (hit >= 0 && hit < 3)
+                    || hover.containsMouse || isSelected || (hit >= 0 && hit < 3)
 
                 property real cx: 0
                 property real cy: 0
@@ -293,7 +295,7 @@ Item {
                 z: isSelected ? 3 : (kind === "query" ? 2 : 1)
                 opacity: gone || !born ? 0 : (dimmed ? Theme.dim : 1)
                 Behavior on opacity { NumberAnimation { duration: node.gone ? Theme.quick : Theme.standard } }
-                scale: hover.hovered ? 1.15 : 1
+                scale: hover.containsMouse ? 1.15 : 1
                 Behavior on scale { NumberAnimation { duration: Theme.quick; easing.type: Easing.OutCubic } }
                 Behavior on width { NumberAnimation { duration: Theme.standard; easing.type: Easing.OutCubic } }
 
@@ -339,9 +341,14 @@ Item {
                     style: Text.Outline
                     styleColor: Theme.bgBase
                 }
-                HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
-                TapHandler {
-                    onTapped: view.nodeClicked(view.nodes[node.uid])
+                // Le nœud garde son clic : le fond (désélection, recadrage) ne le voit pas.
+                MouseArea {
+                    id: hover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: view.nodeClicked(view.nodes[node.uid])
+                    onDoubleClicked: view.nodeDoubleClicked(view.nodes[node.uid])
                 }
                 Accessible.role: Accessible.Button
                 Accessible.name: Theme.kindName(kind) + " " + label

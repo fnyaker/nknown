@@ -11,6 +11,9 @@ fn main() {
                 "qml/Inspector.qml",
                 "qml/KindGlyph.qml",
                 "qml/Settings.qml",
+                "qml/Reader.qml",
+                "qml/Pill.qml",
+                "qml/IconButton.qml",
             ])
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true)),
     )

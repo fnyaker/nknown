@@ -110,6 +110,9 @@ pub struct Hit {
     pub source: String,
     pub source_kind: SourceKind,
     pub url: Option<String>,
+    /// Chemin complet d'un fichier local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// Date de publication (secondes Unix).
     pub date: i64,
     pub score: f64,
@@ -305,6 +308,9 @@ pub struct DocumentView {
     pub source: String,
     pub source_kind: SourceKind,
     pub url: Option<String>,
+    /// Chemin complet d'un fichier local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub date: i64,
     pub lang: String,
     pub nature: Nature,
