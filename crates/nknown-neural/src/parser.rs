@@ -13,7 +13,7 @@ use tokenizers::Tokenizer;
 
 use crate::config::ParserConfig;
 use crate::data::{self, Batch, Encoded};
-use crate::encoder::{self, Quantized, Scheme};
+use crate::encoder::{self, Quantized};
 use crate::error::Result;
 use crate::model::{ParserModel, Scores};
 
@@ -24,7 +24,7 @@ const WEIGHTS: &str = "model.safetensors";
 fn quantized_weights(
     dir: &Path,
     device: &Device,
-    scheme: Scheme,
+    layers: GgmlDType,
     cache: &str,
 ) -> Result<(HashMap<String, Tensor>, Quantized)> {
     let (full, cache) = (dir.join(WEIGHTS), dir.join(cache));
@@ -38,7 +38,7 @@ fn quantized_weights(
         return read_gguf(&cache, device);
     }
     let (tensors, quant) =
-        encoder::quantize_weights(candle_core::safetensors::load(&full, device)?, scheme)?;
+        encoder::quantize_weights(candle_core::safetensors::load(&full, device)?, layers)?;
     if let Err(e) = write_gguf(&cache, &tensors, &quant) {
         // Simple cache : sans lui, on requantifiera au prochain chargement.
         eprintln!("{} : {e}", cache.display());
@@ -87,36 +87,23 @@ fn write_gguf(path: &Path, tensors: &HashMap<String, Tensor>, quant: &Quantized)
 /// Précision des poids de l'encodeur en inférence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Precision {
-    /// Poids d'origine (f32) : ~1,1 Go pour XLM-R base.
+    /// Poids d'origine (f32) : ~1,1 Go pour XLM-R base. Pour les mesures.
     F32,
-    /// Encodeur en 8 bits (Q8_0) : ~3,6× moins de mémoire.
-    Int8,
-    /// Encodeur en 6 bits (Q6_K, 6,56 bits par poids).
-    Int6,
-    /// Encodeur en 4 bits (Q4_K, 4,5 bits par poids).
-    Int4,
     /// Table des plongements en 4 bits (Q4_K), couches en 8 bits (Q8_0) : la précision du
-    /// 8 bits pour ~5× moins de mémoire que le f32.
+    /// f32 pour ~5× moins de poids (211 Mo).
     #[default]
-    Int4Table,
+    Standard,
+    /// Tout l'encodeur en 4 bits (Q4_K) : 169 Mo, LAS −0,4 à −1,5 point.
+    Light,
 }
 
 impl Precision {
-    /// Format ggml et fichier de cache d'une précision quantifiée.
-    fn quantized(self) -> Option<(Scheme, &'static str)> {
-        let uniform = Scheme::uniform;
+    /// Format des matrices des couches et fichier de cache d'une précision quantifiée.
+    fn quantized(self) -> Option<(GgmlDType, &'static str)> {
         match self {
             Self::F32 => None,
-            Self::Int8 => Some((uniform(GgmlDType::Q8_0), "model.q8.gguf")),
-            Self::Int6 => Some((uniform(GgmlDType::Q6K), "model.q6k.gguf")),
-            Self::Int4 => Some((uniform(GgmlDType::Q4K), "model.q4k.gguf")),
-            Self::Int4Table => Some((
-                Scheme {
-                    table: GgmlDType::Q4K,
-                    layers: GgmlDType::Q8_0,
-                },
-                "model.q4k-q8.gguf",
-            )),
+            Self::Standard => Some((GgmlDType::Q8_0, "model.q4k-q8.gguf")),
+            Self::Light => Some((GgmlDType::Q4K, "model.q4k.gguf")),
         }
     }
 }
@@ -154,8 +141,8 @@ impl NeuralParser {
                 let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
                 ParserModel::new(&cfg, vb.clone(), vb.pp("heads"))?
             }
-            Some((scheme, cache)) => {
-                let (tensors, quant) = quantized_weights(dir, &device, scheme, cache)?;
+            Some((layers, cache)) => {
+                let (tensors, quant) = quantized_weights(dir, &device, layers, cache)?;
                 let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
                 ParserModel::with_quantized(&cfg, vb.clone(), vb.pp("heads"), &quant)?
             }

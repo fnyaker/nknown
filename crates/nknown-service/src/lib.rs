@@ -147,7 +147,10 @@ impl Service {
         };
         let parser = opts.config.parser.is_some();
         if let Some(spec) = &opts.config.parser {
-            let spec = models::resolve(spec, &models);
+            let spec = opts
+                .config
+                .parser_precision
+                .apply(&models::resolve(spec, &models));
             pipeline = models::add_model(pipeline, &spec)
                 .map_err(|e| Error::Model(format!("{spec} : {e}")))?;
         }

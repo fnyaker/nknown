@@ -5,8 +5,8 @@
 //! l'affinage. En entraînement, on utilise des opérations dérivables ; en inférence,
 //! les noyaux fusionnés, plus rapides. Noms des poids identiques à Hugging Face.
 //!
-//! En inférence, l'encodeur peut être en 8 bits ([`Quantized`]) : matrices des couches et
-//! table des plongements en Q8_0 (blocs de 32 valeurs, une échelle f16 par bloc) Q6_K ou Q4_K. Les
+//! En inférence, l'encodeur peut être quantifié ([`Quantized`]) : matrices des couches et
+//! table des plongements quantifiées (table en Q4_K, couches en Q8_0 ou Q4_K). Les
 //! couches calculent en entiers ; seules les lignes lues de la table sont décodées.
 
 use std::collections::HashMap;
@@ -121,27 +121,13 @@ impl Proj {
 #[derive(Debug)]
 enum Table {
     Full(Tensor),
-    /// Lignes en blocs quantifiés (Q8_0, Q6_K ou Q4_K), décodées à la lecture.
+    /// Lignes en blocs Q4_K, décodées à la lecture.
     Quant(Arc<QTensor>),
 }
 
-/// Q8_0 : échelle f16, puis 32 valeurs signées.
-const Q8_BLOCK: usize = 32;
-const Q8_BLOCK_BYTES: usize = 2 + Q8_BLOCK;
-/// Q6_K : 256 valeurs de 6 bits (4 bits bas, 2 bits hauts), 16 échelles i8, échelle f16.
-const Q6_BLOCK: usize = 256;
-const Q6_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
 /// Q4_K : échelle et minimum f16, 8 couples (échelle, minimum) sur 6 bits, 256 valeurs de 4 bits.
 const Q4_BLOCK: usize = 256;
 const Q4_BLOCK_BYTES: usize = 2 + 2 + 12 + 128;
-
-/// Décode un bloc quantifié à la suite de `out`.
-type DecodeBlock = fn(&[u8], &mut Vec<f32>);
-
-fn decode_q8_0(block: &[u8], out: &mut Vec<f32>) {
-    let scale = half::f16::from_ne_bytes([block[0], block[1]]).to_f32();
-    out.extend(block[2..].iter().map(|&v| f32::from(v as i8) * scale));
-}
 
 /// Échelle et minimum du sous-bloc `j` de Q4_K, sur 6 bits (ggml `get_scale_min_k4`).
 fn scale_min_k4(j: usize, q: &[u8]) -> (u8, u8) {
@@ -170,33 +156,6 @@ fn decode_q4_k(block: &[u8], out: &mut Vec<f32>) {
     }
 }
 
-/// Même calcul que ggml (`dequantize_row_q6_K`).
-fn decode_q6_k(block: &[u8], out: &mut Vec<f32>) {
-    let (ql, rest) = block.split_at(128);
-    let (qh, rest) = rest.split_at(64);
-    let (sc, d) = rest.split_at(16);
-    let d = half::f16::from_ne_bytes([d[0], d[1]]).to_f32();
-    let mut y = [0f32; Q6_BLOCK];
-    for half_block in 0..2 {
-        let (ql, qh, sc) = (
-            &ql[64 * half_block..],
-            &qh[32 * half_block..],
-            &sc[8 * half_block..],
-        );
-        let y = &mut y[128 * half_block..];
-        let scale = |i: usize| d * f32::from(sc[i] as i8);
-        for l in 0..32 {
-            let is = l / 16;
-            let q = |low: u8, high: u8| f32::from((low | (high << 4)) as i8 - 32);
-            y[l] = scale(is) * q(ql[l] & 0xF, qh[l] & 3);
-            y[l + 32] = scale(is + 2) * q(ql[l + 32] & 0xF, (qh[l] >> 2) & 3);
-            y[l + 64] = scale(is + 4) * q(ql[l] >> 4, (qh[l] >> 4) & 3);
-            y[l + 96] = scale(is + 6) * q(ql[l + 32] >> 4, (qh[l] >> 6) & 3);
-        }
-    }
-    out.extend_from_slice(&y);
-}
-
 impl Table {
     fn dim(&self) -> Result<usize> {
         Ok(match self {
@@ -210,19 +169,15 @@ impl Table {
             Self::Full(t) => return Ok(t.index_select(ids, 0)?),
             Self::Quant(q) => q,
         };
-        let (block, block_bytes, decode): (usize, usize, DecodeBlock) = match q.dtype() {
-            GgmlDType::Q8_0 => (Q8_BLOCK, Q8_BLOCK_BYTES, decode_q8_0),
-            GgmlDType::Q6K => (Q6_BLOCK, Q6_BLOCK_BYTES, decode_q6_k),
-            GgmlDType::Q4K => (Q4_BLOCK, Q4_BLOCK_BYTES, decode_q4_k),
-            other => {
-                return Err(candle_core::Error::Msg(format!(
-                    "table des plongements en {other:?} : non prise en charge"
-                ))
-                .into());
-            }
-        };
+        if q.dtype() != TABLE_DTYPE {
+            return Err(candle_core::Error::Msg(format!(
+                "table des plongements en {:?} : Q4_K attendu",
+                q.dtype()
+            ))
+            .into());
+        }
         let (rows, dim) = q.shape().dims2()?;
-        let row_bytes = dim / block * block_bytes;
+        let row_bytes = dim / Q4_BLOCK * Q4_BLOCK_BYTES;
         let data = q.data()?;
         let ids = ids.to_vec1::<u32>()?;
         let mut out = Vec::with_capacity(ids.len() * dim);
@@ -231,8 +186,8 @@ impl Table {
             if row >= rows {
                 return Err(candle_core::Error::Msg(format!("sous-mot hors table : {id}")).into());
             }
-            for b in data[row * row_bytes..][..row_bytes].chunks_exact(block_bytes) {
-                decode(b, &mut out);
+            for b in data[row * row_bytes..][..row_bytes].chunks_exact(Q4_BLOCK_BYTES) {
+                decode_q4_k(b, &mut out);
             }
         }
         Ok(Tensor::from_vec(
@@ -243,22 +198,9 @@ impl Table {
     }
 }
 
-/// Formats de quantification : la table des plongements (lue ligne à ligne, normalisée
-/// aussitôt) supporte mieux une faible précision que les matrices des couches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Scheme {
-    pub table: GgmlDType,
-    pub layers: GgmlDType,
-}
-
-impl Scheme {
-    pub const fn uniform(dtype: GgmlDType) -> Self {
-        Self {
-            table: dtype,
-            layers: dtype,
-        }
-    }
-}
+/// Format de la table des plongements : lue ligne à ligne puis normalisée, elle supporte le
+/// 4 bits sans perte mesurable (contrairement aux matrices des couches).
+pub const TABLE_DTYPE: GgmlDType = GgmlDType::Q4K;
 
 const WORD_EMBEDDINGS: &str = "embeddings.word_embeddings.weight";
 
@@ -280,19 +222,20 @@ pub fn is_quantizable(name: &str) -> bool {
             .any(|s| name.ends_with(s)))
 }
 
-/// Sépare des poids f32 en poids gardés en f32 et poids quantifiés (`dtype` : Q8_0, Q6_K ou Q4_K).
+/// Sépare des poids f32 en poids gardés en f32 et poids quantifiés (table en [`TABLE_DTYPE`],
+/// matrices des couches en `layers`).
 /// Chaque tenseur f32 quantifié est libéré aussitôt.
 pub fn quantize_weights(
     tensors: HashMap<String, Tensor>,
-    scheme: Scheme,
+    layers: GgmlDType,
 ) -> Result<(HashMap<String, Tensor>, Quantized)> {
     let mut full = HashMap::new();
     let mut quant = Quantized::new();
     for (name, t) in tensors {
         let dtype = if name == WORD_EMBEDDINGS {
-            scheme.table
+            TABLE_DTYPE
         } else {
-            scheme.layers
+            layers
         };
         if is_quantizable(&name) && t.rank() == 2 && t.dim(1)? % dtype.block_size() == 0 {
             let q = QTensor::quantize(&t.to_dtype(DType::F32)?, dtype)?;
@@ -450,15 +393,12 @@ mod tests {
     fn quantized_table_matches_full_table() {
         let dev = Device::Cpu;
         let t = Tensor::randn(0f32, 1.0, (50, 512), &dev).unwrap();
-        for (dtype, tolerance) in [
-            (GgmlDType::Q8_0, 0.03),
-            (GgmlDType::Q6K, 0.12),
-            (GgmlDType::Q4K, 0.5),
-        ] {
+        let (dtype, tolerance) = (TABLE_DTYPE, 0.5);
+        {
             let mut weights = HashMap::new();
             weights.insert("embeddings.word_embeddings.weight".to_owned(), t.clone());
             weights.insert("embeddings.LayerNorm.weight".to_owned(), t.clone());
-            let (full, quant) = quantize_weights(weights, Scheme::uniform(dtype)).unwrap();
+            let (full, quant) = quantize_weights(weights, GgmlDType::Q8_0).unwrap();
             // Seule la table est quantifiée ; la normalisation reste en f32.
             assert!(full.contains_key("embeddings.LayerNorm.weight"));
             let qt = quant["embeddings.word_embeddings.weight"].clone();

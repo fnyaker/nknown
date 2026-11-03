@@ -50,7 +50,7 @@ pub fn load_pipeline(lexicon: &Path, models: &[&str]) -> Result<Pipeline, Error>
 /// Un chemin de modèle relatif (`parser-multi`, `vulkan:parser-multi`) désigne un modèle du
 /// dossier des modèles.
 pub fn resolve(spec: &str, models_dir: &Path) -> String {
-    let (prefix, path) = ["vulkan:", "f32:", "q8:", "q6:", "q4:"]
+    let (prefix, path) = ["vulkan:", "f32:", "light:"]
         .into_iter()
         .find_map(|p| spec.strip_prefix(p).map(|rest| (p, rest)))
         .unwrap_or(("", spec));
@@ -66,28 +66,21 @@ pub fn resolve(spec: &str, models_dir: &Path) -> String {
 #[cfg_attr(not(feature = "neural"), allow(dead_code))]
 enum Bits {
     F32,
-    Q8,
-    Q6,
-    Q4,
-    Q4Table,
+    Standard,
+    Light,
 }
 
 /// Ajoute un modèle : tagueur (fichier), analyseur GPU (`vulkan:<dossier>`) ou CPU (dossier :
-/// table des plongements en 4 bits et couches en 8 bits ; `q8:`, `q6:`, `q4:` : tout en 8, 6 ou
-/// 4 bits ; `f32:` : pleine précision).
+/// précision standard ; `light:<dossier>` : allégé ; `f32:<dossier>` : pleine précision).
 pub fn add_model(pipeline: Pipeline, spec: &str) -> Result<Pipeline, Error> {
     if let Some(dir) = spec.strip_prefix("vulkan:") {
         with_vulkan_parser(pipeline, dir)
     } else if let Some(dir) = spec.strip_prefix("f32:") {
         with_parser(pipeline, dir, Bits::F32)
-    } else if let Some(dir) = spec.strip_prefix("q6:") {
-        with_parser(pipeline, dir, Bits::Q6)
-    } else if let Some(dir) = spec.strip_prefix("q8:") {
-        with_parser(pipeline, dir, Bits::Q8)
-    } else if let Some(dir) = spec.strip_prefix("q4:") {
-        with_parser(pipeline, dir, Bits::Q4)
+    } else if let Some(dir) = spec.strip_prefix("light:") {
+        with_parser(pipeline, dir, Bits::Light)
     } else if Path::new(spec).is_dir() {
-        with_parser(pipeline, spec, Bits::Q4Table)
+        with_parser(pipeline, spec, Bits::Standard)
     } else {
         let lang = lang_of(Path::new(spec)).unwrap_or(Lang::FRA);
         Ok(pipeline.with_tagger(lang, Tagger::load(spec)?))
@@ -117,10 +110,8 @@ fn with_parser(pipeline: Pipeline, dir: &str, bits: Bits) -> Result<Pipeline, Er
     use nknown_neural::{NeuralParser, Precision};
     let precision = match bits {
         Bits::F32 => Precision::F32,
-        Bits::Q8 => Precision::Int8,
-        Bits::Q6 => Precision::Int6,
-        Bits::Q4 => Precision::Int4,
-        Bits::Q4Table => Precision::Int4Table,
+        Bits::Standard => Precision::Standard,
+        Bits::Light => Precision::Light,
     };
     let parser = NeuralParser::load_with(dir, precision).map_err(Error::model)?;
     let langs = parser.langs();
@@ -159,6 +150,10 @@ mod resolve_tests {
         assert_eq!(
             resolve("vulkan:parser-multi", m),
             "vulkan:/d/models/parser-multi"
+        );
+        assert_eq!(
+            resolve("light:parser-multi", m),
+            "light:/d/models/parser-multi"
         );
         assert_eq!(resolve("/x/p", m), "/x/p");
         assert_eq!(resolve("vulkan:/x/p", m), "vulkan:/x/p");

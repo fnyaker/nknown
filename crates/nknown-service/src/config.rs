@@ -55,8 +55,33 @@ pub struct Config {
     /// Dossier des lexiques et tagueurs (`<langue>.lex`, `<langue>.tag`) ; défaut :
     /// `<données>/models`.
     pub models: Option<PathBuf>,
-    /// Analyseur neuronal : dossier (CPU) ou `vulkan:<dossier>` (GPU). Aucun par défaut.
+    /// Analyseur neuronal : dossier (CPU) ou `vulkan:<dossier>` (GPU), relatif au dossier des
+    /// modèles. Aucun par défaut.
     pub parser: Option<String>,
+    /// Précision de l'analyseur sur CPU.
+    pub parser_precision: ParserPrecision,
+}
+
+/// Précision de l'analyseur sur CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParserPrecision {
+    /// Table des plongements en 4 bits, couches en 8 bits : précision intacte (~510 Mo).
+    #[default]
+    Standard,
+    /// Tout en 4 bits : ~50 Mo de moins, environ un point d'exactitude en moins.
+    Light,
+}
+
+impl ParserPrecision {
+    /// Spécification de modèle correspondante (`light:` devant un dossier ; le reste inchangé).
+    pub fn apply(self, spec: &str) -> String {
+        let plain = !spec.contains(':') || spec.starts_with('/');
+        match self {
+            Self::Light if plain => format!("light:{spec}"),
+            _ => spec.to_owned(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -73,6 +98,7 @@ impl Default for Config {
             watch_files: true,
             models: None,
             parser: None,
+            parser_precision: ParserPrecision::Standard,
         }
     }
 }
@@ -143,9 +169,22 @@ mod tests {
         let c = Config {
             sources: vec!["rss:https://example.org/feed".into()],
             parser: Some("vulkan:/m".into()),
+            parser_precision: ParserPrecision::Light,
             ..Config::default()
         };
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), c);
+    }
+
+    #[test]
+    fn precision_prefixes_plain_dirs_only() {
+        let light = ParserPrecision::Light;
+        assert_eq!(light.apply("/m/parser-multi"), "light:/m/parser-multi");
+        assert_eq!(light.apply("parser-multi"), "light:parser-multi");
+        assert_eq!(light.apply("vulkan:/m/p"), "vulkan:/m/p");
+        assert_eq!(light.apply("f32:/m/p"), "f32:/m/p");
+        assert_eq!(ParserPrecision::Standard.apply("/m/p"), "/m/p");
+        let c: Config = toml::from_str("parser_precision = \"light\"").unwrap();
+        assert_eq!(c.parser_precision, light);
     }
 }

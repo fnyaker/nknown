@@ -129,13 +129,19 @@ nknown eval data/ en_ewt-ud-test.conllu vulkan:data/parser-multi   # langue tir�
 
 ### Analyseur quantifié sur CPU
 
-Sur CPU, l'encodeur est quantifié au chargement : par défaut, la table des plongements (70 % des
-poids, lue ligne à ligne puis normalisée) en 4 bits (Q4_K) et les matrices des couches en 8 bits
-(Q8_0) ; les têtes restent en f32. Le modèle converti est enregistré à côté du modèle f32
-(`model.q4k-q8.gguf`…) ; ensuite seul ce fichier est lu. Préfixes : `q8:`, `q6:`, `q4:` (tout
-l'encodeur en 8, 6 ou 4 bits), `f32:` (pleine précision).
+Sur CPU, l'encodeur est quantifié au chargement, en deux options (`parser_precision` dans la
+configuration) :
 
-| | f32 | 8 bits | 6 bits | **4 + 8 bits (défaut)** | 4 bits |
+- **`standard`** (défaut) : la table des plongements (70 % des poids, lue ligne à ligne puis
+  normalisée) en 4 bits (Q4_K), les matrices des couches en 8 bits (Q8_0) ;
+- **`light`** : tout l'encodeur en 4 bits.
+
+Les têtes restent en f32. Le modèle converti est enregistré à côté du modèle f32
+(`model.q4k-q8.gguf`, `model.q4k.gguf`) ; ensuite seul ce fichier est lu. En ligne de commande :
+`light:<dossier>`, et `f32:<dossier>` pour la pleine précision. Mesures de toutes les variantes
+essayées :
+
+| | f32 | 8 bits | 6 bits | **4 + 8 bits (`standard`)** | 4 bits (`light`) |
 |---|---|---|---|---|---|
 | Poids sur disque | 1 120 Mo | 307 Mo | 240 Mo | **211 Mo** | 169 Mo |
 | Démon avec l'analyseur | 1 548 Mo | 763 Mo | 688 Mo | **668 Mo** | 618 Mo |
@@ -149,7 +155,9 @@ l'encodeur en 8, 6 ou 4 bits), `f32:` (pleine précision).
 | Russian-Taiga | 85,1 % | 85,01 % | 85,12 % | **84,98 %** | 84,11 % |
 | Chinese-GSDSimp | 84,7 % | 84,61 % | 84,40 % | **84,59 %** | 83,16 % |
 
-Toute la perte du 4 bits vient des couches : la table, elle, s'en accommode sans rien perdre.
+Toute la perte du 4 bits vient des couches : la table, elle, s'en accommode sans rien perdre. Le
+8 et le 6 bits uniformes, moins bons que `standard` en mémoire à précision égale, ne sont pas
+gardés.
 
 Des 668 Mo, ~157 Mo reviennent au démon sans analyseur et ~295 Mo au tokeniseur XLM-R chargé
 par `tokenizers` (son trie de 250 000 sous-mots).
@@ -172,6 +180,7 @@ watch_files = true        # réindexe les dossiers à chaque modification
 # models = "/chemin/des/modèles"   # défaut : $XDG_DATA_HOME/nknown/models
 # parser = "parser-multi"          # analyseur XLM-R quantifié, relatif au dossier des
 #                                  # modèles ; ~510 Mo de plus, désactivé par défaut
+# parser_precision = "standard"    # ou "light" : ~50 Mo de moins, ~1 point de LAS en moins
 ```
 
 
