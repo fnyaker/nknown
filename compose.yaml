@@ -1,0 +1,29 @@
+# docker compose up -d
+#
+# Jeton d'accès : NKNOWN_TOKEN (fichier .env à côté, jamais commité), sinon généré au premier
+# démarrage dans le volume : docker compose exec nknown cat /data/token
+#
+# Le cookie de session de l'interface web est « Secure » : servez-la derrière un proxy HTTPS.
+# En HTTP clair sur un réseau de confiance seulement : NKNOWN_INSECURE_COOKIE=1.
+services:
+  nknown:
+    build: .
+    image: nknown
+    restart: unless-stopped
+    environment:
+      NKNOWN_TOKEN: ${NKNOWN_TOKEN:-}
+    volumes:
+      - nknown-data:/data
+    # Écoute locale par défaut : exposer sur le réseau passe par le proxy HTTPS.
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  nknown-data:

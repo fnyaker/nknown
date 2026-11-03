@@ -147,3 +147,18 @@ watch_files = true        # réindexe les dossiers à chaque modification
 #                                  # ~1,5 Go de mémoire sur CPU, désactivé par défaut
 ```
 
+
+Service utilisateur systemd (priorité basse, E/S en tâche de fond) :
+[`packaging/systemd/nknownd.service`](packaging/systemd/nknownd.service).
+
+## Serveur (Docker)
+
+```sh
+docker compose up -d                       # écoute sur 127.0.0.1:8080, données dans le volume
+docker compose exec nknown cat /data/token # jeton généré au premier démarrage
+curl -H "Authorization: Bearer $JETON" http://127.0.0.1:8080/api/v1/status
+```
+
+Modèles dans `/data/models` ; l'analyseur neuronal s'ajoute avec
+`docker build --build-arg FEATURES=neural`. L'interface web utilise un cookie `Secure` :
+exposez-la derrière un proxy HTTPS.
