@@ -17,7 +17,7 @@ modules:
       - install -Dm755 bin/nknown /app/bin/nknown
       - ln -s nknown /app/bin/nknownd
       - install -Dm644 share/icons/hicolor/scalable/apps/nknown.svg /app/share/icons/hicolor/scalable/apps/io.github.fnyaker.NKnown.svg
-      - sed 's/^Icon=.*/Icon=io.github.fnyaker.NKnown/' share/applications/nknown.desktop > io.github.fnyaker.NKnown.desktop
+      - sed 's/^Icon=.*/Icon=io.github.fnyaker.NKnown/' nknown.desktop > io.github.fnyaker.NKnown.desktop
       - install -Dm644 io.github.fnyaker.NKnown.desktop /app/share/applications/io.github.fnyaker.NKnown.desktop
       - install -Dm644 io.github.fnyaker.NKnown.metainfo.xml /app/share/metainfo/io.github.fnyaker.NKnown.metainfo.xml
     sources:
@@ -25,3 +25,5 @@ modules:
         path: payload
       - type: file
         path: io.github.fnyaker.NKnown.metainfo.xml
+      - type: file
+        path: nknown.desktop

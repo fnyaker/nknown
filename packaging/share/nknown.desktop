@@ -2,10 +2,11 @@
 Type=Application
 Name=NKnown
 GenericName=Base de connaissances
-Comment=Recherche dans vos documents, flux et notes, et carte des liens
-Exec=nknown
+Comment=Rechercher dans vos documents, flux et notes, et voir les liens qui y mènent
+Exec=nknown-app
 Icon=nknown
-Terminal=true
-NoDisplay=true
-Categories=Utility;TextTools;
-Keywords=recherche;connaissances;search;knowledge;
+Terminal=false
+StartupNotify=true
+SingleMainWindow=true
+Categories=Utility;Office;
+Keywords=recherche;connaissances;notes;documents;search;knowledge;

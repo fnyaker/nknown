@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NKnown
+GenericName=Base de connaissances
+Comment=Recherche dans vos documents, flux et notes, et carte des liens
+Exec=nknown
+Icon=nknown
+Terminal=true
+NoDisplay=true
+Categories=Utility;TextTools;
+Keywords=recherche;connaissances;search;knowledge;

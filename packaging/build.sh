@@ -36,7 +36,6 @@ install -m755 "$pkg/install.sh" "$stage/install.sh"
 install -m644 "$root/README.md" "$stage/share/doc/README.md"
 install -m644 "$pkg/models/NOTICE.md" "$stage/share/doc/MODELS.md"
 install -Dm644 "$pkg/share/nknown.svg" "$stage/share/icons/hicolor/scalable/apps/nknown.svg"
-install -Dm644 "$pkg/share/nknown.desktop" "$stage/share/applications/nknown.desktop"
 install -Dm644 "$pkg/plasma/nknown-krunner.desktop" "$stage/share/krunner/dbusplugins/nknown.desktop"
 install -Dm644 "$pkg/plasma/org.nknown.krunner.service" "$stage/share/dbus-1/services/org.nknown.krunner.service"
 cat > "$stage/README.txt" <<EOF
@@ -59,7 +58,6 @@ system_root() {
   install -Dm644 "$stage/share/doc/README.md" "$r/usr/share/doc/nknown/README.md"
   install -Dm644 "$stage/share/doc/MODELS.md" "$r/usr/share/doc/nknown/MODELS.md"
   install -Dm644 "$pkg/share/nknown.svg" "$r/usr/share/icons/hicolor/scalable/apps/nknown.svg"
-  install -Dm644 "$pkg/share/nknown.desktop" "$r/usr/share/applications/nknown.desktop"
   install -Dm644 "$pkg/plasma/nknown-krunner.desktop" "$r/usr/share/krunner/dbusplugins/nknown.desktop"
   install -Dm644 "$pkg/plasma/org.nknown.krunner.service" "$r/usr/share/dbus-1/services/org.nknown.krunner.service"
 }
@@ -136,6 +134,16 @@ build_arch() {
   cp "$pkg/arch/PKGBUILD" "$pkg/arch/nknown.install" "$d/"
   cp "$dist/$name.tar.gz" "$d/"
   sed -i "s/^pkgver=.*/pkgver=$version/" "$d/PKGBUILD"
+  # L'app (Qt6) : construite contre la Qt d'Arch ($NKNOWN_APP ou target/dist/nknown-app) ;
+  # sans elle, le paquet ne contient que la ligne de commande et le démon.
+  local app=${NKNOWN_APP:-$root/target/dist/nknown-app}
+  if [ -x "$app" ]; then
+    install -m755 "$app" "$d/nknown-app"
+    cp "$pkg/share/nknown.desktop" "$d/nknown.desktop"
+  else
+    sed -i '/# app$/d' "$d/PKGBUILD"
+    skip "arch (app)" "nknown-app absent : paquet sans interface graphique"
+  fi
   (cd "$d" && PKGDEST="$dist" makepkg --force --skipchecksums --nodeps >/dev/null)
   say "dist/$(cd "$dist" && ls nknown-bin-"$version"-*.pkg.tar.zst)"
 }
@@ -146,7 +154,7 @@ build_appimage() {
   local d=$dist/stage/NKnown.AppDir
   rm -rf "$d" && system_root "$d"
   install -m755 "$pkg/appimage/AppRun" "$d/AppRun"
-  cp "$pkg/share/nknown.desktop" "$d/nknown.desktop"
+  cp "$pkg/appimage/nknown.desktop" "$d/nknown.desktop"
   cp "$pkg/share/nknown.svg" "$d/nknown.svg"
   ln -sf nknown.svg "$d/.DirIcon"
   ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream "$d" \
@@ -159,6 +167,7 @@ build_flatpak() {
   local d=$dist/stage/flatpak
   rm -rf "$d" && mkdir -p "$d"
   cp "$pkg/flatpak/io.github.fnyaker.NKnown.yml" "$pkg/flatpak/io.github.fnyaker.NKnown.metainfo.xml" "$d/"
+  cp "$pkg/appimage/nknown.desktop" "$d/nknown.desktop"
   cp -r "$stage" "$d/payload"
   (cd "$d" && flatpak-builder --user --install-deps-from=flathub --force-clean \
       --repo=repo build io.github.fnyaker.NKnown.yml >/dev/null \

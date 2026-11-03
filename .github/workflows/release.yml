@@ -93,18 +93,27 @@ jobs:
         with:
           name: dist-main
           path: incoming
+      - name: App (Qt6 d'Arch)
+        run: |
+          pacman -Syu --noconfirm --needed rust qt6-base qt6-declarative qt6-svg
+          cargo build --profile dist -p nknown-desktop
+          cp target/dist/nknown-app nknown-app-arch-x86_64
       - name: Paquet Arch
         run: |
           useradd -m builder
           mkdir -p x && tar -xzf incoming/nknown-linux-x86_64.tar.gz -C x
           chown -R builder: .
-          su builder -c "NKNOWN_BINARY=$PWD/x/nknown-linux-x86_64/bin/nknown packaging/build.sh arch"
+          su builder -c "NKNOWN_BINARY=$PWD/x/nknown-linux-x86_64/bin/nknown NKNOWN_APP=$PWD/nknown-app-arch-x86_64 packaging/build.sh arch"
           pacman -U --noconfirm dist/nknown-bin-*.pkg.tar.zst
           nknown --version
+          test -x /usr/bin/nknown-app
+          cp nknown-app-arch-x86_64 dist/
       - uses: actions/upload-artifact@v4
         with:
           name: dist-arch
-          path: dist/*.pkg.tar.zst
+          path: |
+            dist/*.pkg.tar.zst
+            dist/nknown-app-arch-x86_64
 
   flatpak:
     needs: build

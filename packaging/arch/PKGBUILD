@@ -7,12 +7,19 @@ arch=('x86_64')
 url="https://github.com/fnyaker/nknown"
 license=('LicenseRef-proprietary')
 depends=('glibc' 'gcc-libs')
+depends+=('qt6-declarative' 'qt6-svg') # app
 provides=('nknown')
 conflicts=('nknown')
 install=nknown.install
 options=('!strip' '!debug')
-source=("nknown-linux-x86_64.tar.gz::https://github.com/fnyaker/nknown/releases/download/v${pkgver}/nknown-linux-x86_64.tar.gz")
-sha256sums=('SKIP')
+source=("nknown-linux-x86_64.tar.gz::https://github.com/fnyaker/nknown/releases/download/v${pkgver}/nknown-linux-x86_64.tar.gz"
+        "nknown-app::https://github.com/fnyaker/nknown/releases/download/v${pkgver}/nknown-app-arch-x86_64" # app
+        "nknown.desktop::https://raw.githubusercontent.com/fnyaker/nknown/v${pkgver}/packaging/share/nknown.desktop" # app
+)
+sha256sums=('SKIP'
+            'SKIP' # app
+            'SKIP' # app
+)
 
 package() {
   cd nknown-linux-x86_64
@@ -22,7 +29,11 @@ package() {
   install -Dm644 share/doc/README.md "$pkgdir/usr/share/doc/nknown/README.md"
   install -Dm644 share/doc/MODELS.md "$pkgdir/usr/share/doc/nknown/MODELS.md"
   install -Dm644 share/icons/hicolor/scalable/apps/nknown.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/nknown.svg"
-  install -Dm644 share/applications/nknown.desktop "$pkgdir/usr/share/applications/nknown.desktop"
   install -Dm644 share/krunner/dbusplugins/nknown.desktop "$pkgdir/usr/share/krunner/dbusplugins/nknown.desktop"
   install -Dm644 share/dbus-1/services/org.nknown.krunner.service "$pkgdir/usr/share/dbus-1/services/org.nknown.krunner.service"
+  # L'app graphique (Qt6), si elle fait partie du paquet.
+  if [ -f "$srcdir/nknown-app" ]; then
+    install -Dm755 "$srcdir/nknown-app" "$pkgdir/usr/bin/nknown-app"
+    install -Dm644 "$srcdir/nknown.desktop" "$pkgdir/usr/share/applications/nknown.desktop"
+  fi
 }
