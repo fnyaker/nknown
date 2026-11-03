@@ -16,6 +16,17 @@ Installe `nknown` dans `~/.local/bin` (`--system` : `/usr/local`), active le dé
 (service systemd utilisateur, `--no-service` pour s'en passer) ; `--uninstall` désinstalle. Rien
 n'est écrit dans `/etc`. Les modèles (291 Mo) sont téléchargés au premier lancement du démon.
 
+L'app graphique sur toute distribution, en Flatpak (runtime KDE, installé au besoin depuis Flathub) :
+
+```sh
+curl -fLO https://github.com/fnyaker/nknown/releases/latest/download/NKnown-x86_64.flatpak
+flatpak install --user NKnown-x86_64.flatpak
+flatpak run io.github.fnyaker.NKnown
+```
+
+Sur Arch, le paquet de la release (`pacman -U nknown-bin-*.pkg.tar.zst`) contient l'app, le
+démon et l'intégration Plasma (KRunner, zone de notification).
+
 Chaque [release](https://github.com/fnyaker/nknown/releases) fournit aussi : AppImage, Flatpak,
 `.deb`, `.rpm`, paquet Arch (`pacman -U`), archive portable (`tar.gz` ou `zip`, avec `install.sh`),
 et `SHA256SUMS`. Un seul binaire : `nknown` (ligne de commande), `nknownd` ou `nknown daemon`
