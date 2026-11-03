@@ -65,6 +65,24 @@ identifiants opaques.
 | `DELETE` | `/sources/{id}` | retrait d'une source |
 | `POST` | `/session` | interface web : échange le jeton contre un cookie `HttpOnly; Secure; SameSite=Strict` |
 
+Flux d'une recherche (`POST /search`, une ligne JSON par évènement) :
+
+```
+{"type":"phase","phase":"analyze"}
+{"type":"terms","intent":null,"terms":[…]}
+{"type":"graph_patch","nodes":[requête, mots],"edges":[…]}
+{"type":"phase","phase":"search"}
+{"type":"graph_patch","nodes":[résultats provisoires, sources],"edges":[…]}
+{"type":"phase","phase":"graph"}
+{"type":"graph_patch","nodes":[modifiés],"edges":[…],"removed_nodes":[écartés]}
+{"type":"done", …résultat complet, dont la carte finale…}
+```
+
+La carte se construit en direct : chaque `graph_patch` ajoute ou remplace des nœuds et des liens
+(même `id` ; même `from`, `to`, `kind`) et en retire ; les appliquer dans l'ordre redonne la
+carte de `done`. Les résultats provisoires sont classés au seul score du texte ; la carte finale
+ajoute la propagation dans le graphe, l'autorité, les seuils et les documents apparentés.
+
 Authentification :
 - serveur distant : `Authorization: Bearer <jeton>` (comparaison en temps constant), ou le
   cookie de session pour l'interface web ; jeton fourni par `NKNOWN_TOKEN` ou généré au premier

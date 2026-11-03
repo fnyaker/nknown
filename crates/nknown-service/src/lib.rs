@@ -230,83 +230,48 @@ impl Service {
             terms: terms.clone(),
         });
 
+        // Carte en direct : d'abord la requête et ses mots.
+        let mut shown = api::Graph::default();
+        let mut show = |next: api::Graph, on_event: &mut dyn FnMut(api::SearchEvent)| {
+            let patch = graph::diff(&shown, &next);
+            if !patch.is_empty() {
+                on_event(api::SearchEvent::GraphPatch(patch));
+            }
+            shown = next;
+        };
+        show(graph::build(&terms, &[], &[]), &mut on_event);
+
         on_event(api::SearchEvent::Phase {
             phase: api::Phase::Search,
         });
-        let result =
-            self.engine()
-                .search_explained(&q, Timestamp::now(), req.limit.clamp(1, 100))?;
+        let term_index = |text: &str| q.terms.iter().position(|t| t.text == text);
+        let mut provisional = None;
+        let result = self.engine().search_observed(
+            &q,
+            Timestamp::now(),
+            req.limit.clamp(1, 100),
+            &mut |stage| match stage {
+                nknown_engine::Stage::Candidates { hits, .. } => {
+                    // Résultats provisoires : la carte s'étoffe avant les scores définitifs.
+                    let (hits, links) = convert_hits(hits.to_vec(), &term_index, false);
+                    let mut g = graph::build(&terms, &hits, &links);
+                    for n in &mut g.nodes {
+                        n.hit = None;
+                    }
+                    provisional = Some(g);
+                }
+            },
+        )?;
+        if let Some(g) = provisional {
+            show(g, &mut on_event);
+        }
 
         on_event(api::SearchEvent::Phase {
             phase: api::Phase::Graph,
         });
-        let best = result
-            .hits
-            .first()
-            .map_or(1.0, |h| h.score.max(f64::MIN_POSITIVE));
-        let term_index = |text: &str| q.terms.iter().position(|t| t.text == text);
-        let mut hits = Vec::with_capacity(result.hits.len());
-        let mut links = Vec::with_capacity(result.hits.len());
-        for h in result.hits {
-            links.push(graph::HitLinks {
-                term_scores: h.term_scores.clone(),
-                qualified: h
-                    .qualified
-                    .iter()
-                    .filter_map(|(a, n)| Some((term_index(a)?, term_index(n)?)))
-                    .collect(),
-                related: h
-                    .related
-                    .iter()
-                    .map(|r| {
-                        let title = sources::display_title(
-                            r.title.as_deref(),
-                            r.external_id.as_deref(),
-                            &r.source,
-                        );
-                        (r.doc_id.0, title, r.similarity)
-                    })
-                    .collect(),
-                source: h.doc.source.clone(),
-            });
-            let p = h.parts;
-            hits.push(api::Hit {
-                doc: h.doc_id.0,
-                passage: h.passage.0,
-                title: sources::display_title(
-                    h.doc.title.as_deref(),
-                    h.doc.external_id.as_deref(),
-                    &h.doc.source,
-                ),
-                source: sources::label(&h.doc.source),
-                source_kind: sources::api_kind(h.doc.kind),
-                url: sources::open_url(
-                    h.doc.url.as_deref(),
-                    h.doc.external_id.as_deref(),
-                    &h.doc.source,
-                ),
-                date: h.doc.date,
-                score: h.score,
-                relative: (h.score / best) as f32,
-                snippet: query::snippet(&h.text, &h.matched, 240),
-                matched: h.matched,
-                is_code: h.is_code,
-                code_lang: h.code_lang,
-                nature: dominant_nature(&h.doc.nature),
-                parts: api::ScoreParts {
-                    text: p.text,
-                    coverage: p.coverage,
-                    qualified: p.qualified,
-                    title: p.title,
-                    nature: p.nature,
-                    freshness: p.freshness,
-                    burst: p.burst,
-                    graph: p.graph,
-                    authority: p.authority,
-                },
-            });
-        }
+        let (hits, links) = convert_hits(result.hits, &term_index, true);
         let graph = graph::build(&terms, &hits, &links);
+        show(graph.clone(), &mut on_event);
         let response = api::SearchResponse {
             query: req.query.clone(),
             intent,
@@ -565,6 +530,84 @@ impl Service {
     }
 }
 
+/// Résultats du moteur → résultats de l'API et entrées du graphe. Sans `with_snippets`
+/// (carte provisoire), pas d'extrait : seule la carte s'en sert.
+fn convert_hits(
+    found: Vec<nknown_engine::Hit>,
+    term_index: &dyn Fn(&str) -> Option<usize>,
+    with_snippets: bool,
+) -> (Vec<api::Hit>, Vec<graph::HitLinks>) {
+    let best = found
+        .first()
+        .map_or(1.0, |h| h.score.max(f64::MIN_POSITIVE));
+    let mut hits = Vec::with_capacity(found.len());
+    let mut links = Vec::with_capacity(found.len());
+    for h in found {
+        links.push(graph::HitLinks {
+            term_scores: h.term_scores.clone(),
+            qualified: h
+                .qualified
+                .iter()
+                .filter_map(|(a, n)| Some((term_index(a)?, term_index(n)?)))
+                .collect(),
+            related: h
+                .related
+                .iter()
+                .map(|r| {
+                    let title = sources::display_title(
+                        r.title.as_deref(),
+                        r.external_id.as_deref(),
+                        &r.source,
+                    );
+                    (r.doc_id.0, title, r.similarity)
+                })
+                .collect(),
+            source: h.doc.source.clone(),
+        });
+        let p = h.parts;
+        hits.push(api::Hit {
+            doc: h.doc_id.0,
+            passage: h.passage.0,
+            title: sources::display_title(
+                h.doc.title.as_deref(),
+                h.doc.external_id.as_deref(),
+                &h.doc.source,
+            ),
+            source: sources::label(&h.doc.source),
+            source_kind: sources::api_kind(h.doc.kind),
+            url: sources::open_url(
+                h.doc.url.as_deref(),
+                h.doc.external_id.as_deref(),
+                &h.doc.source,
+            ),
+            date: h.doc.date,
+            score: h.score,
+            relative: (h.score / best) as f32,
+            snippet: if with_snippets {
+                query::snippet(&h.text, &h.matched, 240)
+            } else {
+                String::new()
+            },
+            matched: h.matched,
+            is_code: h.is_code,
+            code_lang: h.code_lang,
+            nature: dominant_nature(&h.doc.nature),
+            parts: api::ScoreParts {
+                text: p.text,
+                coverage: p.coverage,
+                qualified: p.qualified,
+                title: p.title,
+                nature: p.nature,
+                freshness: p.freshness,
+                burst: p.burst,
+                graph: p.graph,
+                authority: p.authority,
+            },
+        });
+    }
+    (hits, links)
+}
+
 fn dominant_nature(scores: &[f32; Nature::COUNT]) -> api::Nature {
     let i = (0..Nature::COUNT)
         .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
@@ -661,6 +704,120 @@ mod tests {
         let doc = svc.document(added.id).unwrap().unwrap();
         assert_eq!(doc.title.as_deref(), Some("Moteur"));
         assert_eq!(doc.passages.len(), 1);
+    }
+
+    /// Les patchs du flux, appliqués dans l'ordre, donnent la carte finale ; la carte se
+    /// construit par étapes (mots d'abord, résultats ensuite).
+    #[test]
+    fn live_graph_patches_rebuild_the_final_graph() {
+        let (_dir, svc) = service();
+        for (title, text) in [
+            (
+                "Rust",
+                "Le compilateur Rust vérifie les emprunts et la mémoire.",
+            ),
+            (
+                "Mémoire",
+                "La mémoire vive du compilateur sature sur les gros projets.",
+            ),
+            (
+                "Cuisine",
+                "Une recette de tarte aux pommes, sans compilateur.",
+            ),
+        ] {
+            svc.add_document(api::AddDocument {
+                text: text.into(),
+                title: Some(title.into()),
+                url: None,
+                format: None,
+            })
+            .unwrap();
+        }
+        let mut events = Vec::new();
+        let r = svc
+            .search(
+                &api::SearchRequest {
+                    query: "compilateur mémoire".into(),
+                    limit: 10,
+                },
+                |e| events.push(e),
+            )
+            .unwrap();
+        let patches: Vec<&api::GraphPatch> = events
+            .iter()
+            .filter_map(|e| match e {
+                api::SearchEvent::GraphPatch(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert!(patches.len() >= 2, "{} patchs", patches.len());
+        // Premier patch : la requête et ses mots, sans résultat.
+        assert!(
+            patches[0]
+                .nodes
+                .iter()
+                .all(|n| matches!(n.kind, api::NodeKind::Query | api::NodeKind::Term))
+        );
+        // Chaque patch arrive avant le résultat final.
+        let done = events
+            .iter()
+            .position(|e| matches!(e, api::SearchEvent::Done(_)))
+            .unwrap();
+        assert!(
+            events[..done]
+                .iter()
+                .filter(|e| matches!(e, api::SearchEvent::GraphPatch(_)))
+                .count()
+                == patches.len()
+        );
+        let mut live = api::Graph::default();
+        for p in &patches {
+            live.apply(p);
+        }
+        let sorted = |g: &api::Graph| {
+            let mut nodes = g.nodes.clone();
+            nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            let mut edges = g.edges.clone();
+            edges.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
+            (nodes, edges)
+        };
+        assert_eq!(sorted(&live), sorted(&r.graph));
+    }
+
+    #[test]
+    fn graph_diff_removes_dropped_nodes_and_edges() {
+        let node = |id: &str, w: f32| api::Node {
+            id: id.into(),
+            kind: api::NodeKind::Prose,
+            label: String::new(),
+            weight: w,
+            hit: None,
+            doc: None,
+            source_kind: None,
+        };
+        let edge = |from: &str, to: &str| api::Edge {
+            from: from.into(),
+            to: to.into(),
+            kind: api::EdgeKind::TermHit,
+            weight: 1.0,
+        };
+        let old = api::Graph {
+            nodes: vec![node("a", 1.0), node("b", 1.0), node("c", 1.0)],
+            edges: vec![edge("a", "b"), edge("a", "c"), edge("b", "c")],
+        };
+        let new = api::Graph {
+            nodes: vec![node("a", 0.5), node("b", 1.0), node("d", 1.0)],
+            edges: vec![edge("a", "d")],
+        };
+        let p = graph::diff(&old, &new);
+        assert_eq!(p.nodes, vec![node("a", 0.5), node("d", 1.0)]);
+        assert_eq!(p.removed_nodes, vec!["c".to_owned()]);
+        // a → b disparaît ; les liens de c partent avec lui.
+        assert_eq!(p.removed_edges, vec![edge("a", "b").key()]);
+        let mut g = old.clone();
+        g.apply(&p);
+        g.nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(g, new);
     }
 
     #[test]

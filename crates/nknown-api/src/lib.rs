@@ -69,6 +69,10 @@ pub enum SearchEvent {
         intent: Option<String>,
         terms: Vec<QueryTermView>,
     },
+    /// Modification de la carte : elle se construit en direct, patch après patch (requête et
+    /// mots, puis résultats provisoires, puis carte finale). Appliquer les patchs dans l'ordre
+    /// donne la carte de [`SearchResponse::graph`].
+    GraphPatch(GraphPatch),
     /// Résultat final.
     Done(Box<SearchResponse>),
     Error {
@@ -199,6 +203,73 @@ pub enum NodeKind {
     Related,
 }
 
+/// Différence entre deux états de la carte.
+///
+/// Un nœud ou un lien d'identité connue (`id` ; `from`, `to`, `kind`) remplace l'ancien : poids,
+/// libellé ou nature ont changé. Retirer un nœud retire ses liens. Dans une carte provisoire,
+/// `Node::hit` est absent : il n'indexe que les résultats définitifs.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GraphPatch {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<Node>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<Edge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_nodes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_edges: Vec<EdgeKey>,
+}
+
+impl GraphPatch {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+            && self.edges.is_empty()
+            && self.removed_nodes.is_empty()
+            && self.removed_edges.is_empty()
+    }
+}
+
+/// Identité d'un lien.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EdgeKey {
+    pub from: String,
+    pub to: String,
+    pub kind: EdgeKind,
+}
+
+impl Graph {
+    /// Applique un patch (côté client).
+    pub fn apply(&mut self, patch: &GraphPatch) {
+        let gone = |id: &String| patch.removed_nodes.contains(id);
+        self.nodes.retain(|n| !gone(&n.id));
+        self.edges
+            .retain(|e| !gone(&e.from) && !gone(&e.to) && !patch.removed_edges.contains(&e.key()));
+        for n in &patch.nodes {
+            match self.nodes.iter_mut().find(|o| o.id == n.id) {
+                Some(o) => *o = n.clone(),
+                None => self.nodes.push(n.clone()),
+            }
+        }
+        for e in &patch.edges {
+            let key = e.key();
+            match self.edges.iter_mut().find(|o| o.key() == key) {
+                Some(o) => *o = e.clone(),
+                None => self.edges.push(e.clone()),
+            }
+        }
+    }
+}
+
+impl Edge {
+    pub fn key(&self) -> EdgeKey {
+        EdgeKey {
+            from: self.from.clone(),
+            to: self.to.clone(),
+            kind: self.kind,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     pub from: String,
@@ -208,7 +279,7 @@ pub struct Edge {
     pub weight: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     /// Requête → mot.

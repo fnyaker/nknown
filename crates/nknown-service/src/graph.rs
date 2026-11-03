@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use nknown_api::{Edge, EdgeKind, Graph, Hit, Node, NodeKind, QueryTermView};
+use nknown_api::{Edge, EdgeKind, Graph, GraphPatch, Hit, Node, NodeKind, QueryTermView};
 
 /// Documents apparentés montrés par résultat : au-delà, la carte devient illisible.
 const RELATED_PER_HIT: usize = 2;
@@ -196,6 +196,37 @@ pub fn build(terms: &[QueryTermView], hits: &[Hit], links: &[HitLinks]) -> Graph
         }
     }
     g
+}
+
+/// Ce qui change de `old` à `new` : nœuds et liens nouveaux ou modifiés, nœuds et liens disparus
+/// (les liens d'un nœud retiré ne sont pas listés : ils partent avec lui).
+pub fn diff(old: &Graph, new: &Graph) -> GraphPatch {
+    let mut patch = GraphPatch::default();
+    for n in &new.nodes {
+        if old.nodes.iter().find(|o| o.id == n.id) != Some(n) {
+            patch.nodes.push(n.clone());
+        }
+    }
+    for e in &new.edges {
+        if !old.edges.contains(e) {
+            patch.edges.push(e.clone());
+        }
+    }
+    patch.removed_nodes = old
+        .nodes
+        .iter()
+        .filter(|o| !new.nodes.iter().any(|n| n.id == o.id))
+        .map(|o| o.id.clone())
+        .collect();
+    let removed = |id: &String| patch.removed_nodes.contains(id);
+    patch.removed_edges = old
+        .edges
+        .iter()
+        .filter(|o| !removed(&o.from) && !removed(&o.to))
+        .filter(|o| !new.edges.iter().any(|e| e.key() == o.key()))
+        .map(Edge::key)
+        .collect();
+    patch
 }
 
 fn term_id(t: usize) -> String {

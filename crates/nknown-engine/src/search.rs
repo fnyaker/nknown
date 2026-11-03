@@ -159,6 +159,14 @@ pub struct SearchResult {
     pub thresholds: Thresholds,
 }
 
+/// Étape d'une recherche en cours.
+#[derive(Debug)]
+pub enum Stage<'a> {
+    /// Classement provisoire, au score du texte, un passage par document : ni propagation
+    /// dans le graphe, ni autorité, ni seuils, ni regroupement des doublons.
+    Candidates { hits: &'a [Hit], candidates: usize },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub passage: NodeId,
@@ -253,6 +261,18 @@ impl<S: Storage> Engine<S> {
         q: &Query,
         now: Timestamp,
         limit: usize,
+    ) -> Result<SearchResult> {
+        self.search_observed(q, now, limit, &mut |_| {})
+    }
+
+    /// Comme [`Self::search_explained`], en montrant les étapes à `observe` au fil du calcul
+    /// (pour qu'une interface construise la carte en direct).
+    pub fn search_observed(
+        &self,
+        q: &Query,
+        now: Timestamp,
+        limit: usize,
+        observe: &mut dyn FnMut(Stage<'_>),
     ) -> Result<SearchResult> {
         let n = schema::u64_value(self.get(&schema::meta_key(schema::PASSAGES))?) as f64;
         if n == 0.0 || q.terms.is_empty() {
@@ -503,6 +523,10 @@ impl<S: Storage> Engine<S> {
         let mut seen = HashSet::new();
         hits.retain(|h| seen.insert(h.doc_id));
         hits.truncate(limit * 4 + 20);
+        observe(Stage::Candidates {
+            hits: &hits[..limit.min(hits.len())],
+            candidates,
+        });
 
         // ---- Graphe : voisins, emballement, propagation, autorité.
         let burst_window = half_life.map_or(BURST_WINDOW_DAYS, |h| h.max(BURST_WINDOW_DAYS));

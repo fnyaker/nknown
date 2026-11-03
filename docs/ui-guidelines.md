@@ -117,8 +117,12 @@ d'état discret (vert : à jour ; animé : collecte en cours ; rouge : moteur in
 libérée accueille la carte (≈ 62 % de la largeur) et la liste des résultats (≈ 38 %). La
 progression se voit à deux endroits, sans jamais de barre de chargement :
 1. le trait sous le champ se remplit par étapes (analyse, lectures, candidats, scores) ;
-2. la carte se construit dans le même ordre : les mots apparaissent dès l'analyse, puis les
-   résultats éclosent, puis les liens se tendent.
+2. la carte se construit dans le même ordre, au fil des patchs du flux (`graph_patch`) : les
+   mots apparaissent dès l'analyse, puis les résultats provisoires éclosent et leurs liens se
+   tendent, puis la carte finale ajuste les tailles, ajoute sources et apparentés, et fait
+   s'effacer (sortie 2× plus rapide) les candidats écartés. Chaque patch s'anime dès réception,
+   avec les entrées décalées de `motion` ; la recherche locale est souvent plus rapide que
+   l'animation : on ne la ralentit pas, on enchaîne.
 
 **Sélection.** Cliquer un résultat le met en valeur dans la carte : la caméra s'y rend
 (`motion.spring`), le nœud et les chemins qui y mènent s'allument, le reste passe à 25 %.

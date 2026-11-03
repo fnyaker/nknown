@@ -21,7 +21,7 @@ pub use graph::{Edge, EdgeKind, NodeId, NodeKind};
 pub use ingest::{Document, Ingested, ItemStatus};
 pub use rank::RankStats;
 pub use search::{
-    Hit, Intent, Query, QueryTerm, Related, ScoreParts, SearchResult, Thresholds, intent_for,
+    Hit, Intent, Query, QueryTerm, Related, ScoreParts, SearchResult, Stage, Thresholds, intent_for,
 };
 pub use storage::{MemStorage, Op, RedbStorage, Storage};
 
