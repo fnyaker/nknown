@@ -1,0 +1,15 @@
+[package]
+name = "nknown-api"
+description = "Types de l'API REST de NKnown (partagés par le serveur, l'app native et l'interface web)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

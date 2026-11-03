@@ -1,0 +1,30 @@
+[package]
+name = "nknown-service"
+description = "Façade du cœur de NKnown : modèles, requêtes, graphe des résultats, collecte"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nknown-api.workspace = true
+nknown-core.workspace = true
+nknown-nlp.workspace = true
+nknown-sources.workspace = true
+nknown-engine.workspace = true
+nknown-neural = { workspace = true, optional = true }
+notify = "8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+# Couche 3 (analyseur neuronal) sur CPU.
+neural = ["dep:nknown-neural"]
+# Couche 3 sur GPU via Vulkan.
+vulkan = ["neural", "nknown-neural/vulkan"]
+
+[lints]
+workspace = true

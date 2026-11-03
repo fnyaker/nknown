@@ -8,7 +8,7 @@ use nknown_core::analyze::{Analyzer, Pos, Relation};
 use nknown_core::lang::Lang;
 use nknown_core::source::{Source, SourceId};
 use nknown_nlp::import::{ImportStats, lexique, wiktextract};
-use nknown_nlp::langid::{self, LangDetector};
+use nknown_nlp::langid::LangDetector;
 use nknown_nlp::{
     Lexicon, LexiconBuilder, Pipeline, Tagger, TrainingSentence, conllu, eval, tokenize,
 };
@@ -197,98 +197,18 @@ fn lexicon_lookup(path: &str, words: &[&str]) -> Res {
 
 /// Langue d'un fichier de modèle d'après son nom (`fr.lex`, `eng.tag`, `fr_gsd-ud-test`).
 fn lang_of(path: &str) -> Option<Lang> {
-    let stem = std::path::Path::new(path).file_stem()?.to_str()?;
-    Lang::from_tag(stem.split(['_', '.', '-']).next()?)
+    nknown_service::models::lang_of(std::path::Path::new(path))
 }
 
 /// Pipeline : `lexicon` est un fichier (lexique français) ou un dossier dont chaque
 /// `<langue>.lex` et `<langue>.tag` est chargé ; `models` ajoute tagueurs et analyseurs.
 fn pipeline(lexicon: &str, models: &[&str]) -> Result<Pipeline, Box<dyn Error>> {
-    let mut pipeline = Pipeline::default();
-    let path = std::path::Path::new(lexicon);
-    if path.is_dir() {
-        let mut files: Vec<_> = std::fs::read_dir(path)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .collect();
-        files.sort();
-        for f in files {
-            let (Some(name), Some(ext)) = (f.to_str(), f.extension().and_then(|e| e.to_str()))
-            else {
-                continue;
-            };
-            let Some(lang) = lang_of(name) else { continue };
-            match ext {
-                "lex" => pipeline = pipeline.with_lexicon(lang, Lexicon::load(&f)?),
-                "tag" => pipeline = pipeline.with_tagger(lang, Tagger::load(&f)?),
-                _ => {}
-            }
-        }
-    } else {
-        pipeline = pipeline.with_lexicon(
-            lang_of(lexicon).unwrap_or(Lang::FRA),
-            Lexicon::load(lexicon)?,
-        );
-    }
-    for path in models {
-        if let Some(dir) = path.strip_prefix("vulkan:") {
-            pipeline = with_vulkan_parser(pipeline, dir)?;
-        } else if std::path::Path::new(path).is_dir() {
-            pipeline = with_parser(pipeline, path)?;
-        } else {
-            pipeline =
-                pipeline.with_tagger(lang_of(path).unwrap_or(Lang::FRA), Tagger::load(path)?);
-        }
-    }
-    Ok(pipeline)
-}
-
-/// Un analyseur multilingue, partagé entre toutes ses langues.
-#[cfg(feature = "neural")]
-fn share_parser(
-    mut pipeline: Pipeline,
-    langs: Vec<Lang>,
-    parser: std::sync::Arc<dyn nknown_nlp::SentenceParser>,
-) -> Pipeline {
-    for lang in if langs.is_empty() {
-        vec![Lang::FRA]
-    } else {
-        langs
-    } {
-        pipeline = pipeline.with_shared_parser(lang, parser.clone());
-    }
-    pipeline
-}
-
-#[cfg(feature = "neural")]
-fn with_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Box<dyn Error>> {
     let start = Instant::now();
-    let parser = nknown_neural::NeuralParser::load(dir)?;
-    let langs = parser.langs();
-    eprintln!("analyseur chargé ({langs:?}) [{:.1?}]", start.elapsed());
-    Ok(share_parser(pipeline, langs, std::sync::Arc::new(parser)))
-}
-
-#[cfg(not(feature = "neural"))]
-fn with_parser(_: Pipeline, _: &str) -> Result<Pipeline, Box<dyn Error>> {
-    Err("compilé sans la fonctionnalité « neural » (couche 3)".into())
-}
-
-#[cfg(feature = "vulkan")]
-fn with_vulkan_parser(pipeline: Pipeline, dir: &str) -> Result<Pipeline, Box<dyn Error>> {
-    let start = Instant::now();
-    let parser = nknown_neural::vulkan::VulkanParser::load(dir)?;
-    let langs = parser.langs();
-    eprintln!(
-        "analyseur chargé sur GPU ({langs:?}) [{:.1?}]",
-        start.elapsed()
-    );
-    Ok(share_parser(pipeline, langs, std::sync::Arc::new(parser)))
-}
-
-#[cfg(not(feature = "vulkan"))]
-fn with_vulkan_parser(_: Pipeline, _: &str) -> Result<Pipeline, Box<dyn Error>> {
-    Err("compilé sans la fonctionnalité « vulkan »".into())
+    let p = nknown_service::models::load_pipeline(std::path::Path::new(lexicon), models)?;
+    if !models.is_empty() {
+        eprintln!("modèles chargés : {p:?} [{:.1?}]", start.elapsed());
+    }
+    Ok(p)
 }
 
 #[cfg(feature = "neural")]
@@ -436,7 +356,6 @@ fn eval(lexicon: &str, corpus: &str, models: &[&str]) -> Res {
 
 /// Sources désignées par une spécification (voir l'aide).
 fn open_sources(spec: &str) -> Result<Vec<Box<dyn Source>>, Box<dyn Error>> {
-    use nknown_sources::{RssSource, Selection, WikipediaSource};
     if let Some(path) = spec.strip_prefix('@') {
         let list = std::fs::read_to_string(path)?;
         let mut out = Vec::new();
@@ -447,36 +366,7 @@ fn open_sources(spec: &str) -> Result<Vec<Box<dyn Source>>, Box<dyn Error>> {
         }
         return Ok(out);
     }
-    let wiki = |rest: &str| -> Result<(String, String), Box<dyn Error>> {
-        let (edition, arg) = rest
-            .split_once(':')
-            .ok_or_else(|| format!("édition manquante : {spec}"))?;
-        Ok((edition.to_owned(), arg.to_owned()))
-    };
-    let source: Box<dyn Source> = if let Some(url) = spec.strip_prefix("rss:") {
-        Box::new(RssSource::new(url))
-    } else if let Some(rest) = spec.strip_prefix("wiki:") {
-        let (edition, titles) = wiki(rest)?;
-        let titles = titles.split('|').map(|t| t.trim().to_owned()).collect();
-        Box::new(WikipediaSource::new(edition, Selection::Titles(titles)))
-    } else if let Some(rest) = spec.strip_prefix("wiki-search:") {
-        let (edition, query) = wiki(rest)?;
-        Box::new(WikipediaSource::new(
-            edition,
-            Selection::Search { query, limit: 10 },
-        ))
-    } else if let Some(rest) = spec.strip_prefix("wiki-cat:") {
-        let (edition, name) = wiki(rest)?;
-        Box::new(WikipediaSource::new(
-            edition,
-            Selection::Category { name, limit: 50 },
-        ))
-    } else if std::path::Path::new(spec).is_dir() {
-        Box::new(LocalFiles::new(SourceId(format!("files:{spec}")), spec))
-    } else {
-        return Err(format!("source inconnue : {spec}").into());
-    };
-    Ok(vec![source])
+    Ok(vec![nknown_service::sources::open(spec)?])
 }
 
 fn index(base: &str, lexicon: &str, spec: &str, models: &[&str]) -> Res {
@@ -603,67 +493,8 @@ fn collect(
     Ok(())
 }
 
-/// Requête → mots et lectures possibles (lexique, plus la forme brute pour les mots inconnus
-/// et les noms propres), et intention éventuelle (« actu », « info »...).
 fn build_query(pipeline: &Pipeline, text: &str) -> nknown_engine::Query {
-    use nknown_engine::schema::TermKind;
-    use nknown_engine::{QueryTerm, intent_for};
-    use nknown_nlp::segment;
-    let mut intent = None;
-    let mut terms = Vec::new();
-    for chunk in text.split_whitespace() {
-        if intent.is_none()
-            && let Some(i) = intent_for(chunk)
-        {
-            intent = Some(i);
-            continue;
-        }
-        // Identifiant manifeste (`read_to_string`, `HashMap::new`, `f()`) : on cherche
-        // l'identifiant exact, pas ses morceaux (« string » est partout dans le code).
-        if !segment::inline_code(chunk, 0..chunk.len()).is_empty() {
-            let ident = chunk.trim_end_matches("()").trim_matches('`');
-            let readings = vec![(Lang::NONE, TermKind::Code, ident.to_lowercase())];
-            terms.push(QueryTerm {
-                text: chunk.to_owned(),
-                readings,
-            });
-            continue;
-        }
-        // Mot ordinaire : ses lectures en prose (lexique), et le même mot comme terme de code.
-        for span in tokenize::words(chunk) {
-            let form = &chunk[span];
-            let mut readings: Vec<(Lang, TermKind, String)> = Vec::new();
-            // Langues avec lexique : lectures du lexique et forme brute.
-            let with_lexicon = pipeline.lexicon_langs();
-            for &lang in &with_lexicon {
-                let lexicon = pipeline.lexicon(lang).expect("langue listée");
-                readings.extend(
-                    lexicon
-                        .lookup(form)
-                        .filter(|e| nknown_engine::ingest::is_content(e.pos))
-                        .map(|e| (lang, TermKind::Word(e.pos), e.lemma.to_owned())),
-                );
-                for pos in [Pos::Propn, Pos::Noun, Pos::X] {
-                    readings.push((lang, TermKind::Word(pos), form.to_owned()));
-                }
-            }
-            // Autres langues détectables : indexées par racines.
-            for lang in LangDetector::languages()
-                .into_iter()
-                .filter(|l| !with_lexicon.contains(l))
-            {
-                let stem = langid::stem(lang, form).unwrap_or_else(|| form.to_lowercase());
-                readings.push((lang, TermKind::Word(Pos::X), stem));
-            }
-            readings.push((Lang::NONE, TermKind::Code, form.to_lowercase()));
-            readings.dedup();
-            terms.push(QueryTerm {
-                text: form.to_owned(),
-                readings,
-            });
-        }
-    }
-    nknown_engine::Query { terms, intent }
+    nknown_service::query::build_query(pipeline, text)
 }
 
 fn rank(base: &str) -> Res {
@@ -757,41 +588,4 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) ->
     Ok(())
 }
 
-/// Extrait de `text` d'environ `width` caractères, centré sur la première occurrence
-/// d'un des mots trouvés.
-fn snippet(text: &str, words: &[String], width: usize) -> String {
-    let lower = text.to_lowercase();
-    let hit = words
-        .iter()
-        .filter_map(|w| lower.find(&w.to_lowercase()))
-        .min()
-        .unwrap_or(0);
-    let hit_chars = lower.get(..hit).map_or(0, |s| s.chars().count());
-    let start = hit_chars.saturating_sub(width / 3);
-    let total = text.chars().count();
-    let body = text
-        .chars()
-        .skip(start)
-        .take(width)
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let before = if start > 0 { "…" } else { "" };
-    let after = if start + width < total { "…" } else { "" };
-    format!("{before}{body}{after}")
-}
-
-/// Langue qui couvre le plus de tokens de prose.
-fn main_lang(a: &nknown_core::analyze::Analysis) -> Option<Lang> {
-    let mut counts: Vec<(Lang, usize)> = Vec::new();
-    for seg in &a.segments {
-        let Some(l) = seg.lang else { continue };
-        let n = seg.tokens.len();
-        match counts.iter_mut().find(|(c, _)| *c == l) {
-            Some((_, c)) => *c += n,
-            None => counts.push((l, n)),
-        }
-    }
-    counts.into_iter().max_by_key(|&(_, n)| n).map(|(l, _)| l)
-}
+use nknown_service::query::{main_lang, snippet};

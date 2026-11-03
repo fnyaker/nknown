@@ -19,6 +19,6 @@ jobs:
       - name: Formatage
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy -p nknown-core -p nknown-nlp -p nknown-engine -p nknown-sources --all-targets -- -D warnings
+        run: cargo clippy -p nknown-core -p nknown-nlp -p nknown-engine -p nknown-sources -p nknown-api -p nknown-service -p nknown-server --all-targets -- -D warnings
       - name: Tests
-        run: cargo test -p nknown-core -p nknown-nlp -p nknown-engine -p nknown-sources
+        run: cargo test -p nknown-core -p nknown-nlp -p nknown-engine -p nknown-sources -p nknown-api -p nknown-service -p nknown-server

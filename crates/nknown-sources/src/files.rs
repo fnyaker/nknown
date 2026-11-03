@@ -50,7 +50,7 @@ fn format_of(ext: &str) -> Option<String> {
 }
 
 /// Dossiers jamais parcourus : dépendances, compilation, caches, gestion de versions.
-const SKIPPED_DIRS: &[&str] = &[
+pub const SKIPPED_DIRS: &[&str] = &[
     ".git",
     ".hg",
     ".svn",

@@ -15,13 +15,14 @@ nknown-nlp.workspace = true
 nknown-sources.workspace = true
 nknown-engine.workspace = true
 nknown-neural = { workspace = true, optional = true }
+nknown-service.workspace = true
 
 [features]
 default = ["neural", "vulkan"]
 # Couche 3 (candle, XLM-R) : dépendances lourdes, désactivable.
-neural = ["dep:nknown-neural"]
+neural = ["dep:nknown-neural", "nknown-service/neural"]
 # Couche 3 aussi sur GPU via Vulkan (burn).
-vulkan = ["neural", "nknown-neural/vulkan"]
+vulkan = ["neural", "nknown-neural/vulkan", "nknown-service/vulkan"]
 
 [lints]
 workspace = true

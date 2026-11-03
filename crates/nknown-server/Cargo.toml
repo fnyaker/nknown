@@ -1,0 +1,37 @@
+[package]
+name = "nknown-server"
+description = "Serveur HTTP de NKnown : API REST, interface web, démon local"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nknown-server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "nknownd"
+path = "src/bin/daemon.rs"
+
+[dependencies]
+nknown-api.workspace = true
+nknown-service.workspace = true
+axum = "0.8"
+getrandom = "0.4"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tokio-stream = "0.1"
+tower-http = { version = "0.7", features = ["fs", "set-header", "limit"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[features]
+default = []
+neural = ["nknown-service/neural"]
+vulkan = ["nknown-service/vulkan"]
+
+[lints]
+workspace = true

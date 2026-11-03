@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use nknown_core::analyze::Pos;
 use nknown_core::lang::Lang;
 use nknown_core::nature::{Nature, NatureProfile};
+use nknown_core::source::SourceKind;
 use nknown_core::time::Timestamp;
 
 use crate::graph::{Edge, EdgeKind, NodeId};
@@ -80,6 +81,8 @@ pub struct Related {
     pub title: Option<String>,
     pub source: String,
     pub url: Option<String>,
+    /// Identifiant dans la source (chemin d'un fichier, guid d'un article).
+    pub external_id: Option<String>,
     pub date: i64,
     pub similarity: f32,
 }
@@ -166,6 +169,9 @@ pub struct Hit {
     pub doc: DocRecord,
     /// Mots de la requête trouvés dans le passage.
     pub matched: Vec<String>,
+    /// Contribution textuelle (BM25 pondéré) de chaque mot de la requête, dans l'ordre de
+    /// `Query::terms` ; 0 pour un mot absent du passage.
+    pub term_scores: Vec<f64>,
     /// Paires (adjectif, nom) de la requête liées dans le passage.
     pub qualified: Vec<(String, String)>,
     pub is_code: bool,
@@ -180,8 +186,26 @@ const B: f64 = 0.75;
 const QUALIFIED_BONUS: f64 = 1.5;
 /// Score multiplié jusqu'à (1 + TITLE_BOOST) quand tous les mots sont dans le titre.
 const TITLE_BOOST: f64 = 0.6;
-/// Au-delà, deux passages disent la même chose : le moins bien classé est regroupé.
+/// Au-delà, deux passages de sources différentes disent la même chose (une reprise) : le
+/// moins bien classé est regroupé.
 const DUPLICATE_SIMILARITY: f32 = 0.5;
+/// Ailleurs, des documents proches restent distincts (deux fichiers d'un même projet, deux
+/// articles d'un même flux, deux articles d'encyclopédie) : seule une copie est regroupée.
+const COPY_SIMILARITY: f32 = 0.95;
+
+/// Similarité à partir de laquelle deux résultats sont regroupés. La reprise d'une même
+/// information n'existe qu'entre sources différentes de flux ou du web.
+fn fold_similarity(a: &DocRecord, b: &DocRecord, duplicate: f32) -> f32 {
+    let republishes = |d: &DocRecord| {
+        d.kind == crate::source_kind_code(SourceKind::Feed)
+            || d.kind == crate::source_kind_code(SourceKind::Web)
+    };
+    if a.source != b.source && republishes(a) && republishes(b) {
+        duplicate
+    } else {
+        COPY_SIMILARITY
+    }
+}
 /// Emballement : voisins d'autres sources assez proches et assez récents.
 const BURST_SIMILARITY: f32 = 0.35;
 /// Fenêtre minimale de l'emballement (élargie avec la demi-vie dynamique).
@@ -211,6 +235,7 @@ struct Candidate {
     pid: NodeId,
     text: f64,
     matched: Vec<usize>,
+    term_scores: Vec<f64>,
     pairs: Vec<(usize, usize)>,
     in_title: usize,
     passage: PassageRecord,
@@ -385,6 +410,7 @@ impl<S: Storage> Engine<S> {
                 pid,
                 text: scores.iter().sum(),
                 matched: (0..scores.len()).filter(|&t| scores[t] > 0.0).collect(),
+                term_scores: scores.clone(),
                 pairs: qualified.get(&pid).cloned().unwrap_or_default(),
                 in_title,
                 passage,
@@ -464,6 +490,7 @@ impl<S: Storage> Engine<S> {
                 text: c.passage.text,
                 doc: c.doc,
                 matched: c.matched.iter().map(|&t| q.terms[t].text.clone()).collect(),
+                term_scores: c.term_scores,
                 qualified: c
                     .pairs
                     .iter()
@@ -530,12 +557,13 @@ impl<S: Storage> Engine<S> {
         let mut kept: Vec<Hit> = Vec::new();
         for h in hits {
             let twin = kept.iter().position(|k| {
+                let min = fold_similarity(&k.doc, &h.doc, duplicate);
                 k.related
                     .iter()
-                    .any(|r| r.doc_id == h.doc_id && r.similarity >= duplicate)
+                    .any(|r| r.doc_id == h.doc_id && r.similarity >= min)
                     || h.related
                         .iter()
-                        .any(|r| r.doc_id == k.doc_id && r.similarity >= duplicate)
+                        .any(|r| r.doc_id == k.doc_id && r.similarity >= min)
             });
             match twin {
                 Some(i) => {
@@ -546,8 +574,9 @@ impl<S: Storage> Engine<S> {
                             title: h.doc.title.clone(),
                             source: h.doc.source.clone(),
                             url: h.doc.url.clone(),
+                            external_id: h.doc.external_id.clone(),
                             date: h.doc.date,
-                            similarity: duplicate,
+                            similarity: fold_similarity(&k.doc, &h.doc, duplicate),
                         });
                     }
                 }
@@ -604,6 +633,7 @@ impl<S: Storage> Engine<S> {
                     title: doc.title,
                     source: doc.source,
                     url: doc.url,
+                    external_id: doc.external_id,
                     date: doc.date,
                     similarity,
                 }),
@@ -613,7 +643,7 @@ impl<S: Storage> Engine<S> {
         Ok(out)
     }
 
-    pub(crate) fn passage(&self, id: NodeId) -> Result<Option<PassageRecord>> {
+    pub fn passage(&self, id: NodeId) -> Result<Option<PassageRecord>> {
         self.get(&schema::id_key(schema::PASSAGE, id))?
             .map(|v| decode(&v))
             .transpose()

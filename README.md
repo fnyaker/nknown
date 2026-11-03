@@ -13,6 +13,13 @@ dans un graphe pondéré interrogeable (`actu paris`, ...).
 | `nknown-nlp` | Segmentation prose / code (blocs imbriqués), analyse du code, pipeline linguistique : lexique (`fst`), tagueur, rattachement des adjectifs |
 | `nknown-engine` | Moteur : graphe (lemmes, passages, documents, qualifications), index BM25, intentions (`actu`, `info`…), stockage redb |
 | `nknown-cli` | Binaire `nknown` |
+| `nknown-api` | Types de l'API REST (requêtes, résultats, graphe, évènements de progression), compatibles WASM |
+| `nknown-service` | Façade du cœur : modèles, recherche avec progression, graphe de résultats, collecte, surveillance des dossiers, config XDG |
+| `nknown-server` | Serveur HTTP (axum) : `nknown-server` (distant, jeton, interface web) et `nknownd` (démon local, socket Unix) |
+
+Architecture de distribution (app Qt6, démon, serveur Docker, interface web) :
+[`docs/architecture.md`](docs/architecture.md). Charte d'interface :
+[`docs/ui-guidelines.md`](docs/ui-guidelines.md), jetons dans [`design/tokens.toml`](design/tokens.toml).
 
 ## Utilisation
 
@@ -119,3 +126,24 @@ ou des relatives en 的, annotés autrement.
 nknown parser train vulkan xlm-roberta-base/ multi-ud-train.conllu multi-ud-dev.conllu parser-multi/ 3 --langs=fra,eng,rus,zho
 nknown eval data/ en_ewt-ud-test.conllu vulkan:data/parser-multi   # langue tirée du nom du corpus
 ```
+
+## Démon local
+
+```sh
+cargo build --release -p nknown-server --bin nknownd            # sans analyseur neuronal
+cargo build --release -p nknown-server --bin nknownd --features neural
+nknownd                     # socket : $XDG_RUNTIME_DIR/nknown/nknownd.sock (0600)
+curl --unix-socket "$(nknownd --socket)" http://x/api/v1/status
+```
+
+Configuration `$XDG_CONFIG_HOME/nknown/config.toml` (créée au premier ajout de source) :
+
+```toml
+sources = ["/home/moi/Documents", "rss:https://exemple.org/flux.xml"]
+collect_every = "30m"     # collecte périodique (minimum 1 min)
+watch_files = true        # réindexe les dossiers à chaque modification
+# models = "/chemin/des/modèles"   # défaut : $XDG_DATA_HOME/nknown/models
+# parser = "parser-multi"          # analyseur XLM-R, relatif au dossier des modèles ;
+#                                  # ~1,5 Go de mémoire sur CPU, désactivé par défaut
+```
+

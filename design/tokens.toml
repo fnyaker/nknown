@@ -1,0 +1,56 @@
+# Jetons de la charte d'interface (docs/ui-guidelines.md). Source unique pour l'app Qt et le web.
+# Couleurs : "#RRGGBB" ou "#RRGGBBAA".
+
+[color.dark]
+bg_base = "#0A0D13"
+bg_raised = "#11151E"
+bg_overlay = "#171C28E6"
+line_subtle = "#FFFFFF0F"
+text_primary = "#E8ECF4"
+text_secondary = "#8D96A8"
+accent = "#7CF3FF"
+node_query = "#7CF3FF"
+node_term = "#6AA8FF"
+node_qualifier = "#B58CFF"
+node_prose = "#FFC46B"
+node_code = "#5CF0A6"
+node_source = "#8D96A8"
+danger = "#FF6B81"
+
+[color.light]
+bg_base = "#F4F6FA"
+bg_raised = "#FFFFFF"
+bg_overlay = "#FFFFFFF0"
+line_subtle = "#0A0D1314"
+text_primary = "#121722"
+text_secondary = "#5A6375"
+accent = "#0091A8"
+node_query = "#0091A8"
+node_term = "#2D6BE0"
+node_qualifier = "#7A4DE0"
+node_prose = "#C98200"
+node_code = "#0E9F63"
+node_source = "#7A8394"
+danger = "#D63352"
+
+[font]
+ui = "Inter"
+code = "JetBrains Mono"
+
+[size]
+grid = 4
+radius_card = 10
+radius_panel = 14
+panel_margin = 24
+node_min = 6
+node_max = 28
+dim_opacity = 0.25
+
+[motion]
+quick_ms = 120
+standard_ms = 240
+emphasis_ms = 420
+stagger_ms = 30
+stagger_max_ms = 300
+spring_stiffness = 180
+spring_damping = 22
