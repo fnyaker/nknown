@@ -18,14 +18,16 @@ use crate::error::Result;
 use crate::model::{ParserModel, Scores};
 
 const WEIGHTS: &str = "model.safetensors";
-/// Modèle quantifié, dérivé de [`WEIGHTS`] au premier chargement en 8 bits.
-const WEIGHTS_Q8: &str = "model.q8.gguf";
-
-/// Poids en 8 bits : lus depuis [`WEIGHTS_Q8`] s'il est à jour, sinon quantifiés depuis le
-/// modèle f32 puis enregistrés pour les fois suivantes (le fichier f32 n'est alors plus lu :
-/// ~4× moins de mémoire au chargement comme à l'usage).
-fn quantized_weights(dir: &Path, device: &Device) -> Result<(HashMap<String, Tensor>, Quantized)> {
-    let (full, cache) = (dir.join(WEIGHTS), dir.join(WEIGHTS_Q8));
+/// Poids quantifiés : lus depuis le fichier de cache de la précision (`model.q8.gguf`…) s'il
+/// est à jour, sinon quantifiés depuis le modèle f32 puis enregistrés pour les fois suivantes
+/// (le fichier f32 n'est alors plus lu : bien moins de mémoire au chargement comme à l'usage).
+fn quantized_weights(
+    dir: &Path,
+    device: &Device,
+    dtype: GgmlDType,
+    cache: &str,
+) -> Result<(HashMap<String, Tensor>, Quantized)> {
+    let (full, cache) = (dir.join(WEIGHTS), dir.join(cache));
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let fresh = match (modified(&cache), modified(&full)) {
         (Some(c), Some(f)) => c >= f,
@@ -36,7 +38,7 @@ fn quantized_weights(dir: &Path, device: &Device) -> Result<(HashMap<String, Ten
         return read_gguf(&cache, device);
     }
     let (tensors, quant) =
-        encoder::quantize_weights(candle_core::safetensors::load(&full, device)?)?;
+        encoder::quantize_weights(candle_core::safetensors::load(&full, device)?, dtype)?;
     if let Err(e) = write_gguf(&cache, &tensors, &quant) {
         // Simple cache : sans lui, on requantifiera au prochain chargement.
         eprintln!("{} : {e}", cache.display());
@@ -87,9 +89,22 @@ fn write_gguf(path: &Path, tensors: &HashMap<String, Tensor>, quant: &Quantized)
 pub enum Precision {
     /// Poids d'origine (f32) : ~1,1 Go pour XLM-R base.
     F32,
-    /// Encodeur en 8 bits : ~4× moins de mémoire.
+    /// Encodeur en 8 bits (Q8_0) : ~3,6× moins de mémoire.
     #[default]
     Int8,
+    /// Encodeur en 6 bits (Q6_K, 6,56 bits par poids).
+    Int6,
+}
+
+impl Precision {
+    /// Format ggml et fichier de cache d'une précision quantifiée.
+    fn quantized(self) -> Option<(GgmlDType, &'static str)> {
+        match self {
+            Self::F32 => None,
+            Self::Int8 => Some((GgmlDType::Q8_0, "model.q8.gguf")),
+            Self::Int6 => Some((GgmlDType::Q6K, "model.q6k.gguf")),
+        }
+    }
 }
 
 pub struct NeuralParser {
@@ -114,19 +129,19 @@ impl NeuralParser {
         Self::load_with(dir, Precision::F32)
     }
 
-    /// Charge un modèle, en pleine précision ou quantifié en 8 bits.
+    /// Charge un modèle, en pleine précision ou quantifié.
     pub fn load_with(dir: impl AsRef<Path>, precision: Precision) -> Result<Self> {
         let dir = dir.as_ref();
         let cfg = ParserConfig::load(dir.join("parser.json"))?;
         let device = Device::Cpu;
-        let model = match precision {
-            Precision::F32 => {
+        let model = match precision.quantized() {
+            None => {
                 let tensors = candle_core::safetensors::load(dir.join(WEIGHTS), &device)?;
                 let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
                 ParserModel::new(&cfg, vb.clone(), vb.pp("heads"))?
             }
-            Precision::Int8 => {
-                let (tensors, quant) = quantized_weights(dir, &device)?;
+            Some((dtype, cache)) => {
+                let (tensors, quant) = quantized_weights(dir, &device, dtype, cache)?;
                 let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
                 ParserModel::with_quantized(&cfg, vb.clone(), vb.pp("heads"), &quant)?
             }

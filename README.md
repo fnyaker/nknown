@@ -132,22 +132,26 @@ nknown eval data/ en_ewt-ud-test.conllu vulkan:data/parser-multi   # langue tir�
 Sur CPU, l'encodeur est quantifié en Q8_0 (matrices des couches et table des plongements :
 blocs de 32 valeurs, une échelle par bloc ; têtes en f32). Au premier chargement, le modèle f32
 est converti puis enregistré dans `model.q8.gguf` à côté de lui ; ensuite seul ce fichier est lu.
-`f32:<dossier>` garde la pleine précision.
+`f32:<dossier>` garde la pleine précision, `q6:<dossier>` passe en 6 bits (Q6_K, super-blocs de
+256 valeurs, 6,56 bits par poids, cache `model.q6k.gguf`).
 
-| | f32 | 8 bits |
-|---|---|---|
-| Poids sur disque | 1 120 Mo | 307 Mo |
-| Démon avec l'analyseur (mémoire résidente) | 1 548 Mo | 762 Mo |
-| Pic au chargement | 2 318 Mo | 762 Mo |
-| French-GSD, test complet (CPU, 6 fils) | 16,8 s | 12,3 s |
+| | f32 | 8 bits (défaut) | 6 bits |
+|---|---|---|---|
+| Poids sur disque | 1 120 Mo | 307 Mo | 240 Mo |
+| Démon avec l'analyseur (mémoire résidente) | 1 548 Mo | 763 Mo | 688 Mo |
+| Pic au chargement | 2 318 Mo | 763 Mo | 688 Mo |
+| French-GSD, test complet (CPU, 6 fils) | 16,8 s | 12,3 s | 12,7 s |
 
-| LAS | f32 | 8 bits |
-|---|---|---|
-| French-GSD | 92,40 % | 92,41 % |
-| English-EWT | 93,0 % | 92,85 % |
-| Russian-GSD | 90,2 % | 90,20 % |
-| Russian-Taiga | 85,1 % | 85,01 % |
-| Chinese-GSDSimp | 84,7 % | 84,61 % |
+| LAS | f32 | 8 bits | 6 bits |
+|---|---|---|---|
+| French-GSD | 92,40 % | 92,41 % | 92,27 % |
+| English-EWT | 93,0 % | 92,85 % | 92,87 % |
+| Russian-GSD | 90,2 % | 90,20 % | 90,23 % |
+| Russian-Taiga | 85,1 % | 85,01 % | 85,12 % |
+| Chinese-GSDSimp | 84,7 % | 84,61 % | 84,40 % |
+
+Le 6 bits reste dans le bruit sauf en chinois (−0,3) pour 75 Mo de moins : le 8 bits est gardé
+par défaut.
 
 Des 762 Mo, ~157 Mo reviennent au démon sans analyseur et ~295 Mo au tokeniseur XLM-R chargé
 par `tokenizers` (son trie de 250 000 sous-mots).

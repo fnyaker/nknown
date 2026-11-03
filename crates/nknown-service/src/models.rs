@@ -50,7 +50,7 @@ pub fn load_pipeline(lexicon: &Path, models: &[&str]) -> Result<Pipeline, Error>
 /// Un chemin de modèle relatif (`parser-multi`, `vulkan:parser-multi`) désigne un modèle du
 /// dossier des modèles.
 pub fn resolve(spec: &str, models_dir: &Path) -> String {
-    let (prefix, path) = ["vulkan:", "f32:"]
+    let (prefix, path) = ["vulkan:", "f32:", "q6:"]
         .into_iter()
         .find_map(|p| spec.strip_prefix(p).map(|rest| (p, rest)))
         .unwrap_or(("", spec));
@@ -61,15 +61,26 @@ pub fn resolve(spec: &str, models_dir: &Path) -> String {
     }
 }
 
-/// Ajoute un modèle : tagueur (fichier), analyseur CPU en 8 bits (dossier) ou en pleine
-/// précision (`f32:<dossier>`), analyseur GPU (`vulkan:<dossier>`).
+/// Précision de l'analyseur sur CPU.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "neural"), allow(dead_code))]
+enum Bits {
+    F32,
+    Q8,
+    Q6,
+}
+
+/// Ajoute un modèle : tagueur (fichier), analyseur CPU en 8 bits (dossier), en 6 bits
+/// (`q6:<dossier>`) ou en pleine précision (`f32:<dossier>`), analyseur GPU (`vulkan:<dossier>`).
 pub fn add_model(pipeline: Pipeline, spec: &str) -> Result<Pipeline, Error> {
     if let Some(dir) = spec.strip_prefix("vulkan:") {
         with_vulkan_parser(pipeline, dir)
     } else if let Some(dir) = spec.strip_prefix("f32:") {
-        with_parser(pipeline, dir, false)
+        with_parser(pipeline, dir, Bits::F32)
+    } else if let Some(dir) = spec.strip_prefix("q6:") {
+        with_parser(pipeline, dir, Bits::Q6)
     } else if Path::new(spec).is_dir() {
-        with_parser(pipeline, spec, true)
+        with_parser(pipeline, spec, Bits::Q8)
     } else {
         let lang = lang_of(Path::new(spec)).unwrap_or(Lang::FRA);
         Ok(pipeline.with_tagger(lang, Tagger::load(spec)?))
@@ -95,12 +106,12 @@ fn share_parser(
 }
 
 #[cfg(feature = "neural")]
-fn with_parser(pipeline: Pipeline, dir: &str, int8: bool) -> Result<Pipeline, Error> {
+fn with_parser(pipeline: Pipeline, dir: &str, bits: Bits) -> Result<Pipeline, Error> {
     use nknown_neural::{NeuralParser, Precision};
-    let precision = if int8 {
-        Precision::Int8
-    } else {
-        Precision::F32
+    let precision = match bits {
+        Bits::F32 => Precision::F32,
+        Bits::Q8 => Precision::Int8,
+        Bits::Q6 => Precision::Int6,
     };
     let parser = NeuralParser::load_with(dir, precision).map_err(Error::model)?;
     let langs = parser.langs();
@@ -108,7 +119,7 @@ fn with_parser(pipeline: Pipeline, dir: &str, int8: bool) -> Result<Pipeline, Er
 }
 
 #[cfg(not(feature = "neural"))]
-fn with_parser(_: Pipeline, _: &str, _: bool) -> Result<Pipeline, Error> {
+fn with_parser(_: Pipeline, _: &str, _: Bits) -> Result<Pipeline, Error> {
     Err(Error::Unsupported(
         "analyseur neuronal (fonctionnalité « neural »)",
     ))

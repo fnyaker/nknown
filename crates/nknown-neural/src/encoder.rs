@@ -6,7 +6,7 @@
 //! les noyaux fusionnés, plus rapides. Noms des poids identiques à Hugging Face.
 //!
 //! En inférence, l'encodeur peut être en 8 bits ([`Quantized`]) : matrices des couches et
-//! table des plongements en Q8_0 (blocs de 32 valeurs, une échelle f16 par bloc). Les
+//! table des plongements en Q8_0 (blocs de 32 valeurs, une échelle f16 par bloc) ou Q6_K. Les
 //! couches calculent en entiers ; seules les lignes lues de la table sont décodées.
 
 use std::collections::HashMap;
@@ -121,29 +121,75 @@ impl Proj {
 #[derive(Debug)]
 enum Table {
     Full(Tensor),
-    /// Blocs Q8_0, `dim / 32` par ligne.
-    Q8(Arc<QTensor>),
+    /// Lignes en blocs quantifiés (Q8_0 ou Q6_K), décodées à la lecture.
+    Quant(Arc<QTensor>),
 }
 
-/// Bloc Q8_0 : échelle f16, puis 32 valeurs signées.
+/// Q8_0 : échelle f16, puis 32 valeurs signées.
 const Q8_BLOCK: usize = 32;
 const Q8_BLOCK_BYTES: usize = 2 + Q8_BLOCK;
+/// Q6_K : 256 valeurs de 6 bits (4 bits bas, 2 bits hauts), 16 échelles i8, échelle f16.
+const Q6_BLOCK: usize = 256;
+const Q6_BLOCK_BYTES: usize = 128 + 64 + 16 + 2;
+
+fn decode_q8_0(block: &[u8], out: &mut Vec<f32>) {
+    let scale = half::f16::from_ne_bytes([block[0], block[1]]).to_f32();
+    out.extend(block[2..].iter().map(|&v| f32::from(v as i8) * scale));
+}
+
+/// Même calcul que ggml (`dequantize_row_q6_K`).
+fn decode_q6_k(block: &[u8], out: &mut Vec<f32>) {
+    let (ql, rest) = block.split_at(128);
+    let (qh, rest) = rest.split_at(64);
+    let (sc, d) = rest.split_at(16);
+    let d = half::f16::from_ne_bytes([d[0], d[1]]).to_f32();
+    let mut y = [0f32; Q6_BLOCK];
+    for half_block in 0..2 {
+        let (ql, qh, sc) = (
+            &ql[64 * half_block..],
+            &qh[32 * half_block..],
+            &sc[8 * half_block..],
+        );
+        let y = &mut y[128 * half_block..];
+        let scale = |i: usize| d * f32::from(sc[i] as i8);
+        for l in 0..32 {
+            let is = l / 16;
+            let q = |low: u8, high: u8| f32::from((low | (high << 4)) as i8 - 32);
+            y[l] = scale(is) * q(ql[l] & 0xF, qh[l] & 3);
+            y[l + 32] = scale(is + 2) * q(ql[l + 32] & 0xF, (qh[l] >> 2) & 3);
+            y[l + 64] = scale(is + 4) * q(ql[l] >> 4, (qh[l] >> 4) & 3);
+            y[l + 96] = scale(is + 6) * q(ql[l + 32] >> 4, (qh[l] >> 6) & 3);
+        }
+    }
+    out.extend_from_slice(&y);
+}
 
 impl Table {
     fn dim(&self) -> Result<usize> {
         Ok(match self {
             Self::Full(t) => t.dim(1)?,
-            Self::Q8(q) => q.shape().dims2()?.1,
+            Self::Quant(q) => q.shape().dims2()?.1,
         })
     }
 
     fn lookup(&self, ids: &Tensor) -> Result<Tensor> {
         let q = match self {
             Self::Full(t) => return Ok(t.index_select(ids, 0)?),
-            Self::Q8(q) => q,
+            Self::Quant(q) => q,
+        };
+        let (block, block_bytes, decode): (usize, usize, fn(&[u8], &mut Vec<f32>)) = match q.dtype()
+        {
+            GgmlDType::Q8_0 => (Q8_BLOCK, Q8_BLOCK_BYTES, decode_q8_0),
+            GgmlDType::Q6K => (Q6_BLOCK, Q6_BLOCK_BYTES, decode_q6_k),
+            other => {
+                return Err(candle_core::Error::Msg(format!(
+                    "table des plongements en {other:?} : non prise en charge"
+                ))
+                .into());
+            }
         };
         let (rows, dim) = q.shape().dims2()?;
-        let row_bytes = dim / Q8_BLOCK * Q8_BLOCK_BYTES;
+        let row_bytes = dim / block * block_bytes;
         let data = q.data()?;
         let ids = ids.to_vec1::<u32>()?;
         let mut out = Vec::with_capacity(ids.len() * dim);
@@ -152,9 +198,8 @@ impl Table {
             if row >= rows {
                 return Err(candle_core::Error::Msg(format!("sous-mot hors table : {id}")).into());
             }
-            for block in data[row * row_bytes..][..row_bytes].chunks_exact(Q8_BLOCK_BYTES) {
-                let scale = half::f16::from_ne_bytes([block[0], block[1]]).to_f32();
-                out.extend(block[2..].iter().map(|&v| f32::from(v as i8) * scale));
+            for b in data[row * row_bytes..][..row_bytes].chunks_exact(block_bytes) {
+                decode(b, &mut out);
             }
         }
         Ok(Tensor::from_vec(
@@ -165,7 +210,7 @@ impl Table {
     }
 }
 
-/// Poids de l'encodeur gardés en 8 bits, par nom Hugging Face.
+/// Poids de l'encodeur gardés quantifiés, par nom Hugging Face.
 pub type Quantized = HashMap<String, Arc<QTensor>>;
 
 /// Poids quantifiés en inférence : la table des plongements et les matrices des couches.
@@ -183,16 +228,17 @@ pub fn is_quantizable(name: &str) -> bool {
             .any(|s| name.ends_with(s)))
 }
 
-/// Sépare des poids f32 en poids gardés en f32 et poids quantifiés (Q8_0). Chaque tenseur
-/// f32 quantifié est libéré aussitôt.
+/// Sépare des poids f32 en poids gardés en f32 et poids quantifiés (`dtype` : Q8_0 ou Q6_K).
+/// Chaque tenseur f32 quantifié est libéré aussitôt.
 pub fn quantize_weights(
     tensors: HashMap<String, Tensor>,
+    dtype: GgmlDType,
 ) -> Result<(HashMap<String, Tensor>, Quantized)> {
     let mut full = HashMap::new();
     let mut quant = Quantized::new();
     for (name, t) in tensors {
-        if is_quantizable(&name) && t.rank() == 2 && t.dim(1)? % Q8_BLOCK == 0 {
-            let q = QTensor::quantize(&t.to_dtype(DType::F32)?, GgmlDType::Q8_0)?;
+        if is_quantizable(&name) && t.rank() == 2 && t.dim(1)? % dtype.block_size() == 0 {
+            let q = QTensor::quantize(&t.to_dtype(DType::F32)?, dtype)?;
             quant.insert(name, Arc::new(q));
         } else {
             full.insert(name, t);
@@ -278,7 +324,7 @@ impl XlmrEncoder {
         let emb = vb.pp("embeddings");
         Ok(Self {
             word_embeddings: match quant.and_then(|q| q.get("embeddings.word_embeddings.weight")) {
-                Some(q) => Table::Q8(q.clone()),
+                Some(q) => Table::Quant(q.clone()),
                 None => Table::Full(emb.get((cfg.vocab_size, h), "word_embeddings.weight")?),
             },
             position_embeddings: emb.get(
@@ -346,27 +392,44 @@ mod tests {
     #[test]
     fn quantized_table_matches_full_table() {
         let dev = Device::Cpu;
-        let t = Tensor::randn(0f32, 1.0, (50, 64), &dev).unwrap();
-        let mut weights = HashMap::new();
-        weights.insert("embeddings.word_embeddings.weight".to_owned(), t.clone());
-        weights.insert("embeddings.LayerNorm.weight".to_owned(), t.clone());
-        let (full, quant) = quantize_weights(weights).unwrap();
-        // Seule la table est quantifiée ; la normalisation reste en f32.
-        assert!(full.contains_key("embeddings.LayerNorm.weight"));
-        let q = Table::Q8(quant["embeddings.word_embeddings.weight"].clone());
-        let ids = Tensor::new(&[0u32, 7, 49], &dev).unwrap();
-        let exact = Table::Full(t).lookup(&ids).unwrap();
-        let approx = q.lookup(&ids).unwrap();
-        let err: f32 = (exact - approx)
-            .unwrap()
-            .abs()
-            .unwrap()
-            .max_all()
-            .unwrap()
-            .to_scalar()
-            .unwrap();
-        assert!(err < 0.03, "erreur {err}");
-        assert!(q.lookup(&Tensor::new(&[50u32], &dev).unwrap()).is_err());
+        let t = Tensor::randn(0f32, 1.0, (50, 512), &dev).unwrap();
+        for (dtype, tolerance) in [(GgmlDType::Q8_0, 0.03), (GgmlDType::Q6K, 0.12)] {
+            let mut weights = HashMap::new();
+            weights.insert("embeddings.word_embeddings.weight".to_owned(), t.clone());
+            weights.insert("embeddings.LayerNorm.weight".to_owned(), t.clone());
+            let (full, quant) = quantize_weights(weights, dtype).unwrap();
+            // Seule la table est quantifiée ; la normalisation reste en f32.
+            assert!(full.contains_key("embeddings.LayerNorm.weight"));
+            let qt = quant["embeddings.word_embeddings.weight"].clone();
+            // Décodage ligne à ligne identique à celui de candle.
+            let reference = qt.dequantize(&dev).unwrap();
+            let q = Table::Quant(qt);
+            let ids = Tensor::new(&[0u32, 7, 49], &dev).unwrap();
+            let rows = q.lookup(&ids).unwrap();
+            let same: f32 = (reference.index_select(&ids, 0).unwrap() - &rows)
+                .unwrap()
+                .abs()
+                .unwrap()
+                .max_all()
+                .unwrap()
+                .to_scalar()
+                .unwrap();
+            assert!(
+                same < 1e-6,
+                "{dtype:?} : décodage différent de candle ({same})"
+            );
+            let exact = Table::Full(t.clone()).lookup(&ids).unwrap();
+            let err: f32 = (exact - rows)
+                .unwrap()
+                .abs()
+                .unwrap()
+                .max_all()
+                .unwrap()
+                .to_scalar()
+                .unwrap();
+            assert!(err < tolerance, "{dtype:?} : erreur {err}");
+            assert!(q.lookup(&Tensor::new(&[50u32], &dev).unwrap()).is_err());
+        }
     }
 
     #[test]
