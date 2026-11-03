@@ -69,7 +69,8 @@ jobs:
           NKNOWN_BINARY=$PWD/bin/nknown packaging/build.sh tar zip deb rpm appimage
       - name: Essai des paquets
         run: |
-          dist/NKnown-x86_64.AppImage --version
+          # Pas de FUSE dans un conteneur : l'AppImage s'extrait puis se lance.
+          dist/NKnown-x86_64.AppImage --appimage-extract-and-run --version
           dpkg -i dist/nknown_*_amd64.deb && nknown --version && nknownd --socket
           rpm -qlp dist/nknown-*.rpm
       - uses: actions/upload-artifact@v4
