@@ -164,6 +164,14 @@ impl Table {
         })
     }
 
+    /// Nombre de lignes (sous-mots du vocabulaire).
+    pub(crate) fn rows(&self) -> Result<usize> {
+        Ok(match self {
+            Self::Full(t) => t.dim(0)?,
+            Self::Quant(q) => q.shape().dims2()?.0,
+        })
+    }
+
     pub(crate) fn lookup(&self, ids: &Tensor) -> Result<Tensor> {
         let q = match self {
             Self::Full(t) => return Ok(t.index_select(ids, 0)?),

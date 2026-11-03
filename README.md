@@ -201,6 +201,14 @@ nknown eval data/ en_ewt-ud-test.conllu vulkan:data/parser-multi   # langue tir�
 
 ### Analyseur quantifié sur CPU
 
+Sur GPU (Vulkan), tout le calcul y reste : table des plongements en entiers 8 bits (une échelle
+par ligne, ~192 Mo), couches et têtes en f16 si le GPU le permet (sinon f32 ;
+`NKNOWN_VULKAN_F32=1` l'impose), un seul retour par lot (arcs, catégories, traits, étiquettes de
+tous les couples ; l'arbre est choisi sur le CPU). Mesuré sur Radeon 780M : French-GSD test en
+6,9 s au lieu de 11,8 s (f32) et 11,9 s sur 8 cœurs CPU, LAS identique (92,38) ; 5 articles de
+Wikipédia (620 Ko) indexés en 39 s au lieu de 80 s. Des couches en 8 bits n'apportent rien de
+plus : le GPU est limité par le calcul, pas par la mémoire.
+
 Sur CPU, l'encodeur est quantifié au chargement, en deux options (`parser_precision` dans la
 configuration) :
 

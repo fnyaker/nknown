@@ -111,7 +111,7 @@ impl Network {
         Self::init_with_vocab(enc, cfg, enc.vocab_size, device)
     }
 
-    /// `vocab` à 1 : réseau d'inférence dont la table des mots reste sur le CPU.
+    /// `vocab` à 1 : réseau d'inférence, dont la table des mots est à part ([`GpuTable`]).
     fn init_with_vocab(
         enc: &EncoderConfig,
         cfg: &ParserConfig,
@@ -260,8 +260,10 @@ impl Network {
             + e.position_embeddings.forward(x.positions.clone())
             + e.token_type_embeddings.forward(types);
         let mut hidden = self.dropout.forward(e.layer_norm.forward(emb));
+        // −3·10⁴ annule le terme dans le softmax et tient en f16 (−1e9 y deviendrait −∞, et
+        // 0 × −∞ un NaN).
         let bias = (x.mask.ones_like() - x.mask.clone())
-            .mul_scalar(-1e9)
+            .mul_scalar(-3e4)
             .reshape([b, 1, 1, t]);
         for layer in &self.encoder.layer {
             hidden = layer.forward(hidden, bias.clone(), heads, &self.dropout);
@@ -345,7 +347,7 @@ fn store_err(e: impl std::fmt::Display) -> Error {
 
 /// Poids d'inférence et table des mots. Depuis les poids quantifiés distribués
 /// (`model.q4k-q8.gguf`, ou `model.q4k.gguf`), sinon depuis le modèle f32 (entraînement, dépôt) :
-/// la table reste sur le CPU en 4 bits ; le reste, décompressé en f32, est sérialisé en mémoire
+/// la table est rendue à part (puis mise sur le GPU en 8 bits) ; le reste, décompressé en f32, est sérialisé en mémoire
 /// pour le GPU (couches, positions, têtes : ~345 Mo au lieu de 1,1 Go).
 fn inference_weights(dir: &Path) -> Result<(SafetensorsStore, crate::encoder::Table)> {
     use crate::encoder::{TABLE_DTYPE, Table, WORD_EMBEDDINGS};
@@ -387,14 +389,113 @@ fn inference_weights(dir: &Path) -> Result<(SafetensorsStore, crate::encoder::Ta
     ))
 }
 
+// ---------------------------------------------------------------- inférence : tout sur le GPU
+
+/// Table des mots sur le GPU : une ligne d'entiers 8 bits par sous-mot et son échelle
+/// (250 002 × 768 octets ≈ 192 Mo). La lecture des lignes d'un lot reste sur le GPU ; une
+/// table quantifiée par burn serait décompressée en entier à chaque lecture.
+struct GpuTable {
+    q: Tensor<2, Int>,
+    scale: Tensor<2>,
+}
+
+impl GpuTable {
+    /// Depuis la table du CPU, par paquets de lignes (pas de copie f32 entière en mémoire).
+    fn upload(table: &crate::encoder::Table, device: &Device) -> Result<Self> {
+        let (rows, dim) = (table.rows()?, table.dim()?);
+        let mut q: Vec<i8> = Vec::with_capacity(rows * dim);
+        let mut scales: Vec<f32> = Vec::with_capacity(rows);
+        const CHUNK: usize = 8192;
+        for start in (0..rows).step_by(CHUNK) {
+            let end = (start + CHUNK).min(rows);
+            let ids: Vec<u32> = (start as u32..end as u32).collect();
+            let ids = candle_core::Tensor::from_vec(ids, end - start, &candle_core::Device::Cpu)?;
+            let values: Vec<f32> = table.lookup(&ids)?.flatten_all()?.to_vec1()?;
+            for row in values.chunks_exact(dim) {
+                let max = row.iter().fold(0f32, |m, v| m.max(v.abs()));
+                let scale = if max > 0.0 { max / 127.0 } else { 1.0 };
+                scales.push(scale);
+                q.extend(
+                    row.iter()
+                        .map(|v| (v / scale).round().clamp(-127.0, 127.0) as i8),
+                );
+            }
+        }
+        Ok(Self {
+            q: Tensor::<2, Int>::from_data(TensorData::new(q, [rows, dim]), device),
+            scale: Tensor::<2>::from_data(TensorData::new(scales, [rows, 1]), device),
+        })
+    }
+
+    /// Vecteurs des sous-mots `ids` [B, T] → [B, T, H].
+    fn lookup(&self, ids: &Tensor<2, Int>) -> Tensor<3> {
+        let [b, t] = ids.dims();
+        let flat = ids.clone().reshape([b * t]);
+        let rows = self.q.clone().select(0, flat.clone()).float();
+        let h = rows.dims()[1];
+        (rows * self.scale.clone().select(0, flat)).reshape([b, t, h])
+    }
+}
+
+/// Paramètres flottants convertis dans un autre type (f16 : unités matricielles du GPU).
+struct CastFloats(burn::tensor::FloatDType);
+
+impl burn::module::ModuleMapper for CastFloats {
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
+        let dtype = self.0;
+        param.map(|t| t.cast(dtype))
+    }
+}
+
+/// Type de calcul du GPU : f16 s'il le permet (deux fois plus de calcul par cycle, unités
+/// matricielles ; même exactitude mesurée), sinon f32 ; `NKNOWN_VULKAN_F32=1` impose f32.
+fn compute_dtype(device: &Device) -> burn::tensor::FloatDType {
+    use burn::tensor::FloatDType;
+    if std::env::var_os("NKNOWN_VULKAN_F32").is_none() && device.supports_dtype(FloatDType::F16) {
+        FloatDType::F16
+    } else {
+        FloatDType::F32
+    }
+}
+
+impl Network {
+    /// Étiquette la plus probable pour chaque couple (dépendant, gouverneur) [B, N, N] : les
+    /// étiquettes se lisent avec les arcs, en un seul aller-retour, une fois l'arbre choisi.
+    fn all_labels(&self, s: &Scores) -> Tensor<3, Int> {
+        let [b, n, l] = s.lab_dep.dims();
+        let hd = &self.heads;
+        let nl = hd.lab_lin.weight.dims()[1];
+        // Bilinéaire : (dep · U) [B, N·NL, L] × têteᵀ [B, L, N] → [B, N, NL, N].
+        let bilinear = s
+            .lab_dep
+            .clone()
+            .matmul(hd.lab_u.val().unsqueeze::<3>())
+            .reshape([b, n * nl, l])
+            .matmul(s.lab_head.clone().swap_dims(1, 2))
+            .reshape([b, n, nl, n]);
+        // Linéaire sur [dep ; tête] = dep · W_dep + tête · W_tête + biais.
+        let w = hd.lab_lin.weight.val();
+        let w_dep = w.clone().slice([0..l, 0..nl]).unsqueeze::<3>();
+        let w_head = w.slice([l..2 * l, 0..nl]).unsqueeze::<3>();
+        let mut lin_head = s.lab_head.clone().matmul(w_head);
+        if let Some(bias) = &hd.lab_lin.bias {
+            lin_head = lin_head + bias.val().unsqueeze::<3>();
+        }
+        let lin_dep = s.lab_dep.clone().matmul(w_dep);
+        let total = bilinear
+            + lin_dep.unsqueeze_dim::<4>(3)
+            + lin_head.swap_dims(1, 2).unsqueeze_dim::<4>(1);
+        total.argmax(2).reshape([b, n, n])
+    }
+}
+
 // ---------------------------------------------------------------- inférence
 
 /// Analyseur exécuté sur GPU via Vulkan.
 pub struct VulkanParser {
     net: Network,
-    /// Table des mots (70 % des poids), gardée sur le CPU en 4 bits : le GPU ne reçoit que
-    /// les vecteurs des sous-mots de chaque lot.
-    table: crate::encoder::Table,
+    /// Table des mots (70 % des poids), sur le GPU en 8 bits.
+    table: GpuTable,
     tokenizer: Tokenizer,
     cfg: ParserConfig,
     enc: EncoderConfig,
@@ -433,9 +534,18 @@ impl VulkanParser {
         let cfg = ParserConfig::load(dir.join("parser.json"))?;
         let enc = cfg.encoder_config()?;
         let device = vulkan_device();
-        let (mut store, table) = inference_weights(dir)?;
+        let (mut store, cpu_table) = inference_weights(dir)?;
         let mut net = Network::init_with_vocab(&enc, &cfg, 1, &device);
         net.load_from(&mut store).map_err(store_err)?;
+        drop(store);
+        let table = GpuTable::upload(&cpu_table, &device)?;
+        drop(cpu_table);
+        let dtype = compute_dtype(&device);
+        if dtype != burn::tensor::FloatDType::F32 {
+            // Table : produit en f32 (les opérations entre types mêlés ne sont pas fiables),
+            // converti ensuite.
+            net = net.map(&mut CastFloats(dtype));
+        }
         Ok(Self {
             net,
             table,
@@ -456,9 +566,9 @@ impl VulkanParser {
     }
 
     pub fn parse_words(&self, sentences: &[Vec<&str>]) -> Result<Vec<Option<ParsedSentence>>> {
-        parse_with(
+        parse_gpu(
             &self.net,
-            Some(&self.table),
+            &self.table,
             &self.tokenizer,
             &self.cfg,
             &self.enc,
@@ -553,6 +663,118 @@ fn parse_with(
     }
     Ok(out)
 }
+
+/// Inférence entièrement sur le GPU : table des mots, couches, arcs et étiquettes ; un seul
+/// retour par lot (arcs, catégories, traits, étiquettes de tous les couples), l'arbre (MST)
+/// étant choisi sur le CPU.
+fn parse_gpu(
+    net: &Network,
+    table: &GpuTable,
+    tokenizer: &Tokenizer,
+    cfg: &ParserConfig,
+    enc: &EncoderConfig,
+    device: &Device,
+    sentences: &[Vec<&str>],
+) -> Result<Vec<Option<ParsedSentence>>> {
+    use burn::tensor::Transaction;
+    let mut encoded: Vec<(usize, Encoded)> = Vec::new();
+    for (i, words) in sentences.iter().enumerate() {
+        if !words.is_empty()
+            && let Some(e) = data::encode(tokenizer, words, cfg.max_subwords)?
+        {
+            encoded.push((i, e));
+        }
+    }
+    encoded.sort_by_key(|(_, e)| e.ids.len());
+    let nl = cfg.deprels.len().max(1);
+    let mut out = vec![None; sentences.len()];
+    let mut start = 0;
+    while start < encoded.len() {
+        // Lots par budget : sous-mots (couches) et mots² × étiquettes (étiquettes de tous les
+        // couples), pour garder la mémoire du GPU bornée.
+        let mut end = start;
+        let (mut max_t, mut max_w) = (0usize, 0usize);
+        while end < encoded.len() && end - start < GPU_BATCH {
+            let e = &encoded[end].1;
+            let t = max_t.max(e.ids.len());
+            let w = max_w.max(e.first.len());
+            let n = end - start + 1;
+            if n > 1 && (n * t > GPU_TOKENS || n * w * w * nl > GPU_LABEL_CELLS) {
+                break;
+            }
+            (max_t, max_w) = (t, w);
+            end += 1;
+        }
+        let chunk = &encoded[start..end];
+        start = end;
+        let refs: Vec<&Encoded> = chunk.iter().map(|(_, e)| e).collect();
+        let mut x = inputs(&refs, enc.pad_token_id, None, device)?;
+        let dtype = compute_dtype(device);
+        x.mask = x.mask.cast(dtype);
+        x.words = Some(table.lookup(&x.ids).cast(dtype));
+        let s = net.forward(&x, enc.num_attention_heads);
+        let labels_all = net.all_labels(&s);
+        let [b, n, _] = s.arcs.dims();
+        let data = Transaction::default()
+            .register(log_softmax(s.arcs.clone(), 2))
+            .register(s.upos.clone().argmax(2))
+            .register(s.gender.clone().argmax(2))
+            .register(s.number.clone().argmax(2))
+            .register(labels_all)
+            .execute();
+        let [arcs, upos, gender, number, labels_all] = <[TensorData; 5]>::try_from(data)
+            .map_err(|_| Error::Format("lecture du GPU incomplète".into()))?;
+        let arcs: Vec<f32> = arcs.try_to_vec_as::<f32>().map_err(store_err)?;
+        let ints =
+            |d: TensorData| -> Result<Vec<i64>> { d.try_to_vec_as::<i64>().map_err(store_err) };
+        let (upos, gender, number, labels_all) =
+            (ints(upos)?, ints(gender)?, ints(number)?, ints(labels_all)?);
+        let rows = |flat: &[i64]| -> Vec<Vec<u32>> {
+            (0..b)
+                .map(|i| flat[i * n..(i + 1) * n].iter().map(|&v| v as u32).collect())
+                .collect()
+        };
+        let arcs3: Vec<Vec<Vec<f32>>> = (0..b)
+            .map(|i| {
+                (0..n)
+                    .map(|j| arcs[(i * n + j) * n..(i * n + j + 1) * n].to_vec())
+                    .collect()
+            })
+            .collect();
+        let trees = data::decode_trees(&arcs3, &x.lengths);
+        // Étiquette de chaque mot pour le gouverneur retenu.
+        let labels: Vec<Vec<u32>> = trees
+            .iter()
+            .enumerate()
+            .map(|(i, tree)| {
+                (0..n)
+                    .map(|d| {
+                        let h = tree.get(d).copied().unwrap_or(0);
+                        labels_all[(i * n + d) * n + h] as u32
+                    })
+                    .collect()
+            })
+            .collect();
+        let parsed = data::assemble(
+            &x.lengths,
+            &rows(&upos),
+            &rows(&gender),
+            &rows(&number),
+            &trees,
+            &labels,
+            &cfg.deprels,
+        );
+        for ((i, _), p) in chunk.iter().zip(parsed) {
+            out[*i] = Some(p);
+        }
+    }
+    Ok(out)
+}
+
+/// Limites d'un lot sur le GPU : phrases, sous-mots, cellules (mots² × étiquettes).
+const GPU_BATCH: usize = 64;
+const GPU_TOKENS: usize = 64 * 96;
+const GPU_LABEL_CELLS: usize = 24 << 20;
 
 // ---------------------------------------------------------------- entraînement
 
