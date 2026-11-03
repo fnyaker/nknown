@@ -48,6 +48,7 @@ esac
 
 if [ $system = 1 ]; then
   prefix=/usr/local
+  share_dir=/usr/local/share
   unit_dir=/usr/local/lib/systemd/user
   if [ "$(id -u)" = 0 ]; then sudo=; else
     command -v sudo >/dev/null || die "--system demande sudo (ou les droits root)."
@@ -55,6 +56,7 @@ if [ $system = 1 ]; then
   fi
 else
   prefix=$HOME/.local
+  share_dir=${XDG_DATA_HOME:-$HOME/.local/share}
   unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
   sudo=
 fi
@@ -67,7 +69,8 @@ if [ $uninstall = 1 ]; then
     systemctl --user disable --now nknownd.service 2>/dev/null || true
     [ $system = 1 ] && $sudo systemctl --global disable nknownd.service 2>/dev/null || true
   fi
-  $sudo rm -f "$bin_dir/nknown" "$bin_dir/nknownd" "$unit_dir/nknownd.service"
+  $sudo rm -f "$bin_dir/nknown" "$bin_dir/nknownd" "$unit_dir/nknownd.service" \
+    "$share_dir/krunner/dbusplugins/nknown.desktop" "$share_dir/dbus-1/services/org.nknown.krunner.service"
   has_systemd && systemctl --user daemon-reload || true
   say "NKnown désinstallé."
   say "Données et configuration conservées : ~/.local/share/nknown, ~/.config/nknown"
@@ -110,6 +113,12 @@ $sudo mkdir -p "$unit_dir"
 sed "s|^ExecStart=.*|ExecStart=$bin_dir/nknownd|" "$src/share/systemd/user/nknownd.service" \
   | $sudo tee "$unit_dir/nknownd.service" >/dev/null
 $sudo chmod 644 "$unit_dir/nknownd.service"
+# KDE Plasma : NKnown dans KRunner (et démarrage du démon à la demande, par D-Bus).
+if [ -f "$src/share/krunner/dbusplugins/nknown.desktop" ]; then
+  $sudo install -Dm644 "$src/share/krunner/dbusplugins/nknown.desktop" "$share_dir/krunner/dbusplugins/nknown.desktop"
+  sed "s|^Exec=.*|Exec=$bin_dir/nknownd|" "$src/share/dbus-1/services/org.nknown.krunner.service" \
+    | $sudo install -Dm644 /dev/stdin "$share_dir/dbus-1/services/org.nknown.krunner.service"
+fi
 
 if [ $service = 1 ]; then
   if has_systemd; then

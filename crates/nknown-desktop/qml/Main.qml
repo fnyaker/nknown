@@ -25,6 +25,8 @@ ApplicationWindow {
     property var engineState: ({})
     /// Nœud ouvert dans l'inspecteur.
     property var inspected: null
+    /// Nœud à mettre en valeur dès que les résultats arrivent.
+    property string pendingSelect: ""
 
     function launch(query) {
         error = ""
@@ -67,7 +69,25 @@ ApplicationWindow {
         onPhase: (name) => win.phase = name
         onTerms: (json) => { const t = JSON.parse(json); win.intent = t.intent || "" }
         onMap: (json) => map.apply(JSON.parse(json))
-        onResults: (json, took) => { win.hits = JSON.parse(json); win.tookMs = took }
+        onResults: (json, took) => {
+            win.hits = JSON.parse(json)
+            win.tookMs = took
+            // Résultat demandé au lancement (KRunner « Afficher dans NKnown »).
+            if (win.pendingSelect !== "" && map.nodes[win.pendingSelect])
+                win.inspect(map.nodes[win.pendingSelect])
+            win.pendingSelect = ""
+        }
+        // Demande de lancement : la sienne, puis celles des lancements suivants.
+        onRequestChanged: {
+            let r
+            try { r = JSON.parse(request) } catch (e) { return }
+            win.show(); win.raise(); win.requestActivate()
+            if (r.query) {
+                win.pendingSelect = r.select || ""
+                top.text = r.query
+                win.launch(r.query)
+            }
+        }
         onFailed: (message) => { win.error = message; win.phase = "done" }
         Component.onCompleted: start()
     }
@@ -318,7 +338,7 @@ ApplicationWindow {
         onTriggered: {
             const q = win.auto.query
             switch (win.autoStep++) {
-            case 0: win.snap("1-accueil"); if (!q) Qt.quit(); else { top.text = q; win.launch(q) } break
+            case 0: win.snap("1-accueil"); if (q) { top.text = q; win.launch(q) } break
             case 1: break
             case 2: win.snap("2-recherche"); break
             case 3: if (win.hits.length > 0) win.inspect(map.nodes[win.hits[0].node]); break

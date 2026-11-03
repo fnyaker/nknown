@@ -24,7 +24,7 @@ skip() { printf '\033[1;33m–\033[0m %s : %s\n' "$1" "$2"; }
 
 if [ ! -x "$binary" ]; then
   say "compilation du binaire (profil dist)"
-  (cd "$root" && cargo build --profile dist -p nknown-cli --no-default-features --features neural)
+  (cd "$root" && cargo build --profile dist -p nknown-cli --no-default-features --features neural,plasma)
 fi
 
 # ------------------------------------------------------------------ arborescence commune
@@ -37,6 +37,8 @@ install -m644 "$root/README.md" "$stage/share/doc/README.md"
 install -m644 "$pkg/models/NOTICE.md" "$stage/share/doc/MODELS.md"
 install -Dm644 "$pkg/share/nknown.svg" "$stage/share/icons/hicolor/scalable/apps/nknown.svg"
 install -Dm644 "$pkg/share/nknown.desktop" "$stage/share/applications/nknown.desktop"
+install -Dm644 "$pkg/plasma/nknown-krunner.desktop" "$stage/share/krunner/dbusplugins/nknown.desktop"
+install -Dm644 "$pkg/plasma/org.nknown.krunner.service" "$stage/share/dbus-1/services/org.nknown.krunner.service"
 cat > "$stage/README.txt" <<EOF
 NKnown $version (Linux x86_64)
 
@@ -58,6 +60,8 @@ system_root() {
   install -Dm644 "$stage/share/doc/MODELS.md" "$r/usr/share/doc/nknown/MODELS.md"
   install -Dm644 "$pkg/share/nknown.svg" "$r/usr/share/icons/hicolor/scalable/apps/nknown.svg"
   install -Dm644 "$pkg/share/nknown.desktop" "$r/usr/share/applications/nknown.desktop"
+  install -Dm644 "$pkg/plasma/nknown-krunner.desktop" "$r/usr/share/krunner/dbusplugins/nknown.desktop"
+  install -Dm644 "$pkg/plasma/org.nknown.krunner.service" "$r/usr/share/dbus-1/services/org.nknown.krunner.service"
 }
 
 build_tar() {

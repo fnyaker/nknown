@@ -1,0 +1,16 @@
+[Desktop Entry]
+Name=NKnown
+Comment=Recherche dans votre base de connaissances NKnown
+X-KDE-ServiceTypes=Plasma/Runner
+Type=Service
+Icon=nknown
+X-KDE-PluginInfo-Name=nknown
+X-KDE-PluginInfo-Version=0.1
+X-KDE-PluginInfo-License=Proprietary
+X-KDE-PluginInfo-EnabledByDefault=true
+X-Plasma-API=DBus
+X-Plasma-DBusRunner-Service=org.nknown.krunner
+X-Plasma-DBusRunner-Path=/runner
+X-Plasma-Request-Actions-Once=true
+X-Plasma-Runner-Min-Letter-Count=3
+X-Plasma-Runner-Unique-Results=true

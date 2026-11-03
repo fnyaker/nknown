@@ -19,7 +19,9 @@ nknown-service.workspace = true
 nknown-server.workspace = true
 
 [features]
-default = ["neural", "vulkan"]
+default = ["neural", "vulkan", "plasma"]
+# Intégration KDE Plasma du démon (KRunner, notifications).
+plasma = ["nknown-server/plasma"]
 # Couche 3 (candle, XLM-R) : dépendances lourdes, désactivable.
 neural = ["dep:nknown-neural", "nknown-service/neural", "nknown-server/neural"]
 # Couche 3 aussi sur GPU via Vulkan (burn).

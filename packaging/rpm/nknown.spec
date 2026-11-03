@@ -30,6 +30,8 @@ fi
 /usr/bin/nknownd
 /usr/lib/systemd/user/nknownd.service
 /usr/share/applications/nknown.desktop
+/usr/share/krunner/dbusplugins/nknown.desktop
+/usr/share/dbus-1/services/org.nknown.krunner.service
 /usr/share/icons/hicolor/scalable/apps/nknown.svg
 %doc /usr/share/doc/nknown/README.md
 %doc /usr/share/doc/nknown/MODELS.md

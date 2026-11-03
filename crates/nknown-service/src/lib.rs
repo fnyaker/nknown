@@ -261,7 +261,7 @@ impl Service {
         on_event(api::SearchEvent::Phase {
             phase: api::Phase::Analyze,
         });
-        let q = query::build_query(&self.pipeline(), &req.query);
+        let q = query::build_query_with(&self.pipeline(), Some(&self.detector), &req.query);
         let terms: Vec<api::QueryTermView> = q
             .terms
             .iter()

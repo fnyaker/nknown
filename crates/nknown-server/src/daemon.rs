@@ -41,6 +41,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let service = tokio::task::spawn_blocking(|| Service::open(Options::user()?)).await??;
     let service = Arc::new(service);
     nknown_service::watch::spawn(service.clone());
+    #[cfg(feature = "plasma")]
+    tokio::spawn(crate::plasma::spawn(service.clone()));
 
     let dir = socket.parent().expect("dossier du socket");
     std::fs::create_dir_all(dir)?;

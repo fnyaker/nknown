@@ -5,11 +5,17 @@
 
 mod bridge;
 mod client;
+mod instance;
 mod view;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
 fn main() {
+    // Une seule fenêtre : si l'app est déjà ouverte, elle reçoit la demande.
+    let request = instance::Request::from_args(std::env::args().skip(1));
+    if instance::forward(&request) {
+        return;
+    }
     let mut app = QGuiApplication::new();
     QGuiApplication::set_desktop_file_name(&QString::from("nknown"));
     if let Some(mut app) = app.as_mut() {

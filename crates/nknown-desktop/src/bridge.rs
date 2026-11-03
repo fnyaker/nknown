@@ -31,6 +31,7 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(QString, status)]
         #[qproperty(QString, automation)]
+        #[qproperty(QString, request)]
         type Backend = super::BackendRust;
 
         /// Connexion au moteur et suivi de son état ; à appeler une fois l'interface prête.
@@ -75,6 +76,9 @@ pub struct BackendRust {
     /// Pilotage pour les captures et les essais visuels (JSON ; vide sinon) :
     /// `NKNOWN_APP_QUERY` (requête à lancer), `NKNOWN_APP_SNAPSHOT` (préfixe des captures).
     automation: QString,
+    /// Demande de lancement (`--query`, `--select`), la sienne puis celles des lancements
+    /// suivants (JSON avec un numéro, pour que deux demandes identiques se distinguent).
+    request: QString,
     engine: Arc<OnceLock<Result<Engine, String>>>,
     generation: Arc<AtomicU64>,
 }
@@ -87,6 +91,16 @@ impl qobject::Backend {
             self.as_mut()
                 .set_automation(QString::from(&json.to_string()));
         }
+        let first = crate::instance::Request::from_args(std::env::args().skip(1));
+        if !first.is_empty() {
+            self.as_mut().set_request(request_json(&first, 0));
+        }
+        let forwarded = self.qt_thread();
+        let counter = AtomicU64::new(1);
+        crate::instance::listen(move |req| {
+            let json = request_json(&req, counter.fetch_add(1, Ordering::SeqCst));
+            let _ = forwarded.queue(move |obj| obj.set_request(json));
+        });
         let thread = self.qt_thread();
         let engine = self.rust().engine.clone();
         std::thread::Builder::new()
@@ -173,6 +187,11 @@ impl qobject::Backend {
             })
             .expect("fil de recherche");
     }
+}
+
+fn request_json(req: &crate::instance::Request, n: u64) -> QString {
+    let json = serde_json::json!({ "n": n, "query": req.query, "select": req.select });
+    QString::from(&json.to_string())
 }
 
 fn phase_name(p: api::Phase) -> &'static str {

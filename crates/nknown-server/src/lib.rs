@@ -3,6 +3,8 @@
 
 pub mod auth;
 pub mod daemon;
+#[cfg(feature = "plasma")]
+pub mod plasma;
 
 use std::path::PathBuf;
 use std::sync::Arc;

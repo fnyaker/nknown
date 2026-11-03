@@ -31,7 +31,7 @@ jobs:
             target
           key: dist-el8-${{ hashFiles('Cargo.lock') }}
       - name: Binaire (profil dist)
-        run: cargo build --profile dist -p nknown-cli --no-default-features --features neural
+        run: cargo build --profile dist -p nknown-cli --no-default-features --features neural,plasma
       - name: Essai
         run: |
           target/dist/nknown --version

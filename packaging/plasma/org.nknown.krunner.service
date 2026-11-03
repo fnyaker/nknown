@@ -1,0 +1,5 @@
+# Activation D-Bus : si KRunner interroge NKnown alors que le démon est arrêté, systemd le lance.
+[D-BUS Service]
+Name=org.nknown.krunner
+Exec=/usr/bin/nknownd
+SystemdService=nknownd.service

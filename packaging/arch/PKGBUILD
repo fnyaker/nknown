@@ -23,4 +23,6 @@ package() {
   install -Dm644 share/doc/MODELS.md "$pkgdir/usr/share/doc/nknown/MODELS.md"
   install -Dm644 share/icons/hicolor/scalable/apps/nknown.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/nknown.svg"
   install -Dm644 share/applications/nknown.desktop "$pkgdir/usr/share/applications/nknown.desktop"
+  install -Dm644 share/krunner/dbusplugins/nknown.desktop "$pkgdir/usr/share/krunner/dbusplugins/nknown.desktop"
+  install -Dm644 share/dbus-1/services/org.nknown.krunner.service "$pkgdir/usr/share/dbus-1/services/org.nknown.krunner.service"
 }
