@@ -5377,7 +5377,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5385,7 +5385,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nknown-core",
  "nknown-engine",
@@ -5398,11 +5398,11 @@ dependencies = [
 
 [[package]]
 name = "nknown-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "nknown-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -5421,7 +5421,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nknown-core",
  "postcard",
@@ -5431,14 +5431,14 @@ dependencies = [
 
 [[package]]
 name = "nknown-graph"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nknown-api",
 ]
 
 [[package]]
 name = "nknown-neural"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "burn",
  "candle-core",
@@ -5455,7 +5455,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-nlp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fst",
  "icu_segmenter",
@@ -5468,7 +5468,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "getrandom 0.4.3",
@@ -5486,7 +5486,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-service"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "nknown-api",
  "nknown-core",
@@ -5504,7 +5504,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-sources"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "feed-rs",
  "nknown-core",
@@ -5514,7 +5514,7 @@ dependencies = [
 
 [[package]]
 name = "nknown-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "js-sys",
  "leptos",
