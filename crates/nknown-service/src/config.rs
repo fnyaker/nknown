@@ -75,6 +75,19 @@ pub struct Config {
     /// Fils de calcul sur CPU (analyse) ; 0 : un quart des cœurs (au moins 2). Ils tournent en
     /// priorité basse : l'indexation cède la place au reste de la session.
     pub compute_threads: usize,
+    /// Flux d'info de l'accueil : mots-clés surveillés.
+    pub feeds: Vec<Feed>,
+}
+
+/// Un flux d'info : titre, mots-clés (chacun est une requête), date de dernière consultation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Feed {
+    pub id: String,
+    pub title: String,
+    pub keywords: Vec<String>,
+    /// Dernière consultation (secondes Unix) : ce qui est plus récent est « nouveau ».
+    #[serde(default)]
+    pub seen: i64,
 }
 
 /// Précision de l'analyseur sur CPU.
@@ -116,6 +129,7 @@ impl Default for Config {
             parser_precision: ParserPrecision::Standard,
             parser_device: nknown_api::DeviceChoice::Auto,
             compute_threads: 0,
+            feeds: Vec::new(),
         }
     }
 }

@@ -8,9 +8,10 @@
 #![allow(unsafe_code)]
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use std::time::Instant;
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
@@ -81,6 +82,24 @@ pub mod qobject {
         #[cxx_name = "revealFile"]
         fn reveal_file(self: Pin<&mut Backend>, path: &QString);
 
+        /// Flux d'info : relecture (réponse : `feeds`), création (`id` vide) ou modification,
+        /// suppression, marque « vu ». Mots-clés séparés par des virgules.
+        #[qinvokable]
+        #[cxx_name = "refreshFeeds"]
+        fn refresh_feeds(self: Pin<&mut Backend>);
+
+        #[qinvokable]
+        #[cxx_name = "saveFeed"]
+        fn save_feed(self: Pin<&mut Backend>, id: &QString, title: &QString, keywords: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "removeFeed"]
+        fn remove_feed(self: Pin<&mut Backend>, id: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "feedSeen"]
+        fn feed_seen(self: Pin<&mut Backend>, id: &QString);
+
         #[qinvokable]
         #[cxx_name = "setDaemonEnabled"]
         fn set_daemon_enabled(self: Pin<&mut Backend>, enabled: bool);
@@ -113,6 +132,10 @@ pub mod qobject {
         #[qsignal]
         fn failed(self: Pin<&mut Backend>, message: QString);
 
+        /// Flux d'info et leurs contenus (JSON).
+        #[qsignal]
+        fn feeds(self: Pin<&mut Backend>, json: QString);
+
         /// Document chargé pour le lecteur (JSON).
         #[qsignal]
         fn document(self: Pin<&mut Backend>, json: QString);
@@ -126,6 +149,8 @@ type UiUpdate = Box<dyn FnOnce(Pin<&mut qobject::Backend>) + Send>;
 
 /// Intervalle de relecture de l'état du moteur.
 const STATUS_EVERY: Duration = Duration::from_secs(2);
+/// Relecture des flux d'info au plus tard après ce délai (la fraîcheur évolue).
+const FEEDS_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct BackendRust {
@@ -140,6 +165,8 @@ pub struct BackendRust {
     tray_available: bool,
     engine: Arc<Slot>,
     generation: Arc<AtomicU64>,
+    /// Flux d'info à relire au prochain tour du fil d'état.
+    feeds_dirty: Arc<AtomicBool>,
 }
 
 /// Le moteur courant, remplaçable (changement de réglages) : vide pendant une connexion, que
@@ -231,10 +258,15 @@ impl qobject::Backend {
         });
         let thread = self.qt_thread();
         let engine = self.rust().engine.clone();
+        let feeds_dirty = self.rust().feeds_dirty.clone();
+        feeds_dirty.store(true, Ordering::SeqCst);
         engine.connect();
         std::thread::Builder::new()
             .name("nknown-moteur".into())
             .spawn(move || {
+                // Flux relus quand la base change, à la demande, et au moins chaque minute.
+                let mut feeds_docs: Option<u64> = None;
+                let mut feeds_at = Instant::now();
                 loop {
                     let settings = Settings::load();
                     // « enabled », « disabled »… ; vide si le service n'est pas installé.
@@ -249,12 +281,26 @@ impl qobject::Backend {
                     let mut status = match engine.get() {
                         None => serde_json::json!({ "engine": "connecting" }),
                         Some(Ok(e)) => match e.status() {
-                            Ok(s) => serde_json::json!({
+                            Ok(s) => {
+                                let docs = Some(s.docs);
+                                if feeds_dirty.swap(false, Ordering::SeqCst)
+                                    || docs != feeds_docs
+                                    || feeds_at.elapsed() > FEEDS_EVERY
+                                {
+                                    feeds_docs = docs;
+                                    feeds_at = Instant::now();
+                                    if let Ok(f) = e.feeds() {
+                                        let json = QString::from(&view::feeds(&f).to_string());
+                                        let _ = thread.queue(move |obj| obj.feeds(json));
+                                    }
+                                }
+                                serde_json::json!({
                                 "engine": e.name(),
                                 "status": s,
                                 "sources": e.sources().unwrap_or_default(),
                                 "analysis": e.settings().ok(),
-                            }),
+                                })
+                            }
                             Err(err) => serde_json::json!({ "engine": e.name(), "error": err }),
                         },
                         Some(Err(err)) => serde_json::json!({ "engine": "none", "error": err }),
@@ -450,6 +496,53 @@ impl qobject::Backend {
                     .stderr(std::process::Stdio::null())
                     .spawn();
             }
+        });
+    }
+
+    fn refresh_feeds(self: Pin<&mut Self>) {
+        self.rust().feeds_dirty.store(true, Ordering::SeqCst);
+    }
+
+    fn save_feed(self: Pin<&mut Self>, id: &QString, title: &QString, keywords: &QString) {
+        let id = id.to_string();
+        let req = api::FeedRequest {
+            title: title.to_string(),
+            keywords: keywords
+                .to_string()
+                .split([',', ';', '\n'])
+                .map(|k| k.trim().to_owned())
+                .filter(|k| !k.is_empty())
+                .collect(),
+        };
+        let dirty = self.rust().feeds_dirty.clone();
+        self.background(move |slot| {
+            let view = slot.wait()?.save_feed(&id, req)?;
+            dirty.store(true, Ordering::SeqCst);
+            Ok(if id.is_empty() {
+                format!("Flux « {} » créé", view.title)
+            } else {
+                String::new()
+            })
+        });
+    }
+
+    fn remove_feed(self: Pin<&mut Self>, id: &QString) {
+        let id = id.to_string();
+        let dirty = self.rust().feeds_dirty.clone();
+        self.background(move |slot| {
+            slot.wait()?.remove_feed(&id)?;
+            dirty.store(true, Ordering::SeqCst);
+            Ok("Flux retiré".into())
+        });
+    }
+
+    fn feed_seen(self: Pin<&mut Self>, id: &QString) {
+        let id = id.to_string();
+        let dirty = self.rust().feeds_dirty.clone();
+        self.background(move |slot| {
+            slot.wait()?.feed_seen(&id)?;
+            dirty.store(true, Ordering::SeqCst);
+            Ok(String::new())
         });
     }
 

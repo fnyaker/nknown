@@ -556,6 +556,125 @@ impl Service {
             .expect("source ajoutée"))
     }
 
+    // ------------------------------------------------------------ flux d'info
+
+    /// Les flux d'info et leurs derniers contenus.
+    pub fn feeds(&self) -> Result<Vec<api::FeedView>, Error> {
+        let feeds = self.config().feeds;
+        feeds.iter().map(|f| self.feed_view(f)).collect()
+    }
+
+    /// Contenus d'un flux : chaque mot-clé est cherché (avec priorité au récent), les résultats
+    /// sont fusionnés par document puis triés du plus récent au plus ancien.
+    fn feed_view(&self, feed: &config::Feed) -> Result<api::FeedView, Error> {
+        let mut by_doc: std::collections::HashMap<u64, api::Hit> = Default::default();
+        for kw in feed.keywords.iter().filter(|k| !k.trim().is_empty()) {
+            let mut q = query::build_query_with(&self.pipeline(), Some(&self.detector), kw);
+            if q.terms.is_empty() {
+                continue;
+            }
+            q.recency = Some(nknown_engine::RECENT_HALF_LIFE_DAYS);
+            let found = self
+                .engine()
+                .search(&q, Timestamp::now(), FEED_PER_KEYWORD)?;
+            let term_index = |text: &str| q.terms.iter().position(|t| t.text == text);
+            for h in convert_hits(found, &term_index, true).0 {
+                let keep = by_doc.get(&h.doc).is_none_or(|old| old.score < h.score);
+                if keep {
+                    by_doc.insert(h.doc, h);
+                }
+            }
+        }
+        let mut items: Vec<api::Hit> = by_doc.into_values().collect();
+        items.sort_by(|a, b| b.date.cmp(&a.date).then(b.score.total_cmp(&a.score)));
+        items.truncate(FEED_ITEMS);
+        Ok(api::FeedView {
+            id: feed.id.clone(),
+            title: feed.title.clone(),
+            keywords: feed.keywords.clone(),
+            fresh: items.iter().filter(|h| h.date > feed.seen).count(),
+            items,
+        })
+    }
+
+    fn feed_from(req: api::FeedRequest) -> Result<(String, Vec<String>), Error> {
+        let keywords: Vec<String> = req
+            .keywords
+            .iter()
+            .map(|k| k.trim().to_owned())
+            .filter(|k| !k.is_empty())
+            .collect();
+        if keywords.is_empty() {
+            return Err(Error::Invalid("au moins un mot-clé".into()));
+        }
+        let title = match req.title.trim() {
+            "" => keywords.join(", "),
+            t => t.to_owned(),
+        };
+        Ok((title, keywords))
+    }
+
+    pub fn add_feed(&self, req: api::FeedRequest) -> Result<api::FeedView, Error> {
+        let (title, keywords) = Self::feed_from(req)?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let feed = config::Feed {
+            id: sources::id_of(&format!("{title}\u{1f}{nanos}")),
+            title,
+            keywords,
+            seen: Timestamp::now().0,
+        };
+        {
+            let mut c = lock(&self.config);
+            c.feeds.push(feed.clone());
+            self.save_config(&c)?;
+        }
+        self.feed_view(&feed)
+    }
+
+    pub fn update_feed(
+        &self,
+        id: &str,
+        req: api::FeedRequest,
+    ) -> Result<Option<api::FeedView>, Error> {
+        let (title, keywords) = Self::feed_from(req)?;
+        let feed = {
+            let mut c = lock(&self.config);
+            let Some(f) = c.feeds.iter_mut().find(|f| f.id == id) else {
+                return Ok(None);
+            };
+            f.title = title;
+            f.keywords = keywords;
+            let feed = f.clone();
+            self.save_config(&c)?;
+            feed
+        };
+        self.feed_view(&feed).map(Some)
+    }
+
+    pub fn remove_feed(&self, id: &str) -> Result<bool, Error> {
+        let mut c = lock(&self.config);
+        let before = c.feeds.len();
+        c.feeds.retain(|f| f.id != id);
+        let removed = c.feeds.len() != before;
+        if removed {
+            self.save_config(&c)?;
+        }
+        Ok(removed)
+    }
+
+    /// Le flux vient d'être consulté : ses contenus ne sont plus « nouveaux ».
+    pub fn mark_feed_seen(&self, id: &str) -> Result<bool, Error> {
+        let mut c = lock(&self.config);
+        let Some(f) = c.feeds.iter_mut().find(|f| f.id == id) else {
+            return Ok(false);
+        };
+        f.seen = Timestamp::now().0;
+        self.save_config(&c)?;
+        Ok(true)
+    }
+
     /// Retire une source de la configuration. Ses documents restent dans la base.
     pub fn remove_source(&self, id: &str) -> Result<bool, Error> {
         let mut config = lock(&self.config);
@@ -656,6 +775,10 @@ impl Service {
         Ok(stats)
     }
 }
+
+/// Contenus cherchés par mot-clé d'un flux, et gardés par flux.
+const FEED_PER_KEYWORD: usize = 20;
+const FEED_ITEMS: usize = 12;
 
 /// Résultats du moteur → résultats de l'API et entrées du graphe. Sans `with_snippets`
 /// (carte provisoire), pas d'extrait : seule la carte s'en sert.
@@ -827,6 +950,59 @@ mod tests {
         })
         .unwrap();
         (dir, svc)
+    }
+
+    #[test]
+    fn feeds_follow_keywords() {
+        let (_dir, svc) = service();
+        for (title, text) in [
+            (
+                "Vulkan",
+                "Le pilote Vulkan accélère le calcul sur la carte graphique.",
+            ),
+            ("Jardin", "Les tomates du jardin mûrissent en août."),
+        ] {
+            svc.add_document(api::AddDocument {
+                text: text.into(),
+                title: Some(title.into()),
+                url: None,
+                format: None,
+            })
+            .unwrap();
+        }
+        assert!(
+            svc.add_feed(api::FeedRequest {
+                title: " ".into(),
+                keywords: vec![" ".into()],
+            })
+            .is_err()
+        );
+        let feed = svc
+            .add_feed(api::FeedRequest {
+                title: "".into(),
+                keywords: vec!["vulkan".into(), "introuvable".into()],
+            })
+            .unwrap();
+        assert_eq!(feed.title, "vulkan, introuvable");
+        assert_eq!(feed.items.len(), 1);
+        assert_eq!(feed.items[0].title.as_deref(), Some("Vulkan"));
+        let updated = svc
+            .update_feed(
+                &feed.id,
+                api::FeedRequest {
+                    title: "Potager".into(),
+                    keywords: vec!["tomates".into()],
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.items[0].title.as_deref(), Some("Jardin"));
+        assert!(svc.mark_feed_seen(&feed.id).unwrap());
+        assert_eq!(svc.feeds().unwrap()[0].fresh, 0);
+        // Enregistrés dans la configuration.
+        assert_eq!(svc.config().feeds[0].title, "Potager");
+        assert!(svc.remove_feed(&feed.id).unwrap());
+        assert!(svc.feeds().unwrap().is_empty());
     }
 
     #[test]

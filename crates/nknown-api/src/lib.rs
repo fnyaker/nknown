@@ -21,6 +21,8 @@ pub mod routes {
     pub const SESSION: &str = "/session";
     pub const SETTINGS: &str = "/settings";
     pub const CATALOG: &str = "/catalog";
+    /// Flux d'info : mots-clés surveillés.
+    pub const FEEDS: &str = "/feeds";
 }
 
 // ---------------------------------------------------------------- recherche
@@ -417,6 +419,25 @@ pub struct CatalogEntry {
     pub description: Option<String>,
     /// Déjà parmi les sources configurées.
     pub added: bool,
+}
+
+/// Flux d'info : un titre et des mots-clés surveillés en continu ; ses derniers contenus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeedView {
+    pub id: String,
+    pub title: String,
+    pub keywords: Vec<String>,
+    /// Contenus correspondants, du plus récent au plus ancien.
+    pub items: Vec<Hit>,
+    /// Contenus arrivés depuis la dernière consultation.
+    pub fresh: usize,
+}
+
+/// `POST /feeds`, `PUT /feeds/{id}` : création ou modification d'un flux.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeedRequest {
+    pub title: String,
+    pub keywords: Vec<String>,
 }
 
 /// Réglages d'analyse du moteur (`GET`/`PUT /settings`).

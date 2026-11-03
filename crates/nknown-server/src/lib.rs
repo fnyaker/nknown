@@ -43,6 +43,12 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
         .route(SOURCES, get(sources).post(add_source))
         .route(SETTINGS, get(settings).put(update_settings))
         .route(CATALOG, get(catalog))
+        .route(FEEDS, get(feeds).post(add_feed))
+        .route(
+            &format!("{FEEDS}/{{id}}"),
+            axum::routing::put(update_feed).delete(remove_feed),
+        )
+        .route(&format!("{FEEDS}/{{id}}/seen"), post(feed_seen))
         .route(
             &format!("{SOURCES}/{{id}}"),
             axum::routing::delete(remove_source),
@@ -247,6 +253,48 @@ async fn add_document(
 async fn catalog(State(state): State<AppState>) -> Response {
     match blocking(move || Ok(state.service.catalog())).await {
         Ok(c) => Json(c).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn feeds(State(state): State<AppState>) -> Response {
+    match blocking(move || state.service.feeds()).await {
+        Ok(f) => Json(f).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn add_feed(State(state): State<AppState>, Json(req): Json<api::FeedRequest>) -> Response {
+    match blocking(move || state.service.add_feed(req)).await {
+        Ok(f) => (StatusCode::CREATED, Json(f)).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn update_feed(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<api::FeedRequest>,
+) -> Response {
+    match blocking(move || state.service.update_feed(&id, req)).await {
+        Ok(Some(f)) => Json(f).into_response(),
+        Ok(None) => error(StatusCode::NOT_FOUND, "flux inconnu"),
+        Err(r) => r,
+    }
+}
+
+async fn remove_feed(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.service.remove_feed(&id)).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error(StatusCode::NOT_FOUND, "flux inconnu"),
+        Err(r) => r,
+    }
+}
+
+async fn feed_seen(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.service.mark_feed_seen(&id)).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error(StatusCode::NOT_FOUND, "flux inconnu"),
         Err(r) => r,
     }
 }

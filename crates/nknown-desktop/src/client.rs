@@ -187,6 +187,70 @@ impl Engine {
         }
     }
 
+    // ---------------------------------------------------------------- flux d'info
+
+    /// Requête JSON vers le démon ou le serveur distant (le cœur intégré est appelé directement).
+    fn route_json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        route: &str,
+        body: Option<&[u8]>,
+    ) -> Result<T> {
+        match self {
+            Self::Daemon(socket) => {
+                let body = request(socket, method, route, body)?.read_all()?;
+                serde_json::from_slice(&body).map_err(|e| e.to_string())
+            }
+            Self::Remote(r) => r.json(method, route, body),
+            Self::Embedded(_) => Err("appel direct attendu".into()),
+        }
+    }
+
+    /// Requête sans réponse attendue (suppression, marque de lecture).
+    fn route_call(&self, method: &str, route: &str) -> Result<()> {
+        match self {
+            Self::Daemon(socket) => request(socket, method, route, None).map(drop),
+            // Un POST sans corps passerait pour un GET : corps vide explicite.
+            Self::Remote(r) => r.call(method, route, Some(b"{}")).map(drop),
+            Self::Embedded(_) => Err("appel direct attendu".into()),
+        }
+    }
+
+    pub fn feeds(&self) -> Result<Vec<api::FeedView>> {
+        match self {
+            Self::Embedded(s) => s.feeds().map_err(|e| e.to_string()),
+            _ => self.route_json("GET", api::routes::FEEDS, None),
+        }
+    }
+
+    /// Crée un flux (`id` vide) ou modifie le flux `id`.
+    pub fn save_feed(&self, id: &str, req: api::FeedRequest) -> Result<api::FeedView> {
+        let body = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
+        match self {
+            Self::Embedded(s) if id.is_empty() => s.add_feed(req).map_err(|e| e.to_string()),
+            Self::Embedded(s) => s
+                .update_feed(id, req)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "flux inconnu".into()),
+            _ if id.is_empty() => self.route_json("POST", api::routes::FEEDS, Some(&body)),
+            _ => self.route_json("PUT", &format!("{}/{id}", api::routes::FEEDS), Some(&body)),
+        }
+    }
+
+    pub fn remove_feed(&self, id: &str) -> Result<()> {
+        match self {
+            Self::Embedded(s) => s.remove_feed(id).map(drop).map_err(|e| e.to_string()),
+            _ => self.route_call("DELETE", &format!("{}/{id}", api::routes::FEEDS)),
+        }
+    }
+
+    pub fn feed_seen(&self, id: &str) -> Result<()> {
+        match self {
+            Self::Embedded(s) => s.mark_feed_seen(id).map(drop).map_err(|e| e.to_string()),
+            _ => self.route_call("POST", &format!("{}/{id}/seen", api::routes::FEEDS)),
+        }
+    }
+
     /// Un document entier (lecteur intégré).
     pub fn document(&self, id: u64) -> Result<api::DocumentView> {
         let route = format!("{}/{id}", api::routes::DOCUMENTS);

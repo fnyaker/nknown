@@ -12,6 +12,7 @@ fn main() {
                 "qml/KindGlyph.qml",
                 "qml/Settings.qml",
                 "qml/Reader.qml",
+                "qml/FeedBoard.qml",
                 "qml/Pill.qml",
                 "qml/IconButton.qml",
             ])

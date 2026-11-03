@@ -27,6 +27,9 @@ ApplicationWindow {
     property var inspected: null
     /// Nœud à mettre en valeur dès que les résultats arrivent.
     property string pendingSelect: ""
+    /// Flux d'info de l'accueil.
+    property var feeds: []
+    readonly property bool hasFeeds: feeds.length > 0
 
     function launch(query) {
         error = ""
@@ -107,6 +110,7 @@ ApplicationWindow {
             }
         }
         onFailed: (message) => { win.error = message; win.phase = "done" }
+        onFeeds: (json) => { try { win.feeds = JSON.parse(json) } catch (e) {} }
         onDocument: (json) => { reader.doc = JSON.parse(json); reader.loading = false }
         onNotice: (message, isError) => toast.show(message, isError)
         Component.onCompleted: start()
@@ -129,7 +133,7 @@ ApplicationWindow {
             anchors.horizontalCenter: parent.horizontalCenter
             y: top.y - height - 36
             spacing: 10
-            opacity: win.searching ? 0 : 1
+            opacity: win.searching || win.hasFeeds ? 0 : 1
             visible: opacity > 0
             Behavior on opacity { NumberAnimation { duration: Theme.standard } }
             KindGlyph { anchors.horizontalCenter: parent.horizontalCenter; kind: "query"; size: 44 }
@@ -151,7 +155,8 @@ ApplicationWindow {
             intent: win.intent
             width: Math.min(win.width - 2 * Theme.margin, win.searching ? 760 : 620)
             anchors.horizontalCenter: parent.horizontalCenter
-            y: win.searching ? 18 : win.height * 0.42
+            // Accueil : au centre ; avec des flux, en haut, les flux dessous.
+            y: win.searching ? 18 : win.hasFeeds ? Math.max(70, win.height * 0.1) : win.height * 0.34
             Behavior on y { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
             Behavior on width { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
             onSubmitted: (query) => win.launch(query)
@@ -281,23 +286,47 @@ ApplicationWindow {
                 }
             }
 
-            // Lecteur : par-dessus la carte et la liste, glisse depuis la droite.
-            Reader {
-                id: reader
-                property bool open: false
-                width: Math.min(parent.width - 2 * Theme.margin, Math.max(760, parent.width * 0.62))
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: Theme.margin
-                x: open ? parent.width - width - Theme.margin : parent.width + 20
-                opacity: open ? 1 : 0
-                visible: opacity > 0
-                Behavior on x { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
-                Behavior on opacity { NumberAnimation { duration: Theme.standard } }
-                onCloseRequested: reader.open = false
-                onSearchText: (text) => { reader.open = false; top.text = text; win.launch(text) }
-                onReveal: (path) => backend.revealFile(path)
-            }
+        }
+
+        // ------------------------------------------------------------------ flux d'info
+        FeedBoard {
+            id: board
+            anchors.top: top.bottom
+            anchors.topMargin: win.hasFeeds ? 36 : 48
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: Theme.margin
+            anchors.rightMargin: Theme.margin
+            anchors.bottomMargin: 56
+            feeds: win.feeds
+            opacity: win.searching ? 0 : 1
+            visible: opacity > 0
+            Behavior on opacity { NumberAnimation { duration: Theme.standard } }
+            onRead: (hit, feedId) => { win.read(hit); backend.feedSeen(feedId) }
+            onSearch: (query) => { top.text = query; win.launch(query) }
+            onSave: (id, title, keywords) => backend.saveFeed(id, title, keywords)
+            onRemove: (id) => backend.removeFeed(id)
+        }
+
+        // Lecteur : par-dessus la carte et la liste, glisse depuis la droite.
+        Reader {
+            id: reader
+            property bool open: false
+            width: Math.min(parent.width - 2 * Theme.margin, Math.max(760, parent.width * 0.62))
+            anchors.top: top.bottom
+            anchors.topMargin: 20
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Theme.margin
+            z: 5
+            x: open ? parent.width - width - Theme.margin : parent.width + 20
+            opacity: open ? 1 : 0
+            visible: opacity > 0
+            Behavior on x { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
+            Behavior on opacity { NumberAnimation { duration: Theme.standard } }
+            onCloseRequested: reader.open = false
+            onSearchText: (text) => { reader.open = false; top.text = text; win.launch(text) }
+            onReveal: (path) => backend.revealFile(path)
         }
 
         // ------------------------------------------------------------------ état du moteur

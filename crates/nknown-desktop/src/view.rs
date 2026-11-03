@@ -138,8 +138,11 @@ pub fn path_tail(path: &str, n: usize) -> String {
 }
 
 pub fn hits(resp: &api::SearchResponse) -> Vec<HitView> {
-    resp.hits
-        .iter()
+    hit_views(&resp.hits)
+}
+
+pub fn hit_views(hits: &[api::Hit]) -> Vec<HitView> {
+    hits.iter()
         .map(|h| HitView {
             node: format!("d{}", h.doc),
             doc: h.doc.to_string(),
@@ -158,6 +161,24 @@ pub fn hits(resp: &api::SearchResponse) -> Vec<HitView> {
             location: h.path.as_deref().map(|p| path_tail(p, 3)),
         })
         .collect()
+}
+
+/// Flux d'info pour l'accueil.
+pub fn feeds(feeds: &[api::FeedView]) -> serde_json::Value {
+    serde_json::Value::Array(
+        feeds
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f.id,
+                    "title": f.title,
+                    "keywords": f.keywords,
+                    "fresh": f.fresh,
+                    "items": hit_views(&f.items),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Fichiers lus en entier par le lecteur jusqu'à cette taille.
