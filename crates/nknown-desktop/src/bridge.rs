@@ -93,6 +93,12 @@ pub mod qobject {
         #[cxx_name = "pauseSource"]
         fn pause_source(self: Pin<&mut Backend>, id: &QString, paused: bool);
 
+        /// Statistiques du moteur (base, liens entre mots, mémoire) ; `word` non vide : liens
+        /// de ce mot. Réponse : `stats`.
+        #[qinvokable]
+        #[cxx_name = "loadStats"]
+        fn load_stats(self: Pin<&mut Backend>, word: &QString);
+
         /// Catalogue des sources proposées ; réponse : `catalog`.
         #[qinvokable]
         #[cxx_name = "loadCatalog"]
@@ -166,6 +172,10 @@ pub mod qobject {
 
         #[qsignal]
         fn failed(self: Pin<&mut Backend>, message: QString);
+
+        /// Statistiques du moteur (JSON ; `error` en cas d'échec).
+        #[qsignal]
+        fn stats(self: Pin<&mut Backend>, json: QString);
 
         /// Catalogue des sources proposées (JSON).
         #[qsignal]
@@ -612,6 +622,19 @@ impl qobject::Backend {
                 short(&view.spec),
                 if paused { "en pause" } else { "reprise" }
             ))
+        });
+    }
+
+    fn load_stats(self: Pin<&mut Self>, word: &QString) {
+        let word = word.to_string();
+        let thread = self.qt_thread();
+        let slot = self.rust().engine.clone();
+        std::thread::spawn(move || {
+            let json = match slot.wait().and_then(|e| e.stats(&word)) {
+                Ok(s) => serde_json::to_string(&s).unwrap_or_default(),
+                Err(e) => serde_json::json!({ "error": e }).to_string(),
+            };
+            let _ = thread.queue(move |obj| obj.stats(QString::from(&json)));
         });
     }
 

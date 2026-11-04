@@ -27,6 +27,8 @@ pub mod routes {
     pub const WIKIPEDIA_ESTIMATE: &str = "/wikipedia/estimate";
     /// Traduction des sources dans une autre langue : état, propositions, réponses.
     pub const TRANSLATION: &str = "/translation";
+    /// Statistiques : base, liens entre mots, mémoire, calcul. `?word=` : liens d'un mot.
+    pub const STATS: &str = "/stats";
 }
 
 // ---------------------------------------------------------------- recherche
@@ -604,6 +606,134 @@ pub enum ModelsState {
     Failed {
         message: String,
     },
+}
+
+// ---------------------------------------------------------------- statistiques
+
+/// `GET /stats` : ce que contient la base, ce que le démon sait des mots, ce qu'il consomme.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Stats {
+    pub docs: u64,
+    pub passages: u64,
+    pub words: u64,
+    /// Taille du fichier de la base.
+    pub base_bytes: u64,
+    /// Liens du dictionnaire (Wiktionnaire), par langue.
+    pub dictionaries: Vec<DictionaryStats>,
+    pub learned: LearnedView,
+    pub memory: MemoryView,
+    pub compute: ComputeView,
+    /// Liens d'un mot demandé (`?word=`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probe: Vec<ProbeTerm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DictionaryStats {
+    pub lang: String,
+    /// Mots qui ont une fiche de liens.
+    pub lemmas: u64,
+}
+
+/// Liens appris dans les documents de la base.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LearnedView {
+    pub state: LearnState,
+    /// Mots qui ont au moins un lien appris.
+    pub words: u64,
+    /// Liens syntaxiques (adjectifs communs : utilisables seuls).
+    pub syntactic: u64,
+    /// Liens thématiques (même passage : confirment le dictionnaire).
+    pub topical: u64,
+    /// Dernier calcul (secondes Unix), absent s'il n'a jamais eu lieu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    /// Durée du dernier calcul de ce processus, en secondes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub took_secs: Option<f64>,
+    /// Passages au dernier calcul, et seuil du prochain.
+    pub at_passages: u64,
+    pub next_passages: u64,
+    /// Quelques mots et leurs liens appris.
+    pub examples: Vec<LinkExample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum LearnState {
+    /// Pas encore assez de passages, ou jamais calculé.
+    #[default]
+    Waiting,
+    Ready,
+    /// Calcul en cours depuis `secs` secondes.
+    Running {
+        secs: u64,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkExample {
+    pub lemma: String,
+    pub lang: String,
+    pub links: Vec<String>,
+}
+
+/// Mémoire du démon (octets).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MemoryView {
+    /// Résidente maintenant, et au plus haut depuis le lancement.
+    pub resident: u64,
+    pub peak: u64,
+    /// Partie envoyée dans le swap.
+    pub swap: u64,
+    /// Plafond du cache de la base.
+    pub base_cache: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ComputeView {
+    /// Où tourne l'analyseur (absent : pas d'analyseur).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser: Option<ComputeDevice>,
+    /// Modèles de traduction chargés (`en-fr`…), et sur quoi.
+    pub translators: Vec<String>,
+    /// Le GPU a lâché (mémoire pleine…) : tout est repassé sur le CPU jusqu'au redémarrage.
+    pub gpu_lost: bool,
+    pub collecting: bool,
+    /// Traduction en cours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translating: Option<TranslationProgress>,
+}
+
+/// Un mot de la requête `?word=` et ce qui l'élargit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProbeTerm {
+    pub text: String,
+    /// Lectures retenues : `fra nom élection`.
+    pub readings: Vec<String>,
+    pub related: Vec<ProbeLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProbeLink {
+    pub word: String,
+    pub lang: String,
+    pub weight: f32,
+    pub origin: LinkOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkOrigin {
+    /// Dictionnaire seul.
+    Dictionary,
+    /// Dictionnaire, confirmé par les documents.
+    Confirmed,
+    /// Appris dans les documents seuls.
+    Learned,
 }
 
 /// `POST /session` (interface web) : le jeton s'échange contre un cookie `HttpOnly`.

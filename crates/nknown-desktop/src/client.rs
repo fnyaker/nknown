@@ -235,6 +235,25 @@ impl Engine {
         }
     }
 
+    /// Statistiques du moteur ; `word` non vide : liens de ce mot.
+    pub fn stats(&self, word: &str) -> Result<api::Stats> {
+        match self {
+            Self::Embedded(s) => s.stats(Some(word)).map_err(|e| e.to_string()),
+            _ => {
+                let route = if word.trim().is_empty() {
+                    api::routes::STATS.to_owned()
+                } else {
+                    format!(
+                        "{}?word={}",
+                        api::routes::STATS,
+                        percent_encode(word.trim())
+                    )
+                };
+                self.route_json("GET", &route, None)
+            }
+        }
+    }
+
     /// Catalogue de sources proposées (flux par thème et par langue).
     pub fn catalog(&self) -> Result<api::Catalog> {
         match self {
@@ -493,6 +512,19 @@ impl Response {
         self.left -= n;
         Ok(n)
     }
+}
+
+/// Encodage d'un paramètre d'URL (RFC 3986 : seuls les caractères non réservés restent).
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn request(

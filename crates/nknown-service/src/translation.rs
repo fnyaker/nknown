@@ -194,16 +194,34 @@ impl Translators {
         crate::lock(&self.loaded).clear();
     }
 
+    /// Un modèle chargé calcule sur le GPU.
+    pub fn on_gpu(&self) -> bool {
+        crate::lock(&self.loaded).keys().any(|(_, gpu)| *gpu)
+    }
+
+    /// Modèles chargés : `en-fr (GPU)`.
+    pub fn loaded(&self) -> Vec<String> {
+        let mut out: Vec<String> = crate::lock(&self.loaded)
+            .keys()
+            .map(|(pair, gpu)| format!("{pair} ({})", if *gpu { "GPU" } else { "CPU" }))
+            .collect();
+        out.sort();
+        out
+    }
+
     fn engine(&self, models_dir: &Path, pair: &str, gpu: bool) -> Result<Shared, Error> {
         let key = (pair.to_owned(), gpu);
-        if let Some(e) = crate::lock(&self.loaded).get(&key) {
+        // Verrou tenu pendant le chargement : deux fils ne chargent pas le même modèle deux
+        // fois (deux copies en mémoire du GPU).
+        let mut loaded = crate::lock(&self.loaded);
+        if let Some(e) = loaded.get(&key) {
             return Ok(e.clone());
         }
         let engine = Arc::new(Mutex::new(Engine::load(
             &models_dir.join("translate").join(pair),
             gpu,
         )?));
-        crate::lock(&self.loaded).insert(key, engine.clone());
+        loaded.insert(key, engine.clone());
         Ok(engine)
     }
 

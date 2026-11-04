@@ -8,6 +8,11 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 pub type KvPair = (Vec<u8>, Vec<u8>);
 
+/// Cache de pages de redb. Celui par défaut (1 Gio) finit par recopier toute la base en
+/// mémoire, en plus du cache disque du noyau qui garde déjà les pages lues : un petit cache
+/// suffit, et le démon reste léger.
+pub const CACHE_BYTES: usize = 64 * 1024 * 1024;
+
 /// Une écriture, appliquée avec les autres d'un même lot de façon atomique.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
@@ -22,6 +27,20 @@ pub trait Storage {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
     /// Toutes les paires dont la clé commence par `prefix`, dans l'ordre.
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<KvPair>, Self::Error>;
+    /// Parcourt dans l'ordre les paires dont la clé commence par `prefix`, sans les charger
+    /// toutes en mémoire ; `f` renvoie `false` pour arrêter.
+    fn visit_prefix(
+        &self,
+        prefix: &[u8],
+        f: &mut dyn FnMut(&[u8], &[u8]) -> bool,
+    ) -> Result<(), Self::Error> {
+        for (k, v) in self.scan_prefix(prefix)? {
+            if !f(&k, &v) {
+                break;
+            }
+        }
+        Ok(())
+    }
     /// Applique toutes les écritures, ou aucune.
     fn apply(&mut self, ops: Vec<Op>) -> Result<(), Self::Error>;
 }
@@ -82,7 +101,9 @@ impl std::fmt::Debug for RedbStorage {
 impl RedbStorage {
     /// Ouvre la base, en la créant si besoin.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, redb::Error> {
-        let db = Database::create(path)?;
+        let db = Database::builder()
+            .set_cache_size(CACHE_BYTES)
+            .create(path)?;
         let txn = db.begin_write()?;
         txn.open_table(KV)?;
         txn.commit()?;
@@ -142,7 +163,9 @@ impl RedbStorage {
 
     /// Copie toute la base dans `path`, dans l'ordre des clés : pages pleines, sans trou.
     pub fn rewrite_to(&self, path: impl AsRef<Path>) -> Result<(), redb::Error> {
-        let out = Database::create(path)?;
+        let out = Database::builder()
+            .set_cache_size(CACHE_BYTES)
+            .create(path)?;
         let read = self.db.begin_read()?;
         let table = read.open_table(KV)?;
         let txn = out.begin_write()?;
@@ -213,6 +236,22 @@ impl Storage for RedbStorage {
             out.push((k.value().to_vec(), v.value().to_vec()));
         }
         Ok(out)
+    }
+
+    fn visit_prefix(
+        &self,
+        prefix: &[u8],
+        f: &mut dyn FnMut(&[u8], &[u8]) -> bool,
+    ) -> Result<(), redb::Error> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(KV)?;
+        for entry in table.range(prefix..)? {
+            let (k, v) = entry?;
+            if !k.value().starts_with(prefix) || !f(k.value(), v.value()) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn apply(&mut self, ops: Vec<Op>) -> Result<(), redb::Error> {

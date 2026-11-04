@@ -40,7 +40,16 @@ pub fn spawn(service: Arc<Service>) {
                     .expect("fil de surveillance");
             }
             loop {
-                for (spec, r) in svc.collect_all() {
+                // Une erreur interne imprévue ne doit pas arrêter la collecte pour de bon.
+                let done =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| svc.collect_all()))
+                        .unwrap_or_else(|_| {
+                            eprintln!(
+                                "collecte interrompue par une erreur interne ; reprise plus tard"
+                            );
+                            Vec::new()
+                        });
+                for (spec, r) in done {
                     match r {
                         Ok(s) => eprintln!(
                             "{spec} : {} nouveaux, {} mis à jour, {} inchangés, {} erreurs",

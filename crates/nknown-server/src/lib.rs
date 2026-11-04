@@ -43,6 +43,7 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
         .route(SOURCES, get(sources).post(add_source))
         .route(SETTINGS, get(settings).put(update_settings))
         .route(TRANSLATION, get(translation).post(answer_translation))
+        .route(STATS, get(stats))
         .route(CATALOG, get(catalog))
         .route(FEEDS, get(feeds).post(add_feed))
         .route(
@@ -321,6 +322,17 @@ async fn update_settings(
 }
 
 /// Traduction : sources proposées ou décidées, périphérique, travail en cours.
+/// Statistiques ; `?word=` ajoute les liens de ce mot.
+async fn stats(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    match blocking(move || state.service.stats(q.get("word").map(String::as_str))).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => r,
+    }
+}
+
 async fn translation(State(state): State<AppState>) -> Response {
     match blocking(move || state.service.translation()).await {
         Ok(v) => Json(v).into_response(),

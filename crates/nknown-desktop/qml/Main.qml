@@ -78,6 +78,7 @@ ApplicationWindow {
 
     function back() {
         if (importer.open) importer.open = false
+        else if (statsPanel.open) statsPanel.open = false
         else if (settings.open) settings.open = false
         else if (reader.open) reader.open = false
         else if (inspected) inspected = null
@@ -112,6 +113,7 @@ ApplicationWindow {
         }
         onFailed: (message) => { win.error = message; win.phase = "done" }
         onCatalog: (json) => { try { importer.catalog = JSON.parse(json) } catch (e) {} }
+        onStats: (json) => { try { statsPanel.receive(json) } catch (e) {} }
         onEstimate: (json) => { try { importer.estimate = JSON.parse(json) } catch (e) {} }
         onFeeds: (json) => { try { win.feeds = JSON.parse(json) } catch (e) {} }
         onDocument: (json) => { reader.doc = JSON.parse(json); reader.loading = false }
@@ -460,6 +462,46 @@ ApplicationWindow {
             ToolTip.text: "Importer des sources"
         }
 
+        // Statistiques : à côté de l'import. Trois barres.
+        Rectangle {
+            id: statsButton
+            width: 36; height: 36; radius: 18
+            x: importButton.x - width - 6
+            y: gear.y
+            color: statsArea.containsMouse ? Theme.bgHover : "transparent"
+            Row {
+                anchors.centerIn: parent
+                spacing: 3
+                Repeater {
+                    model: [8, 14, 11]
+                    delegate: Rectangle {
+                        width: 3; height: modelData; radius: 1.5
+                        anchors.bottom: parent.bottom
+                        color: statsArea.containsMouse ? Theme.accent : Theme.textSecondary
+                    }
+                }
+            }
+            MouseArea {
+                id: statsArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: statsPanel.open = !statsPanel.open
+            }
+            ToolTip.visible: statsArea.containsMouse
+            ToolTip.delay: 600
+            ToolTip.text: "Statistiques"
+            Accessible.role: Accessible.Button
+            Accessible.name: "Statistiques"
+        }
+
+        Stats {
+            id: statsPanel
+            anchors.fill: parent
+            z: 12
+            onLoad: (word) => backend.loadStats(word)
+        }
+
         Import {
             id: importer
             anchors.fill: parent
@@ -584,7 +626,9 @@ ApplicationWindow {
             case 8: win.snap("6-import-suivi"); importer.tab = "flux"; break
             case 9: win.snap("7-import-flux"); importer.tab = "wiki"; break
             case 10: win.snap("8-import-wiki"); importer.tab = "web"; break
-            case 11: win.snap("9-import-web"); break
+            case 11: win.snap("9-import-web"); importer.open = false; statsPanel.probeWord = q || ""; statsPanel.open = true; break
+            case 12: break
+            case 13: win.snap("10-stats"); break
             default: Qt.quit()
             }
         }

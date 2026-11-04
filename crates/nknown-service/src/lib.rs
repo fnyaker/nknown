@@ -17,7 +17,7 @@ pub mod watch;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -138,6 +138,24 @@ pub struct Service {
     translating: Mutex<Option<api::TranslationProgress>>,
     /// Langues des documents par source (nombre de documents de la base, quand, décompte).
     source_langs: Mutex<Option<(u64, Instant, Arc<SourceLangs>)>>,
+    /// Un seul téléchargement de modèles à la fois : deux fils qui écrivent le même fichier
+    /// se corrompent l'un l'autre.
+    models_lock: Mutex<()>,
+    /// Une seule traduction de sources déjà indexées à la fois (mémoire du GPU).
+    translate_lock: Mutex<()>,
+    /// Le GPU a lâché : analyse et traduction repassent sur le CPU jusqu'au redémarrage.
+    gpu_lost: AtomicBool,
+    learning: Mutex<LearnRun>,
+}
+
+/// Suivi de l'apprentissage des liens entre mots, pour les statistiques.
+#[derive(Debug, Default)]
+struct LearnRun {
+    since: Option<Instant>,
+    took: Option<Duration>,
+    error: Option<String>,
+    /// Exemples de liens, et la date du calcul dont ils viennent.
+    examples: Option<(u64, Vec<api::LinkExample>)>,
 }
 
 /// Langues des documents (hors copies traduites), par identifiant de source.
@@ -188,7 +206,7 @@ impl Service {
     pub fn open(opts: Options) -> Result<Self, Error> {
         std::fs::create_dir_all(&opts.data_dir)?;
         tune_compute(opts.config.compute_threads);
-        let (pipeline, parser) = load_models(&opts.config, &opts.data_dir)?;
+        let (pipeline, parser) = load_models(&opts.config, &opts.data_dir, false)?;
         // Migration automatique à la mise à jour : base réécrite si elle a beaucoup de place
         // perdue, puis mise au format courant.
         let (storage, tidied) = RedbStorage::open_tidy(opts.data_dir.join("base.redb"), false)
@@ -214,6 +232,10 @@ impl Service {
             translating: Mutex::new(None),
             source_langs: Mutex::new(None),
             pipeline: RwLock::new(Arc::new(pipeline)),
+            models_lock: Mutex::new(()),
+            translate_lock: Mutex::new(()),
+            gpu_lost: AtomicBool::new(false),
+            learning: Mutex::new(LearnRun::default()),
         })
     }
 
@@ -227,6 +249,7 @@ impl Service {
     /// Télécharge les modèles manquants (premier lancement), puis les recharge. Sans effet
     /// s'ils sont déjà là. La progression se lit dans [`Self::status`].
     pub fn ensure_models(&self) -> Result<(), Error> {
+        let _one_at_a_time = lock(&self.models_lock);
         let config = self.config();
         let dir = config.models_dir(&self.data_dir);
         let manifest = fetch::manifest();
@@ -268,13 +291,66 @@ impl Service {
 
     /// Recharge lexiques, tagueurs et analyseur selon la configuration.
     pub fn reload_models(&self) -> Result<(), Error> {
-        let (pipeline, parser) = load_models(&self.config(), &self.data_dir)?;
-        *self
-            .pipeline
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(pipeline);
+        let cpu_only = self.gpu_lost.load(Ordering::Relaxed);
+        let (pipeline, parser) = load_models(&self.config(), &self.data_dir, cpu_only)?;
+        let old = std::mem::replace(
+            &mut *self
+                .pipeline
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Arc::new(pipeline),
+        );
         self.parser.store(parser, Ordering::Relaxed);
+        // Un analyseur sur un GPU perdu peut paniquer en se libérant.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(old)));
         Ok(())
+    }
+
+    /// Exécute `f` ; une panique (GPU perdu : mémoire pleine, pilote…) devient une erreur, et
+    /// l'analyse et la traduction repassent sur le CPU.
+    fn guarded<T>(&self, what: &str, f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(r) => r,
+            Err(p) => {
+                let msg = p
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+                    .unwrap_or("panique")
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                eprintln!("{what} : erreur interne ({msg})");
+                self.fall_back_to_cpu();
+                Err(Error::Invalid(format!("{what} : {msg}")))
+            }
+        }
+    }
+
+    /// Repasse l'analyseur et la traduction sur le CPU, si l'un d'eux était sur le GPU.
+    fn fall_back_to_cpu(&self) {
+        let parser_gpu = self.parser.load(Ordering::Relaxed) == PARSER_GPU;
+        if !parser_gpu && !self.translators.on_gpu() {
+            return;
+        }
+        if self.gpu_lost.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        eprintln!("GPU indisponible : analyse et traduction repassent sur le CPU");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.translators.clear()));
+        if parser_gpu && let Err(e) = self.reload_models() {
+            eprintln!("analyseur sur CPU : {e}");
+        }
+    }
+
+    /// Périphérique de la traduction : le CPU si le GPU a lâché.
+    fn translate_device(&self, config: &Config) -> api::DeviceChoice {
+        if self.gpu_lost.load(Ordering::Relaxed) {
+            api::DeviceChoice::Cpu
+        } else {
+            config.translate_device
+        }
     }
 
     /// Catalogue de sources proposées à l'import (réseau au plus une fois par jour).
@@ -591,15 +667,16 @@ impl Service {
         copy.external_id = Some(copy_id);
         copy.lang_hint = Some(translation::TARGET);
         // Inchangée depuis la dernière traduction : l'original n'a pas bougé non plus.
-        let text = self
-            .translators
-            .translate(&dir, config.translate_device, lang, &item.text)?;
+        let text = self.guarded("traduction", || {
+            self.translators
+                .translate(&dir, self.translate_device(&config), lang, &item.text)
+        })?;
         copy.text = text;
         copy.title = match &item.title {
-            Some(t) => Some(
+            Some(t) => Some(self.guarded("traduction", || {
                 self.translators
-                    .translate(&dir, config.translate_device, lang, t)?,
-            ),
+                    .translate(&dir, self.translate_device(&config), lang, t)
+            })?),
             None => None,
         };
         copy.meta.retain(|(k, _)| k != "format");
@@ -726,6 +803,8 @@ impl Service {
                         eprintln!("traduction : modèles : {e}");
                         return;
                     }
+                    // Les sources acceptées d'un coup se traduisent l'une après l'autre.
+                    let _one_at_a_time = lock(&svc.translate_lock);
                     if let Err(e) = svc.translate_existing(&spec) {
                         eprintln!("traduction de {spec} : {e}");
                     }
@@ -1084,21 +1163,187 @@ impl Service {
             return;
         }
         let start = Instant::now();
-        let learned = self
-            .engine()
-            .compute_learned(nknown_engine::LearnOptions::default());
-        let stored = learned.and_then(|l| self.engine_mut().store_learned(l));
+        lock(&self.learning).since = Some(start);
+        let stored = self.guarded("liens appris", || {
+            let learned = self
+                .engine()
+                .compute_learned(nknown_engine::LearnOptions::default())?;
+            Ok(self.engine_mut().store_learned(learned)?)
+        });
+        let mut run = lock(&self.learning);
+        run.since = None;
+        run.took = Some(start.elapsed());
         match stored {
-            Ok(s) => eprintln!(
-                "liens appris : {} syntaxiques, {} thématiques ({} mots, {} documents) [{:.1?}]",
-                s.syntactic,
-                s.links,
-                s.vocab,
-                s.docs,
-                start.elapsed()
-            ),
-            Err(e) => eprintln!("liens appris : {e}"),
+            Ok(s) => {
+                run.error = None;
+                eprintln!(
+                    "liens appris : {} syntaxiques, {} thématiques ({} mots, {} documents) [{:.1?}]",
+                    s.syntactic,
+                    s.links,
+                    s.vocab,
+                    s.docs,
+                    start.elapsed()
+                );
+            }
+            Err(e) => {
+                eprintln!("liens appris : {e}");
+                run.error = Some(e.to_string());
+            }
         }
+    }
+
+    /// Statistiques : base, liens entre mots, mémoire, calcul ; `word` : liens de ce mot.
+    pub fn stats(&self, word: Option<&str>) -> Result<api::Stats, Error> {
+        let pipeline = self.pipeline();
+        let base = self.engine().stats()?;
+        let summary = self.engine().learned_summary()?;
+        let dictionaries = pipeline
+            .lexicon_langs()
+            .into_iter()
+            .filter_map(|l| {
+                Some(api::DictionaryStats {
+                    lang: l.to_string(),
+                    lemmas: pipeline.relations(l)?.lemma_count() as u64,
+                })
+            })
+            .collect();
+        let examples = {
+            let cached = lock(&self.learning)
+                .examples
+                .as_ref()
+                .filter(|(at, _)| *at == summary.at)
+                .map(|(_, e)| e.clone());
+            match cached {
+                Some(e) => e,
+                None if summary.words > 0 => {
+                    let e: Vec<api::LinkExample> = self
+                        .engine()
+                        .learned_sample(12)?
+                        .into_iter()
+                        .map(|(lemma, lang, links)| api::LinkExample {
+                            lemma,
+                            lang,
+                            links: links.into_iter().take(6).map(|l| l.lemma).collect(),
+                        })
+                        .collect();
+                    lock(&self.learning).examples = Some((summary.at, e.clone()));
+                    e
+                }
+                None => Vec::new(),
+            }
+        };
+        let run = lock(&self.learning);
+        let state = if let Some(since) = run.since {
+            api::LearnState::Running {
+                secs: since.elapsed().as_secs(),
+            }
+        } else if let Some(message) = &run.error {
+            api::LearnState::Failed {
+                message: message.clone(),
+            }
+        } else if summary.at_passages > 0 {
+            api::LearnState::Ready
+        } else {
+            api::LearnState::Waiting
+        };
+        let next_passages = if summary.at_passages == 0 {
+            LEARN_MIN_PASSAGES
+        } else {
+            ((summary.at_passages as f64) * (1.0 + LEARN_GROWTH)).ceil() as u64
+        };
+        let learned = api::LearnedView {
+            state,
+            words: summary.words,
+            syntactic: summary.syntactic,
+            topical: summary.topical,
+            at: (summary.at > 0).then_some(summary.at),
+            took_secs: run.took.map(|d| d.as_secs_f64()),
+            at_passages: summary.at_passages,
+            next_passages,
+            examples,
+        };
+        drop(run);
+        let probe = match word.map(str::trim).filter(|w| !w.is_empty()) {
+            Some(w) => self.probe(&pipeline, w),
+            None => Vec::new(),
+        };
+        Ok(api::Stats {
+            docs: base.docs,
+            passages: base.passages,
+            words: base.indexed_words,
+            base_bytes: std::fs::metadata(self.data_dir.join("base.redb")).map_or(0, |m| m.len()),
+            dictionaries,
+            learned,
+            memory: memory_view(),
+            compute: api::ComputeView {
+                parser: match self.parser.load(Ordering::Relaxed) {
+                    PARSER_GPU => Some(api::ComputeDevice::Gpu),
+                    PARSER_CPU => Some(api::ComputeDevice::Cpu),
+                    _ => None,
+                },
+                translators: self.translators.loaded(),
+                gpu_lost: self.gpu_lost.load(Ordering::Relaxed),
+                collecting: self.collecting.load(Ordering::Relaxed) > 0,
+                translating: lock(&self.translating).clone(),
+            },
+            probe,
+        })
+    }
+
+    /// Ce qui élargit chaque mot de `text` à la recherche : dictionnaire, documents.
+    fn probe(&self, pipeline: &Pipeline, text: &str) -> Vec<api::ProbeTerm> {
+        let engine = self.engine();
+        let mut q = query::build_query_in(pipeline, Some(&self.detector), text, &engine);
+        let notes = query::add_learned(pipeline, &engine, &mut q);
+        let langs = pipeline.lexicon_langs();
+        q.terms
+            .iter()
+            .enumerate()
+            .map(|(t, term)| api::ProbeTerm {
+                text: term.text.clone(),
+                // Lectures des langues d'où viennent les liens (les autres sont des replis
+                // devinés), sans doublons ni catégorie inconnue.
+                readings: {
+                    let linked: Vec<Lang> = term.related.iter().map(|(l, ..)| *l).collect();
+                    let mut seen = Vec::new();
+                    for (lang, kind, lemma) in &term.readings {
+                        let nknown_engine::schema::TermKind::Word(pos) = kind else {
+                            continue;
+                        };
+                        let wanted = if linked.is_empty() {
+                            langs.contains(lang)
+                        } else {
+                            linked.contains(lang)
+                        };
+                        if *pos == nknown_core::analyze::Pos::X || !wanted {
+                            continue;
+                        }
+                        let r = format!("{lang} {} {lemma}", format!("{pos:?}").to_lowercase());
+                        if !seen.contains(&r) {
+                            seen.push(r);
+                        }
+                    }
+                    seen
+                },
+                related: term
+                    .related
+                    .iter()
+                    .map(|(lang, word, weight)| {
+                        let note = notes.iter().find(|n| n.term == t && n.word == *word);
+                        api::ProbeLink {
+                            word: word.clone(),
+                            lang: lang.to_string(),
+                            weight: *weight,
+                            origin: match note {
+                                Some(n) if n.confirmed => api::LinkOrigin::Confirmed,
+                                Some(_) => api::LinkOrigin::Learned,
+                                None => api::LinkOrigin::Dictionary,
+                            },
+                        }
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     /// Collecte incrémentale d'une source : seuls les contenus nouveaux ou modifiés sont
@@ -1109,7 +1354,12 @@ impl Service {
             lock(&self.states).insert(spec.to_owned(), s);
         };
         set_state(api::SourceState::Collecting { done: 0 });
-        let result = self.collect_inner(spec, &set_state);
+        let gpu_was_lost = self.gpu_lost.load(Ordering::Relaxed);
+        let mut result = self.guarded(spec, || self.collect_inner(spec, &set_state));
+        // Le GPU vient de lâcher : on reprend sur le CPU (les documents déjà lus sont connus).
+        if result.is_err() && !gpu_was_lost && self.gpu_lost.load(Ordering::Relaxed) {
+            result = self.guarded(spec, || self.collect_inner(spec, &set_state));
+        }
         set_state(match &result {
             Ok(_) => api::SourceState::Idle,
             Err(e) => api::SourceState::Failed {
@@ -1263,7 +1513,7 @@ fn convert_hits(
 /// Lexiques et tagueurs du dossier des modèles, et l'analyseur configuré s'il est là (sinon,
 /// en attendant son téléchargement, on s'en passe). L'analyseur va sur le GPU (Vulkan) si le
 /// réglage le permet et qu'un GPU répond, sinon sur le CPU.
-fn load_models(config: &Config, data_dir: &Path) -> Result<(Pipeline, u8), Error> {
+fn load_models(config: &Config, data_dir: &Path, cpu_only: bool) -> Result<(Pipeline, u8), Error> {
     let dir = config.models_dir(data_dir);
     let pipeline = if dir.is_dir() {
         models::load_pipeline(&dir, &[])?
@@ -1288,12 +1538,13 @@ fn load_models(config: &Config, data_dir: &Path) -> Result<(Pipeline, u8), Error
     }
     let resolved = models::resolve(spec, &dir);
     let explicit_gpu = resolved.starts_with("vulkan:");
-    let want_gpu = explicit_gpu
-        || match config.parser_device {
-            api::DeviceChoice::Cpu => false,
-            api::DeviceChoice::Gpu => true,
-            api::DeviceChoice::Auto => models::gpu_available(),
-        };
+    let want_gpu = !cpu_only
+        && (explicit_gpu
+            || match config.parser_device {
+                api::DeviceChoice::Cpu => false,
+                api::DeviceChoice::Gpu => true,
+                api::DeviceChoice::Auto => models::gpu_available(),
+            });
     if want_gpu {
         let gpu_spec = if explicit_gpu {
             resolved.clone()
@@ -1329,6 +1580,30 @@ fn dominant_nature(scores: &[f32; Nature::COUNT]) -> api::Nature {
     }
 }
 
+/// Mémoire du processus, d'après `/proc/self/status` (Linux).
+fn memory_view() -> api::MemoryView {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let kib = |field: &str| -> u64 {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .and_then(|rest| {
+                rest.trim()
+                    .trim_end_matches("kB")
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .map_or(0, |k| k * 1024)
+    };
+    api::MemoryView {
+        resident: kib("VmRSS:"),
+        peak: kib("VmHWM:"),
+        swap: kib("VmSwap:"),
+        base_cache: nknown_engine::storage::CACHE_BYTES as u64,
+    }
+}
+
 /// Un verrou empoisonné (panique d'un autre fil) reste utilisable : l'état protégé est
 /// toujours cohérent entre deux instructions.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -1351,6 +1626,24 @@ mod tests {
         })
         .unwrap();
         (dir, svc)
+    }
+
+    #[test]
+    fn a_panic_becomes_an_error_and_stats_still_answer() {
+        let (_dir, svc) = service();
+        let r: Result<(), Error> = svc.guarded("essai", || panic!("device lost"));
+        assert!(matches!(r, Err(Error::Invalid(m)) if m.contains("device lost")));
+        // Rien ne tournait sur le GPU : pas de bascule.
+        assert!(!svc.gpu_lost.load(Ordering::Relaxed));
+        let stats = svc.stats(Some("élection")).unwrap();
+        assert_eq!(stats.docs, 0);
+        assert!(matches!(stats.learned.state, api::LearnState::Waiting));
+        assert_eq!(stats.learned.next_passages, LEARN_MIN_PASSAGES);
+        assert_eq!(stats.probe.len(), 1);
+        assert_eq!(
+            stats.memory.base_cache,
+            nknown_engine::storage::CACHE_BYTES as u64
+        );
     }
 
     #[test]

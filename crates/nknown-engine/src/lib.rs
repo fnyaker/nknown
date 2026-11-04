@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 
 pub use graph::{Edge, EdgeKind, NodeId, NodeKind};
 pub use ingest::{Document, Ingested, ItemStatus};
-pub use learn::{LearnOptions, LearnStats, Learned, LearnedLink, LinkKind};
+pub use learn::{LearnOptions, LearnStats, Learned, LearnedLink, LearnedSummary, LinkKind};
 pub use rank::RankStats;
 pub use search::{
     Hit, Intent, Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, Related, ScoreParts,
@@ -191,6 +191,26 @@ impl<S: Storage> Engine<S> {
         self.storage
             .scan_prefix(prefix)
             .map_err(|e| Error::Storage(Box::new(e)))
+    }
+
+    /// Parcourt les paires de préfixe `prefix` sans les charger toutes ; `f` renvoie
+    /// `Ok(false)` pour arrêter. Une erreur de `f` arrête le parcours et est renvoyée.
+    pub(crate) fn visit(
+        &self,
+        prefix: &[u8],
+        mut f: impl FnMut(&[u8], &[u8]) -> Result<bool>,
+    ) -> Result<()> {
+        let mut failed = None;
+        self.storage
+            .visit_prefix(prefix, &mut |k, v| match f(k, v) {
+                Ok(go) => go,
+                Err(e) => {
+                    failed = Some(e);
+                    false
+                }
+            })
+            .map_err(|e| Error::Storage(Box::new(e)))?;
+        failed.map_or(Ok(()), Err)
     }
 
     pub(crate) fn apply(&mut self, ops: Vec<Op>) -> Result<()> {
@@ -539,6 +559,11 @@ mod tests {
         );
         // Base inchangée depuis : rien à réapprendre.
         assert!(!e.learning_due(1, 0.2).unwrap());
+        // Résumé pour les statistiques : les mêmes comptes que le calcul.
+        let summary = e.learned_summary().unwrap();
+        assert_eq!(summary.syntactic as usize, stats.syntactic, "{summary:?}");
+        assert_eq!(summary.topical as usize, stats.links, "{summary:?}");
+        assert!(summary.words > 0 && summary.at > 0 && summary.at_passages > 0);
     }
 
     #[test]

@@ -45,6 +45,21 @@ use crate::{Engine, Result, decode};
 pub const LEARNED: u8 = b'R';
 /// Compteur : passages de la base au dernier apprentissage.
 pub const LEARNED_PASSAGES: &str = "learned_passages";
+/// Date (secondes Unix) du dernier apprentissage.
+pub const LEARNED_AT: &str = "learned_at";
+
+/// Ce que la base contient de liens appris.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LearnedSummary {
+    /// Mots qui ont au moins un lien appris.
+    pub words: u64,
+    pub syntactic: u64,
+    pub topical: u64,
+    /// Passages de la base au dernier apprentissage (0 : jamais).
+    pub at_passages: u64,
+    /// Date du dernier apprentissage (secondes Unix ; 0 : inconnue).
+    pub at: u64,
+}
 
 /// Réglages de l'apprentissage.
 #[derive(Debug, Clone, Copy)]
@@ -274,11 +289,11 @@ impl<S: Storage> Engine<S> {
         let total_passages = schema::u64_value(self.get(&schema::meta_key(schema::PASSAGES))?);
         // Documents, triés : le document d'un passage est le plus grand id de document
         // inférieur au sien (les passages suivent leur document).
-        let docs: Vec<u64> = self
-            .scan(&[schema::DOC])?
-            .iter()
-            .filter_map(|(k, _)| id_at(k, 1))
-            .collect();
+        let mut docs: Vec<u64> = Vec::new();
+        self.visit(&[schema::DOC], |k, _| {
+            docs.extend(id_at(k, 1));
+            Ok(true)
+        })?;
         let doc_of = |p: u64| -> Option<usize> { docs.partition_point(|&d| d < p).checked_sub(1) };
         let mut repeated_cache: HashMap<u64, bool> = HashMap::new();
         let mut repeated = |p: u64| -> Result<bool> {
@@ -298,10 +313,10 @@ impl<S: Storage> Engine<S> {
         // ---- Contextes syntaxiques : paires (nom, adjectif), une fois par document.
         let mut info: HashMap<u64, Option<(Lang, Pos)>> = HashMap::new();
         let mut triples: Vec<(u64, u64, usize)> = Vec::new();
-        for (k, _) in self.scan(&[schema::QUALIFIED])? {
-            let (Some(noun), Some(adj), Some(pid)) = (id_at(&k, 1), id_at(&k, 9), id_at(&k, 17))
+        self.visit(&[schema::QUALIFIED], |k, _| {
+            let (Some(noun), Some(adj), Some(pid)) = (id_at(k, 1), id_at(k, 9), id_at(k, 17))
             else {
-                continue;
+                return Ok(true);
             };
             stats.qualified += 1;
             for id in [noun, adj] {
@@ -315,13 +330,14 @@ impl<S: Storage> Engine<S> {
             }
             let ok = matches!(info[&noun], Some((_, Pos::Noun)))
                 && matches!(info[&adj], Some((_, Pos::Adj)));
-            if !ok || repeated(pid)? {
-                continue;
-            }
-            if let Some(d) = doc_of(pid) {
+            if ok
+                && !repeated(pid)?
+                && let Some(d) = doc_of(pid)
+            {
                 triples.push((noun, adj, d));
             }
-        }
+            Ok(true)
+        })?;
         triples.sort_unstable();
         triples.dedup();
         let mut index: HashMap<u64, usize> = HashMap::new();
@@ -399,38 +415,43 @@ impl<S: Storage> Engine<S> {
         // Échantillon régulier de passages : un sur `stride` (par id).
         let stride = (total_passages as usize / opts.max_passages.max(1)).max(1) as u64;
         let sampled = |p: u64| p.wrapping_mul(0x9E37_79B9_7F4A_7C15) % stride == 0;
-        let df_all: HashMap<u64, u64> = self
-            .scan(&[schema::STATS])?
-            .into_iter()
-            .filter_map(|(k, v)| Some((id_at(&k, 1)?, schema::u64_value(Some(v)))))
-            .collect();
+        let mut df_all: HashMap<u64, u64> = HashMap::new();
+        self.visit(&[schema::STATS], |k, v| {
+            if let Some(id) = id_at(k, 1) {
+                df_all.insert(id, schema::u64_value(Some(v.to_vec())));
+            }
+            Ok(true)
+        })?;
         let sample_size = (total_passages / stride).max(1) as f64;
         let mut vocab: Vec<(u64, Lang, Pos, u64)> = Vec::new();
-        for (k, v) in self.scan(&[schema::NODE])? {
-            let (Some(id), Ok(rec)) = (id_at(&k, 1), decode::<LemmaRecord>(&v)) else {
-                continue;
+        self.visit(&[schema::NODE], |k, v| {
+            let (Some(id), Ok(rec)) = (id_at(k, 1), decode::<LemmaRecord>(v)) else {
+                return Ok(true);
             };
             let Some((lang, pos)) = lemma_info(&rec) else {
-                continue;
+                return Ok(true);
             };
             let df = df_all.get(&id).copied().unwrap_or(0);
             let expected = df as f64 / stride as f64;
             if expected >= opts.min_df as f64 && expected <= opts.max_share * sample_size {
                 vocab.push((id, lang, pos, df));
             }
-        }
+            Ok(true)
+        })?;
+        drop(df_all);
         vocab.sort_by_key(|v| std::cmp::Reverse(v.3));
         vocab.truncate(opts.max_vocab);
         let v = vocab.len();
         let mut passage_terms: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, &(id, ..)) in vocab.iter().enumerate() {
-            for (key, _) in self.scan(&Edge::prefix(NodeId(id), EdgeKind::Occurs))? {
-                if let Some(p) = Edge::target(&key).map(|p| p.0)
+            self.visit(&Edge::prefix(NodeId(id), EdgeKind::Occurs), |key, _| {
+                if let Some(p) = Edge::target(key).map(|p| p.0)
                     && sampled(p)
                 {
                     passage_terms.entry(p).or_default().push(i as u32);
                 }
-            }
+                Ok(true)
+            })?;
         }
         let mut by_doc: HashMap<usize, Vec<u64>> = HashMap::new();
         let candidates: Vec<u64> = passage_terms.keys().copied().collect();
@@ -529,11 +550,11 @@ impl<S: Storage> Engine<S> {
 
     /// Remplace les liens appris par `learned`.
     pub fn store_learned(&mut self, learned: Learned) -> Result<LearnStats> {
-        let mut ops: Vec<Op> = self
-            .scan(&[LEARNED])?
-            .into_iter()
-            .map(|(k, _)| Op::Delete(k))
-            .collect();
+        let mut ops: Vec<Op> = Vec::new();
+        self.visit(&[LEARNED], |k, _| {
+            ops.push(Op::Delete(k.to_vec()));
+            Ok(true)
+        })?;
         for (id, list) in &learned.links {
             let mut v = Vec::with_capacity(list.len() * RECORD);
             for &(o, cos, shared, kind) in list {
@@ -551,6 +572,13 @@ impl<S: Storage> Engine<S> {
             schema::meta_key(LEARNED_PASSAGES),
             learned.passages.to_be_bytes().to_vec(),
         ));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        ops.push(Op::Put(
+            schema::meta_key(LEARNED_AT),
+            now.to_be_bytes().to_vec(),
+        ));
         self.apply(ops)?;
         Ok(learned.stats)
     }
@@ -559,6 +587,30 @@ impl<S: Storage> Engine<S> {
     pub fn learn(&mut self, opts: LearnOptions) -> Result<LearnStats> {
         let learned = self.compute_learned(opts)?;
         self.store_learned(learned)
+    }
+
+    /// Compte les liens appris enregistrés.
+    pub fn learned_summary(&self) -> Result<LearnedSummary> {
+        let mut out = LearnedSummary {
+            at_passages: schema::u64_value(self.get(&schema::meta_key(LEARNED_PASSAGES))?),
+            at: schema::u64_value(self.get(&schema::meta_key(LEARNED_AT))?),
+            ..LearnedSummary::default()
+        };
+        self.visit(&[LEARNED], |k, v| {
+            if id_at(k, 1).is_none() {
+                return Ok(true);
+            }
+            out.words += 1;
+            for chunk in v.chunks_exact(RECORD) {
+                match LinkKind::from_u8(chunk[14]) {
+                    Some(LinkKind::Syntactic) => out.syntactic += 1,
+                    Some(LinkKind::Topical) => out.topical += 1,
+                    None => {}
+                }
+            }
+            Ok(true)
+        })?;
+        Ok(out)
     }
 
     /// Faut-il réapprendre ? Oui si la base a grossi d'au moins `growth` (0,2 : 20 %) depuis
@@ -572,9 +624,13 @@ impl<S: Storage> Engine<S> {
     /// Échantillon de liens appris : (lemme, langue, liens), les lemmes aux liens les plus
     /// soutenus d'abord.
     pub fn learned_sample(&self, limit: usize) -> Result<Vec<(String, String, Vec<LearnedLink>)>> {
+        let mut ids = Vec::new();
+        self.visit(&[LEARNED], |k, _| {
+            ids.extend(id_at(k, 1));
+            Ok(true)
+        })?;
         let mut out = Vec::new();
-        for (k, _) in self.scan(&[LEARNED])? {
-            let Some(id) = id_at(&k, 1) else { continue };
+        for id in ids {
             let Some(rec) = self.get(&schema::id_key(schema::NODE, NodeId(id)))? else {
                 continue;
             };
