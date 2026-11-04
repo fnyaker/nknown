@@ -40,6 +40,107 @@ fn lexicon_lang(pipeline: &Pipeline, text: &str) -> Option<Lang> {
     }
 }
 
+/// Mots liés proposés par mot de la requête, au plus (le moteur garde les meilleurs de ceux
+/// que la base contient), et force minimale d'un lien.
+const MAX_RELATED: usize = 24;
+const MIN_RELATED: f32 = 0.3;
+
+/// Mots de sens proche des lectures de contenu d'un mot (liens `<langue>.rel`), du plus
+/// proche au plus lointain, sans les lemmes déjà lus.
+fn related_words(
+    pipeline: &Pipeline,
+    readings: &[(Lang, TermKind, String)],
+) -> Vec<(Lang, String, f32)> {
+    let own: std::collections::HashSet<(Lang, String)> = readings
+        .iter()
+        .map(|(l, _, lemma)| (*l, lemma.to_lowercase()))
+        .collect();
+    let mut best: std::collections::HashMap<(Lang, String), f32> = Default::default();
+    for (lang, kind, lemma) in readings {
+        let TermKind::Word(pos) = kind else { continue };
+        if !nknown_engine::ingest::is_content(*pos) {
+            continue;
+        }
+        let Some(rel) = pipeline.relations(*lang) else {
+            continue;
+        };
+        for (word, w) in rel.related(lemma) {
+            if w < MIN_RELATED {
+                break;
+            }
+            let key = (*lang, word.to_owned());
+            if own.contains(&key) {
+                continue;
+            }
+            let slot = best.entry(key).or_insert(0.0);
+            *slot = slot.max(w);
+        }
+    }
+    let mut out: Vec<(Lang, String, f32)> = best.into_iter().map(|((l, w), p)| (l, w, p)).collect();
+    out.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    out.truncate(MAX_RELATED);
+    out
+}
+
+/// Poids gardé par un mot lié que rien dans le reste de la requête ne soutient.
+const UNSUPPORTED: f32 = 0.6;
+
+/// Sens d'un mot selon les autres mots de la requête : dans « ordinateur portable »,
+/// « laptop » (lié aussi à « ordinateur ») garde son poids, « gsm » (le téléphone) en perd.
+/// Un mot lié est soutenu s'il est lié à un mot de la requête ou à l'un de leurs mots liés.
+fn weigh_by_context(pipeline: &Pipeline, terms: &mut [QueryTerm]) {
+    let content = |t: &QueryTerm| -> Vec<(Lang, String)> {
+        t.readings
+            .iter()
+            .filter(
+                |(_, k, _)| matches!(k, TermKind::Word(p) if nknown_engine::ingest::is_content(*p)),
+            )
+            .map(|(l, _, w)| (*l, w.to_lowercase()))
+            .collect()
+    };
+    if terms.iter().filter(|t| !t.related.is_empty()).count() == 0 || terms.len() < 2 {
+        return;
+    }
+    // Pour chaque mot : ses lemmes et ses mots liés, avec leur force.
+    let around: Vec<std::collections::HashMap<(Lang, String), f32>> = terms
+        .iter()
+        .map(|t| {
+            let mut m: std::collections::HashMap<(Lang, String), f32> =
+                content(t).into_iter().map(|k| (k, 1.0)).collect();
+            for (l, w, p) in &t.related {
+                let slot = m.entry((*l, w.clone())).or_insert(0.0);
+                *slot = slot.max(*p);
+            }
+            m
+        })
+        .collect();
+    for (i, term) in terms.iter_mut().enumerate() {
+        for (lang, word, weight) in &mut term.related {
+            let mut support = 0.0f32;
+            for (j, other) in around.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                // Le mot lié est lui-même lié à ce mot de la requête…
+                if let Some(&p) = other.get(&(*lang, word.clone())) {
+                    support = support.max(p);
+                }
+                // … ou l'un de ses propres liens y mène.
+                if let Some(rel) = pipeline.relations(*lang) {
+                    for (w, p) in rel.related(word) {
+                        if let Some(&q) = other.get(&(*lang, w.to_owned())) {
+                            support = support.max(p * q);
+                        }
+                    }
+                }
+            }
+            *weight *= UNSUPPORTED + (1.0 - UNSUPPORTED) * support.min(1.0);
+        }
+        term.related
+            .sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    }
+}
+
 /// Part d'usage au-delà de laquelle une forme est un mot outil.
 const FUNCTION_SHARE: f32 = 0.8;
 
@@ -97,6 +198,7 @@ pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, te
             terms.push(QueryTerm {
                 text: chunk.to_owned(),
                 readings: vec![(Lang::NONE, TermKind::Code, ident.to_lowercase())],
+                ..Default::default()
             });
             function.push(false);
             continue;
@@ -146,9 +248,11 @@ pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, te
             }
             readings.push((Lang::NONE, TermKind::Code, form.to_lowercase()));
             readings.dedup();
+            let related = related_words(pipeline, &readings);
             terms.push(QueryTerm {
                 text: form.to_owned(),
                 readings,
+                related,
             });
             function.push(match (tagged.get(&at), usage) {
                 (Some(pos), _) => !nknown_engine::ingest::is_content(*pos) && *pos != Pos::X,
@@ -165,6 +269,7 @@ pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, te
         let mut keep = function.iter().map(|f| !f);
         terms.retain(|_| keep.next().unwrap_or(true));
     }
+    weigh_by_context(pipeline, &mut terms);
     kinds.sort_unstable();
     kinds.dedup();
     Query {
@@ -275,6 +380,30 @@ mod tests {
             modifiers_label(&q).as_deref(),
             Some("récent · wiki · fichiers")
         );
+    }
+
+    #[test]
+    fn related_words_come_from_the_relations_file() {
+        use nknown_core::analyze::Feats;
+        use nknown_nlp::lexicon::LexiconBuilder;
+        use nknown_nlp::relations::{BuildOptions, Evidence};
+        let mut b = LexiconBuilder::new();
+        b.insert("élections", "élection", Pos::Noun, Feats::default());
+        let mut r = nknown_nlp::RelationsBuilder::new();
+        r.link("élection", "scrutin", Evidence::Synonym, 1.0);
+        r.link("élection", "choix", Evidence::Related, 0.1);
+        let rel = r.build(BuildOptions::default(), |_| 1.0).unwrap();
+        let pipeline = Pipeline::default()
+            .with_lexicon(Lang::FRA, b.build().unwrap())
+            .with_relations(Lang::FRA, rel);
+        let q = build_query(&pipeline, "élections");
+        let related: Vec<&str> = q.terms[0]
+            .related
+            .iter()
+            .map(|(_, w, _)| w.as_str())
+            .collect();
+        // Lien trop faible : écarté.
+        assert_eq!(related, ["scrutin"]);
     }
 
     #[test]

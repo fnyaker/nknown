@@ -13,6 +13,7 @@ pub mod storage;
 
 use std::fmt;
 
+use nknown_core::analyze::Pos;
 use nknown_core::lang::Lang;
 use nknown_core::source::SourceKind;
 use serde::Serialize;
@@ -110,6 +111,21 @@ impl<S: Storage> Engine<S> {
             .and_then(|f| f(lang, &norm))
             .filter(|s| !s.is_empty())
             .unwrap_or(norm)
+    }
+
+    /// Lemmes indexés de racine `stem` (normalisée), avec leur catégorie.
+    pub(crate) fn stem_lemmas(&self, lang: Lang, stem: &str) -> Result<Vec<(NodeId, Pos)>> {
+        Ok(self
+            .scan(&schema::stem_prefix(lang, stem))?
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let id = key
+                    .get(key.len().saturating_sub(8)..)
+                    .and_then(|b| b.try_into().ok())
+                    .map(|b| NodeId(u64::from_be_bytes(b)))?;
+                Some((id, value.first().and_then(|&b| Pos::from_u8(b))?))
+            })
+            .collect())
     }
 
     /// Met la base au format courant ; renvoie ce qui a été fait (journal), rien si elle l'était.
@@ -277,6 +293,7 @@ mod tests {
                         .iter()
                         .map(|(p, l)| (Lang::FRA, schema::TermKind::Word(*p), l.to_string()))
                         .collect(),
+                    ..Default::default()
                 })
                 .collect(),
             intent: intent.and_then(intent_for),
@@ -359,6 +376,74 @@ mod tests {
         assert!(migrated.migrate().unwrap().is_some());
         assert!(migrated.migrate().unwrap().is_none());
         assert_eq!(query(&migrated, &[midterm], None).len(), 1);
+    }
+
+    #[test]
+    fn related_words_are_found_below_the_word_itself() {
+        let mut e = Engine::new(MemStorage::default()).with_stemmer(plural_stem);
+        add(
+            &mut e,
+            SourceKind::Feed,
+            1,
+            "le/D scrutin/N de/D dimanche/N",
+            &[],
+        );
+        add(
+            &mut e,
+            SourceKind::Feed,
+            1,
+            "une/D élection/N disputée/A",
+            &[],
+        );
+        add(
+            &mut e,
+            SourceKind::Feed,
+            1,
+            "le/D marché/N du/D dimanche/N",
+            &[],
+        );
+        let term = |related: Vec<(Lang, String, f32)>| QueryTerm {
+            text: "élection".into(),
+            readings: vec![(
+                Lang::FRA,
+                schema::TermKind::Word(Pos::Noun),
+                "élection".into(),
+            )],
+            related,
+        };
+        let search = |terms: Vec<QueryTerm>| {
+            e.search(
+                &Query {
+                    terms,
+                    ..Query::default()
+                },
+                NOW,
+                10,
+            )
+            .unwrap()
+        };
+        assert_eq!(search(vec![term(Vec::new())]).len(), 1);
+
+        let linked = vec![(Lang::FRA, "scrutin".to_owned(), 0.6)];
+        let hits = search(vec![term(linked.clone())]);
+        assert_eq!(hits.len(), 2, "{hits:#?}");
+        assert!(hits[0].text.contains("élection"));
+        // Le mot trouvé à la place est montré (extrait, surlignage).
+        assert_eq!(hits[1].matched, vec!["scrutin".to_owned()]);
+        assert!(hits[1].score < hits[0].score);
+
+        // Avec un autre mot de la requête, le passage qui a les deux gagne.
+        let dimanche = QueryTerm {
+            text: "dimanche".into(),
+            readings: vec![(
+                Lang::FRA,
+                schema::TermKind::Word(Pos::Noun),
+                "dimanche".into(),
+            )],
+            ..Default::default()
+        };
+        let hits = search(vec![term(linked), dimanche]);
+        assert!(hits[0].text.contains("scrutin"), "{hits:#?}");
     }
 
     #[test]
@@ -625,6 +710,7 @@ mod tests {
                     (Lang::FRA, schema::TermKind::Word(Pos::Noun), word.into()),
                     (Lang::NONE, schema::TermKind::Code, word.into()),
                 ],
+                ..Default::default()
             }],
             intent: intent.and_then(intent_for),
             ..Query::default()
@@ -899,6 +985,7 @@ mod tests {
                     terms: vec![QueryTerm {
                         text: w.into(),
                         readings: vec![(lang, kind, w.into())],
+                        ..Default::default()
                     }],
                     ..Query::default()
                 },
@@ -934,6 +1021,7 @@ mod tests {
                         .iter()
                         .map(|(p, l)| (Lang::FRA, schema::TermKind::Word(*p), l.to_string()))
                         .collect(),
+                    ..Default::default()
                 })
                 .collect(),
             intent: intent.and_then(intent_for),

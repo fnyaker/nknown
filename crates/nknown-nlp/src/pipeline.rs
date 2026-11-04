@@ -16,6 +16,7 @@ use nknown_core::lang::Lang;
 use crate::attach::{self, AttachRules, Word};
 use crate::lexicon::{LexEntry, Lexicon, normalize};
 use crate::parser::{ParsedSentence, SentenceParser};
+use crate::relations::Relations;
 use crate::tagger::Tagger;
 use crate::tokenize;
 
@@ -26,6 +27,7 @@ pub struct Pipeline {
     lexicons: HashMap<Lang, Lexicon>,
     taggers: HashMap<Lang, Tagger>,
     parsers: HashMap<Lang, Arc<dyn SentenceParser>>,
+    relations: HashMap<Lang, Relations>,
 }
 
 impl std::fmt::Debug for Pipeline {
@@ -34,6 +36,7 @@ impl std::fmt::Debug for Pipeline {
             .field("lexicons", &self.lexicons.keys().collect::<Vec<_>>())
             .field("taggers", &self.taggers.keys().collect::<Vec<_>>())
             .field("parsers", &self.parsers.keys().collect::<Vec<_>>())
+            .field("relations", &self.relations.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -45,6 +48,16 @@ impl Pipeline {
     pub fn with_lexicon(mut self, lang: Lang, lexicon: Lexicon) -> Self {
         self.lexicons.insert(lang, lexicon);
         self
+    }
+
+    /// Liens de sens entre lemmes (`<langue>.rel`), pour élargir les requêtes.
+    pub fn with_relations(mut self, lang: Lang, relations: Relations) -> Self {
+        self.relations.insert(lang, relations);
+        self
+    }
+
+    pub fn relations(&self, lang: Lang) -> Option<&Relations> {
+        self.relations.get(&lang)
     }
 
     pub fn with_tagger(mut self, lang: Lang, tagger: Tagger) -> Self {

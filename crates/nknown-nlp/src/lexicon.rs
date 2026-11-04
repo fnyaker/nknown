@@ -385,7 +385,7 @@ fn decode_number(b: u8) -> Option<Option<Number>> {
 }
 
 /// Entier non signé encodé en LEB128.
-fn write_varint(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn write_varint(out: &mut Vec<u8>, mut v: u64) {
     loop {
         let byte = (v & 0x7f) as u8;
         v >>= 7;
@@ -397,7 +397,7 @@ fn write_varint(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
-fn read_varint(input: &mut &[u8]) -> Option<u64> {
+pub(crate) fn read_varint(input: &mut &[u8]) -> Option<u64> {
     let mut v = 0u64;
     for shift in (0..64).step_by(7) {
         let (&byte, rest) = input.split_first()?;

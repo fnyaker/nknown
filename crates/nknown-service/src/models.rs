@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use nknown_core::lang::Lang;
-use nknown_nlp::{Lexicon, Pipeline, Tagger};
+use nknown_nlp::{Lexicon, Pipeline, Relations, Tagger};
 
 use crate::Error;
 
@@ -13,8 +13,8 @@ pub fn lang_of(path: &Path) -> Option<Lang> {
     Lang::from_tag(stem.split(['_', '.', '-']).next()?)
 }
 
-/// Pipeline depuis `lexicon` : un fichier `.lex`, ou un dossier dont chaque `<langue>.lex` et
-/// `<langue>.tag` est chargé. `models` ajoute des tagueurs (`.tag`) et des analyseurs
+/// Pipeline depuis `lexicon` : un fichier `.lex`, ou un dossier dont chaque `<langue>.lex`,
+/// `<langue>.tag` et `<langue>.rel` (liens de sens) est chargé. `models` ajoute des tagueurs (`.tag`) et des analyseurs
 /// neuronaux (dossier, ou `vulkan:<dossier>` pour le GPU).
 pub fn load_pipeline(lexicon: &Path, models: &[&str]) -> Result<Pipeline, Error> {
     let mut pipeline = Pipeline::default();
@@ -32,6 +32,7 @@ pub fn load_pipeline(lexicon: &Path, models: &[&str]) -> Result<Pipeline, Error>
             match ext {
                 "lex" => pipeline = pipeline.with_lexicon(lang, Lexicon::load(&f)?),
                 "tag" => pipeline = pipeline.with_tagger(lang, Tagger::load(&f)?),
+                "rel" => pipeline = pipeline.with_relations(lang, Relations::load(&f)?),
                 _ => {}
             }
         }

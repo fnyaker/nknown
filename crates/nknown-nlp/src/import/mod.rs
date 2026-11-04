@@ -3,6 +3,7 @@
 //! Chaque ressource a son importeur ; tous alimentent le même builder, qui fusionne.
 
 pub mod lexique;
+pub mod relations;
 pub mod wiktextract;
 
 use std::{error, fmt, io};

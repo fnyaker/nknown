@@ -30,6 +30,9 @@ usage :
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
                    lexique <Lexique383.tsv>
   nknown lexicon lookup <lexique.lex> <mot>...
+  nknown relations build <sortie.rel> <lexique.lex> <dump.jsonl|-> <code-langue-wiktionary>
+                                                (liens de sens entre mots ; - : entrée standard)
+  nknown relations lookup <liens.rel> <mot>...
   nknown analyze <lexique.lex> <texte> [modèle]...
   nknown eval <lexique.lex> <corpus.conllu> [modèle]...
   nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
@@ -155,6 +158,12 @@ fn main() -> ExitCode {
         ["lexicon", "lookup", lexicon, words @ ..] if !words.is_empty() => {
             lexicon_lookup(lexicon, words)
         }
+        ["relations", "build", out, lexicon, dump, lang] => {
+            relations_build(out, lexicon, dump, lang)
+        }
+        ["relations", "lookup", rel, words @ ..] if !words.is_empty() => {
+            relations_lookup(rel, words)
+        }
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -230,6 +239,65 @@ fn lexicon_build(out: &str, mut sources: &[&str]) -> Res {
         lexicon.analysis_count(),
         start.elapsed()
     );
+    Ok(())
+}
+
+fn relations_build(out: &str, lexicon: &str, dump: &str, lang: &str) -> Res {
+    use nknown_nlp::import::relations;
+    use nknown_nlp::relations::BuildOptions;
+    let start = Instant::now();
+    let lexicon = Lexicon::load(lexicon)?;
+    let mut builder = nknown_nlp::RelationsBuilder::new();
+    let stats = if dump == "-" {
+        relations::import(std::io::stdin().lock(), lang, Some(&lexicon), &mut builder)?
+    } else {
+        relations::import(
+            BufReader::new(File::open(dump)?),
+            lang,
+            Some(&lexicon),
+            &mut builder,
+        )?
+    };
+    eprintln!(
+        "{dump} : {} lignes ({} entrées utilisées, {} invalides) -> {} indices [{:.1?}]",
+        stats.entries,
+        stats.used,
+        stats.invalid,
+        builder.evidence_count(),
+        start.elapsed()
+    );
+    // Mot courant : fréquence d'usage (par million) du lexique, 100 et plus = 1.
+    let familiarity = |w: &str| {
+        let f: f32 = lexicon.lookup(w).map(|e| e.freq).sum();
+        if lexicon.lookup(w).next().is_none() {
+            0.0
+        } else {
+            (0.2 + (1.0 + f).log10() / 2.5).min(1.0)
+        }
+    };
+    let rel = builder.build(BuildOptions::default(), familiarity)?;
+    rel.save(out)?;
+    eprintln!(
+        "{out} : {} lemmes liés [{:.1?}]",
+        rel.lemma_count(),
+        start.elapsed()
+    );
+    Ok(())
+}
+
+fn relations_lookup(path: &str, words: &[&str]) -> Res {
+    let rel = nknown_nlp::Relations::load(path)?;
+    for word in words {
+        let list: Vec<String> = rel
+            .related(word)
+            .map(|(w, p)| format!("{w} {p:.2}"))
+            .collect();
+        if list.is_empty() {
+            println!("{word} : (aucun lien)");
+        } else {
+            println!("{word} : {}", list.join(", "));
+        }
+    }
     Ok(())
 }
 
@@ -647,10 +715,23 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) ->
         .parse()
         .map_err(|_| format!("nombre invalide : {limit}"))?;
     let pipeline = pipeline(lexicon, &[])?;
-    let engine = Engine::new(RedbStorage::open(base)?).with_stemmer(nknown_nlp::langid::stem);
+    let mut engine = Engine::new(RedbStorage::open(base)?).with_stemmer(nknown_nlp::langid::stem);
+    if let Some(note) = engine.migrate()? {
+        eprintln!("base mise à jour : {note}");
+    }
     let q = build_query(&pipeline, query);
     if let Some(i) = &q.intent {
         println!("intention : {}", i.name);
+    }
+    if explain {
+        for t in q.terms.iter().filter(|t| !t.related.is_empty()) {
+            let list: Vec<String> = t
+                .related
+                .iter()
+                .map(|(_, w, p)| format!("{w} {p:.2}"))
+                .collect();
+            println!("liés à « {} » : {}", t.text, list.join(", "));
+        }
     }
     let start = Instant::now();
     let result = engine.search_explained(&q, Timestamp::now(), limit)?;

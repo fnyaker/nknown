@@ -78,6 +78,12 @@ nknown lexicon build fr.lex \
     lexique Lexique383.tsv
 nknown lexicon lookup fr.lex été "l'" aujourd'hui
 
+# Liens de sens (« élection » → scrutin, suffrage…) : synonymes, mots apparentés, mots des
+# définitions et voisins communs, pondérés ; la recherche s'en sert pour élargir les requêtes.
+#   https://kaikki.org/frwiktionary/Français/kaikki.org-dictionary-Français.jsonl.gz
+zcat kaikki.org-dictionary-Français.jsonl.gz | nknown relations build fr.rel fr.lex - fr
+nknown relations lookup fr.rel élection voiture
+
 # Tagueur (couche 2) entraîné sur UD French-GSD (CC BY-SA 4.0)
 #   https://github.com/UniversalDependencies/UD_French-GSD
 nknown tagger train fr.lex fr_gsd-ud-train.conllu fr.tag

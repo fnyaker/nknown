@@ -14,6 +14,7 @@ mkdir -p "$out"
 files=(
   "fr.lex|base" "fr.tag|base" "en.lex|base" "en.tag|base"
   "ru.lex|base" "ru.tag|base" "zh.lex|base" "zh.tag|base"
+  "fr.rel|base" "en.rel|base" "ru.rel|base" "zh.rel|base"
   "parser-multi/parser.json|parser" "parser-multi/tokenizer.nkt|parser"
   "parser-multi/model.q4k-q8.gguf|standard" "parser-multi/model.q4k.gguf|light"
 )

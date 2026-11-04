@@ -58,6 +58,34 @@ size = 3364257
 sha256 = "8b60098110fef4153346a7d68ecd86a762a06f365eb9eae2f434ff85165e30c6"
 
 [[file]]
+path = "fr.rel"
+asset = "fr.rel"
+group = "base"
+size = 8970153
+sha256 = "a09ff801288e4a1bef24b867e92acdce23b26e4c3054a9bdf91d3f2756bac101"
+
+[[file]]
+path = "en.rel"
+asset = "en.rel"
+group = "base"
+size = 12755010
+sha256 = "299ed1e6d78b0b98a361163c6fbbd687b5dc30bb94c216f54f99d7903ac576ef"
+
+[[file]]
+path = "ru.rel"
+asset = "ru.rel"
+group = "base"
+size = 3291573
+sha256 = "c879314a2e1721ff3eb84944202467a8ef70b679502046a5138d7cb474ca14b3"
+
+[[file]]
+path = "zh.rel"
+asset = "zh.rel"
+group = "base"
+size = 7978368
+sha256 = "fb01e1994d6de03b9196da82a4a9d46df99fa495203a9398ff080c756c7aec16"
+
+[[file]]
 path = "parser-multi/parser.json"
 asset = "parser-multi--parser.json"
 group = "parser"

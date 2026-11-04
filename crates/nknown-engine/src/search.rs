@@ -61,11 +61,14 @@ pub fn intent_for(word: &str) -> Option<Intent> {
 }
 
 /// Un mot de la requête et ses lectures possibles (mot d'une catégorie, ou terme de code).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct QueryTerm {
     pub text: String,
     /// (langue, nature du terme, lemme) ; les termes de code sont sous [`Lang::NONE`].
     pub readings: Vec<(Lang, TermKind, String)>,
+    /// Mots de sens proche (langue, lemme, force du lien 0..=1) : « scrutin » pour
+    /// « élection ». Ils comptent moins que le mot lui-même, et jamais plus que lui.
+    pub related: Vec<(Lang, String, f32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -104,6 +107,12 @@ pub fn modifier_for(word: &str) -> Option<Modifier> {
 
 /// Poids d'une variante (même racine) face à une lecture directe du mot.
 const VARIANT_SHARE: f64 = 0.8;
+
+/// Poids d'un mot lié de force 1 face au mot tapé (« automobile » pour « voiture »).
+const RELATED_SHARE: f64 = 0.5;
+
+/// Mots liés retenus par mot de la requête, parmi ceux que la base contient.
+const RELATED_KEPT: usize = 8;
 
 /// Demi-vie de base de `@new`, en jours (allongée selon l'âge des candidats).
 pub const RECENT_HALF_LIFE_DAYS: f64 = 14.0;
@@ -266,6 +275,10 @@ struct Reading {
     /// Part de cette lecture parmi celles du mot, selon l'usage dans l'index : pour « paris »,
     /// la ville (fréquente) l'emporte sur « pari » (rare), que l'IDF seul favoriserait.
     share: f64,
+    /// Mot lié par lequel passe cette lecture (indice dans `QueryTerm::related`), s'il y en a.
+    via: Option<usize>,
+    /// Facteur de la lecture dans un titre (1 pour le mot lui-même).
+    weight: f64,
 }
 
 fn age_days(now: Timestamp, date: i64) -> f64 {
@@ -277,6 +290,8 @@ struct Candidate {
     pid: NodeId,
     text: f64,
     matched: Vec<usize>,
+    /// Mot lié trouvé à la place de chaque mot de la requête (indice dans `related`).
+    via: Vec<Option<usize>>,
     term_scores: Vec<f64>,
     pairs: Vec<(usize, usize)>,
     in_title: usize,
@@ -334,6 +349,8 @@ impl<S: Storage> Engine<S> {
                         kind: *kind,
                         idf: 0.0,
                         share: df,
+                        via: None,
+                        weight: 1.0,
                     });
                 }
             }
@@ -346,17 +363,7 @@ impl<S: Storage> Engine<S> {
                 .map(|(lang, _, lemma)| (*lang, self.stem_of(*lang, lemma)))
                 .collect();
             for (lang, stem) in stems {
-                for (key, value) in self.scan(&schema::stem_prefix(lang, &stem))? {
-                    let Some(id) = key
-                        .get(key.len().saturating_sub(8)..)
-                        .and_then(|b| b.try_into().ok())
-                        .map(|b| NodeId(u64::from_be_bytes(b)))
-                    else {
-                        continue;
-                    };
-                    let Some(pos) = value.first().and_then(|&b| Pos::from_u8(b)) else {
-                        continue;
-                    };
+                for (id, pos) in self.stem_lemmas(lang, &stem)? {
                     if seen.insert(id) {
                         let df =
                             schema::u64_value(self.get(&schema::id_key(schema::STATS, id))?) as f64;
@@ -365,6 +372,8 @@ impl<S: Storage> Engine<S> {
                             kind: TermKind::Word(pos),
                             idf: 0.0,
                             share: df * VARIANT_SHARE,
+                            via: None,
+                            weight: 1.0,
                         });
                     }
                 }
@@ -378,11 +387,60 @@ impl<S: Storage> Engine<S> {
                 r.share = (r.share + 1.0) / (total + k);
                 r.idf = idf;
             }
+            // Mots liés : hors du calcul de l'IDF (« élection » ne devient pas banal parce
+            // que « choix » l'est), au plus RELATED_SHARE de la meilleure lecture du mot, et
+            // jamais plus spécifiques que lui.
+            let best = found
+                .iter()
+                .map(|r| r.share)
+                .fold(1.0 / k.max(1.0), f64::max);
+            // Les meilleurs de ceux que la base contient : un mot lié absent ne prend pas la
+            // place d'un autre.
+            let mut kept = 0usize;
+            for (i, (lang, lemma, strength)) in term.related.iter().enumerate() {
+                if kept == RELATED_KEPT {
+                    break;
+                }
+                let before = found.len();
+                let weight = RELATED_SHARE * f64::from(strength.clamp(0.0, 1.0));
+                // Le lemme exact, sous chaque catégorie : par sa racine, « logis » ramènerait
+                // « log ».
+                for pos in [Pos::Noun, Pos::Propn, Pos::Verb, Pos::Adj, Pos::X] {
+                    let Some(v) =
+                        self.get(&schema::lexeme_key(*lang, TermKind::Word(pos), lemma))?
+                    else {
+                        continue;
+                    };
+                    let id = NodeId(schema::u64_value(Some(v)));
+                    if !seen.insert(id) {
+                        continue;
+                    }
+                    let df =
+                        schema::u64_value(self.get(&schema::id_key(schema::STATS, id))?) as f64;
+                    if df == 0.0 {
+                        continue;
+                    }
+                    let own = (1.0 + (n - df.min(n) + 0.5) / (df.min(n) + 0.5)).ln();
+                    found.push(Reading {
+                        id,
+                        kind: TermKind::Word(pos),
+                        idf: own.min(idf),
+                        share: best * weight,
+                        via: Some(i),
+                        weight,
+                    });
+                }
+                if found.len() > before {
+                    kept += 1;
+                }
+            }
             readings.push(found);
         }
 
         // Score BM25 par passage et par mot (meilleure lecture du mot).
         let mut per_passage: HashMap<NodeId, Vec<f64>> = HashMap::new();
+        // Mot lié qui a donné le meilleur score d'un mot de la requête dans un passage.
+        let mut via: HashMap<NodeId, Vec<Option<usize>>> = HashMap::new();
         let mut lengths: HashMap<NodeId, f64> = HashMap::new();
         for (t, rs) in readings.iter().enumerate() {
             for r in rs {
@@ -404,7 +462,10 @@ impl<S: Storage> Engine<S> {
                     let scores = per_passage
                         .entry(pid)
                         .or_insert_with(|| vec![0.0; q.terms.len()]);
-                    scores[t] = scores[t].max(s);
+                    if s > scores[t] {
+                        scores[t] = s;
+                        via.entry(pid).or_insert_with(|| vec![None; q.terms.len()])[t] = r.via;
+                    }
                 }
             }
         }
@@ -432,11 +493,14 @@ impl<S: Storage> Engine<S> {
                     }
                     let pid = NodeId(doc.first_passage);
                     // Le titre atteste cette lecture du mot : pas de pondération par l'usage.
-                    let s = r.idf;
+                    let s = r.idf * r.weight;
                     let scores = per_passage
                         .entry(pid)
                         .or_insert_with(|| vec![0.0; q.terms.len()]);
-                    scores[t] = scores[t].max(s);
+                    if s > scores[t] {
+                        scores[t] = s;
+                        via.entry(pid).or_insert_with(|| vec![None; q.terms.len()])[t] = r.via;
+                    }
                 }
             }
         }
@@ -499,6 +563,7 @@ impl<S: Storage> Engine<S> {
                 pid,
                 text: scores.iter().sum(),
                 matched: (0..scores.len()).filter(|&t| scores[t] > 0.0).collect(),
+                via: via.remove(&pid).unwrap_or_default(),
                 term_scores: scores.clone(),
                 pairs: qualified.get(&pid).cloned().unwrap_or_default(),
                 in_title,
@@ -589,7 +654,20 @@ impl<S: Storage> Engine<S> {
                 related: Vec::new(),
                 text: c.passage.text,
                 doc: c.doc,
-                matched: c.matched.iter().map(|&t| q.terms[t].text.clone()).collect(),
+                // Le mot trouvé : celui de la requête, ou le mot lié qui l'a remplacé
+                // (l'extrait et le surlignage doivent montrer « scrutin »).
+                matched: c
+                    .matched
+                    .iter()
+                    .map(|&t| {
+                        c.via
+                            .get(t)
+                            .copied()
+                            .flatten()
+                            .and_then(|i| q.terms[t].related.get(i))
+                            .map_or_else(|| q.terms[t].text.clone(), |(_, l, _)| l.clone())
+                    })
+                    .collect(),
                 term_scores: c.term_scores,
                 qualified: c
                     .pairs
