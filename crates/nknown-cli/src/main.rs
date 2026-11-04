@@ -37,6 +37,8 @@ usage :
   nknown relations eval <modèles/> <cas.tsv> [base.redb]   (choix du sens : eval/senses.tsv)
   nknown analyze <lexique.lex> <texte> [modèle]...
   nknown eval <lexique.lex> <corpus.conllu> [modèle]...
+  nknown translate convert <dossier-hugging-face/> <sortie/>   (modèle Marian OPUS-MT)
+  nknown translate <modèle/> <texte>...                       (une ligne = une phrase)
   nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
   nknown parser train [vulkan] <xlm-roberta/> <train.conllu> <dev.conllu> <sortie/> [passes] [pas-max] [--langs=fra,eng]
 
@@ -150,6 +152,8 @@ fn main() -> ExitCode {
             out,
             rest @ ..,
         ] if rest.len() <= 2 => parser_train(true, xlmr, train, dev, out, rest),
+        ["translate", "convert", hf, out] => translate_convert(hf, out),
+        ["translate", model, texts @ ..] if !texts.is_empty() => translate(model, texts),
         ["parser", "train", xlmr, train, dev, out, rest @ ..] if rest.len() <= 3 => {
             parser_train(false, xlmr, train, dev, out, rest)
         }
@@ -575,6 +579,57 @@ fn train_vulkan(
     _: &nknown_neural::TrainOptions,
 ) -> Result<nknown_neural::train::DevScores, Box<dyn Error>> {
     Err("compilé sans la fonctionnalité « vulkan »".into())
+}
+
+#[cfg(feature = "neural")]
+fn translate_convert(hf: &str, out: &str) -> Res {
+    let start = Instant::now();
+    nknown_neural::translate::convert(std::path::Path::new(hf), std::path::Path::new(out))?;
+    eprintln!("{out} prêt [{:.1?}]", start.elapsed());
+    Ok(())
+}
+
+#[cfg(feature = "neural")]
+type TranslateFn = dyn Fn(&[&str]) -> Result<Vec<String>, Box<dyn Error>>;
+
+#[cfg(feature = "neural")]
+fn translate(model: &str, texts: &[&str]) -> Res {
+    let start = Instant::now();
+    // `vulkan:<dossier>` : sur GPU.
+    let run: Box<TranslateFn> = match model.strip_prefix("vulkan:") {
+        #[cfg(feature = "vulkan")]
+        Some(dir) => {
+            let t =
+                nknown_neural::translate_vulkan::VulkanTranslator::load(std::path::Path::new(dir))?;
+            Box::new(move |l| Ok(t.translate(l)?))
+        }
+        #[cfg(not(feature = "vulkan"))]
+        Some(_) => return Err("compilé sans la fonctionnalité « vulkan »".into()),
+        None => {
+            let t = nknown_neural::Translator::load(std::path::Path::new(model))?;
+            Box::new(move |l| Ok(t.translate(l)?))
+        }
+    };
+    eprintln!("modèle chargé [{:.1?}]", start.elapsed());
+    for text in texts {
+        let lines: Vec<&str> = text.lines().collect();
+        let start = Instant::now();
+        for (src, out) in lines.iter().zip(run(&lines)?) {
+            println!("{src}\n  → {out}");
+        }
+        eprintln!("[{:.1?}]", start.elapsed());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "neural"))]
+fn translate_convert(_: &str, _: &str) -> Res {
+    Err("compilé sans la fonctionnalité « neural »".into())
+}
+
+#[cfg(not(feature = "neural"))]
+fn translate(_: &str, _: &[&str]) -> Res {
+    Err("compilé sans la fonctionnalité « neural »".into())
 }
 
 #[cfg(not(feature = "neural"))]

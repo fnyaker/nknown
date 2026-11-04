@@ -241,6 +241,65 @@ impl Tokenizer {
         })
     }
 
+    // ------------------------------------------------------------------ SentencePiece
+
+    /// Tokeniseur d'un modèle SentencePiece (`source.spm` des modèles Marian) dont les
+    /// sous-mots sont numérotés par `vocab` (`vocab.json`, partagé avec la langue cible).
+    /// Seuls les sous-mots ordinaires présents dans `vocab` sont retenus ; `</s>` termine
+    /// chaque phrase ([`Self::encode_sentence`]).
+    pub fn from_sentencepiece(
+        spm: &[u8],
+        vocab: &std::collections::HashMap<String, u32>,
+    ) -> Result<Self> {
+        let model = spm_model(spm)?;
+        let id_of = |name: &str| {
+            vocab
+                .get(name)
+                .copied()
+                .ok_or_else(|| Error::Tokenizer(format!("{name} absent du vocabulaire")))
+        };
+        let (unk_id, eos_id) = (id_of("<unk>")?, id_of("</s>")?);
+        let size = vocab.values().copied().max().map_or(0, |m| m as usize + 1);
+        let min_score = model
+            .pieces
+            .iter()
+            .map(|p| f64::from(p.1))
+            .fold(f64::INFINITY, f64::min);
+        let mut scores = vec![min_score; size];
+        let mut sorted: Vec<(String, u32)> = Vec::new();
+        for (piece, score, kind) in model.pieces {
+            // 1 : ordinaire, 4 : défini par l'utilisateur ; les autres (inconnu, contrôle,
+            // octet, inutilisé) ne se reconnaissent pas dans le texte.
+            if !matches!(kind, 1 | 4) {
+                continue;
+            }
+            if let Some(&id) = vocab.get(&piece) {
+                scores[id as usize] = f64::from(score);
+                sorted.push((piece, id));
+            }
+        }
+        sorted.sort();
+        sorted.dedup_by(|a, b| a.0 == b.0);
+        let pieces = fst::Map::from_iter(sorted.into_iter().map(|(p, id)| (p, u64::from(id))))
+            .map_err(|e| Error::Tokenizer(e.to_string()))?;
+        Self::assemble(
+            pieces,
+            scores,
+            min_score,
+            [unk_id, eos_id, eos_id],
+            Vec::new(),
+            Some(model.charsmap),
+        )
+    }
+
+    /// Sous-mots d'une phrase, suivis de `</s>` (convention des modèles Marian).
+    pub fn encode_sentence(&self, text: &str) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.encode_text(text, &mut out);
+        out.push(self.eos_id);
+        out
+    }
+
     // ------------------------------------------------------------------ forme compacte
 
     fn write_compact(&self, path: &Path) -> Result<()> {
@@ -455,6 +514,101 @@ impl Tokenizer {
     }
 }
 
+/// Ce qui sert d'un `ModelProto` SentencePiece : sous-mots (texte, score, type) et table de
+/// normalisation précompilée.
+struct SpmModel {
+    pieces: Vec<(String, f32, u64)>,
+    charsmap: Vec<u8>,
+}
+
+/// Lecture minimale du protobuf SentencePiece (champ 1 : sous-mots ; champ 3 : normalisation,
+/// dont le champ 2 est la table précompilée).
+fn spm_model(data: &[u8]) -> Result<SpmModel> {
+    let bad = || Error::Format("modèle SentencePiece illisible".into());
+    let mut model = SpmModel {
+        pieces: Vec::new(),
+        charsmap: Vec::new(),
+    };
+    for field in proto_fields(data).ok_or_else(bad)? {
+        match field {
+            (1, Proto::Bytes(piece)) => {
+                let (mut text, mut score, mut kind) = (String::new(), 0.0f32, 1u64);
+                for f in proto_fields(piece).ok_or_else(bad)? {
+                    match f {
+                        (1, Proto::Bytes(b)) => {
+                            text = String::from_utf8(b.to_vec()).map_err(|_| bad())?;
+                        }
+                        (2, Proto::Fixed32(v)) => score = f32::from_bits(v),
+                        (3, Proto::Varint(v)) => kind = v,
+                        _ => {}
+                    }
+                }
+                model.pieces.push((text, score, kind));
+            }
+            (3, Proto::Bytes(spec)) => {
+                for f in proto_fields(spec).ok_or_else(bad)? {
+                    if let (2, Proto::Bytes(b)) = f {
+                        model.charsmap = b.to_vec();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if model.pieces.is_empty() {
+        return Err(bad());
+    }
+    Ok(model)
+}
+
+enum Proto<'a> {
+    Varint(u64),
+    Fixed32(u32),
+    Fixed64,
+    Bytes(&'a [u8]),
+}
+
+/// Champs (numéro, valeur) d'un message protobuf ; `None` s'il est malformé.
+fn proto_fields(mut data: &[u8]) -> Option<Vec<(u64, Proto<'_>)>> {
+    fn varint(data: &mut &[u8]) -> Option<u64> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let (&b, rest) = data.split_first()?;
+            *data = rest;
+            v |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+    let mut out = Vec::new();
+    while !data.is_empty() {
+        let key = varint(&mut data)?;
+        let value = match key & 7 {
+            0 => Proto::Varint(varint(&mut data)?),
+            1 => {
+                data = data.get(8..)?;
+                Proto::Fixed64
+            }
+            2 => {
+                let len = usize::try_from(varint(&mut data)?).ok()?;
+                let (b, rest) = (data.get(..len)?, data.get(len..)?);
+                data = rest;
+                Proto::Bytes(b)
+            }
+            5 => {
+                let (b, rest) = (data.get(..4)?, data.get(4..)?);
+                data = rest;
+                Proto::Fixed32(u32::from_le_bytes(b.try_into().ok()?))
+            }
+            _ => return None,
+        };
+        out.push((key >> 3, value));
+    }
+    Some(out)
+}
+
 fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
     out.extend_from_slice(&(b.len() as u64).to_le_bytes());
     out.extend_from_slice(b);
@@ -519,6 +673,55 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Modèle SentencePiece minimal, encodé à la main (protobuf).
+    fn tiny_spm() -> Vec<u8> {
+        fn field(out: &mut Vec<u8>, num: u8, bytes: &[u8]) {
+            out.push(num << 3 | 2);
+            out.push(bytes.len() as u8);
+            out.extend_from_slice(bytes);
+        }
+        let mut model = Vec::new();
+        for (piece, score, kind) in [
+            ("<unk>", 0.0f32, 2u8),
+            ("</s>", 0.0, 3),
+            ("▁chat", -1.0, 1),
+            ("▁ch", -3.0, 1),
+            ("at", -3.0, 1),
+            ("s", -2.0, 1),
+        ] {
+            let mut p = Vec::new();
+            field(&mut p, 1, piece.as_bytes());
+            p.push(2 << 3 | 5);
+            p.extend_from_slice(&score.to_le_bytes());
+            p.extend_from_slice(&[3 << 3, kind]);
+            field(&mut model, 1, &p);
+        }
+        model
+    }
+
+    #[test]
+    fn sentencepiece_models_are_read() {
+        let vocab: std::collections::HashMap<String, u32> = [
+            ("</s>", 0),
+            ("<unk>", 1),
+            ("▁chat", 2),
+            ("▁ch", 3),
+            ("at", 4),
+            ("s", 5),
+            ("<pad>", 6),
+        ]
+        .into_iter()
+        .map(|(p, id)| (p.to_owned(), id))
+        .collect();
+        let t = Tokenizer::from_sentencepiece(&tiny_spm(), &vocab).unwrap();
+        // Meilleur découpage (▁chat + s), puis </s>.
+        assert_eq!(t.encode_sentence("chats"), [2, 5, 0]);
+        assert_eq!(t.encode_sentence("chat chat"), [2, 2, 0]);
+        // Inconnu.
+        assert_eq!(t.encode_sentence("x"), [1, 0]);
+        assert!(Tokenizer::from_sentencepiece(b"\xff", &vocab).is_err());
+    }
 
     fn home(rel: &str) -> std::path::PathBuf {
         Path::new(&std::env::var("HOME").unwrap_or_default()).join(rel)

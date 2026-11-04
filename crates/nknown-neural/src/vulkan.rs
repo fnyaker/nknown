@@ -438,7 +438,7 @@ impl GpuTable {
 }
 
 /// Paramètres flottants convertis dans un autre type (f16 : unités matricielles du GPU).
-struct CastFloats(burn::tensor::FloatDType);
+pub(crate) struct CastFloats(pub(crate) burn::tensor::FloatDType);
 
 impl burn::module::ModuleMapper for CastFloats {
     fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
@@ -449,7 +449,7 @@ impl burn::module::ModuleMapper for CastFloats {
 
 /// Type de calcul du GPU : f16 s'il le permet (deux fois plus de calcul par cycle, unités
 /// matricielles ; même exactitude mesurée), sinon f32 ; `NKNOWN_VULKAN_F32=1` impose f32.
-fn compute_dtype(device: &Device) -> burn::tensor::FloatDType {
+pub(crate) fn compute_dtype(device: &Device) -> burn::tensor::FloatDType {
     use burn::tensor::FloatDType;
     if std::env::var_os("NKNOWN_VULKAN_F32").is_none() && device.supports_dtype(FloatDType::F16) {
         FloatDType::F16

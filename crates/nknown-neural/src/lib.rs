@@ -20,6 +20,9 @@ pub mod mst;
 pub mod parser;
 pub mod tokenizer;
 pub mod train;
+pub mod translate;
+#[cfg(feature = "vulkan")]
+pub mod translate_vulkan;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
@@ -27,3 +30,4 @@ pub use config::ParserConfig;
 pub use error::Error;
 pub use parser::{NeuralParser, Precision};
 pub use train::{TrainOptions, train};
+pub use translate::Translator;
