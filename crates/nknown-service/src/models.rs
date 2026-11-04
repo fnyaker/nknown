@@ -32,7 +32,12 @@ pub fn load_pipeline(lexicon: &Path, models: &[&str]) -> Result<Pipeline, Error>
             match ext {
                 "lex" => pipeline = pipeline.with_lexicon(lang, Lexicon::load(&f)?),
                 "tag" => pipeline = pipeline.with_tagger(lang, Tagger::load(&f)?),
-                "rel" => pipeline = pipeline.with_relations(lang, Relations::load(&f)?),
+                // Facultatif : un fichier d'un autre format (ancienne version) ou abîmé ne
+                // prive que de l'élargissement des requêtes.
+                "rel" => match Relations::load(&f) {
+                    Ok(r) => pipeline = pipeline.with_relations(lang, r),
+                    Err(e) => eprintln!("{} ignoré : {e}", f.display()),
+                },
                 _ => {}
             }
         }

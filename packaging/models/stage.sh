@@ -11,10 +11,12 @@ manifest=$(dirname "$0")/../../crates/nknown-service/models.toml
 mkdir -p "$out"
 
 # chemin local | groupe (base : toujours ; standard / light : analyseur selon la précision)
+#   [| nom d'asset, pour un fichier dont le format a changé : les anciennes versions gardent
+#   l'ancien asset, les nouvelles téléchargent celui-ci (taille différente)]
 files=(
   "fr.lex|base" "fr.tag|base" "en.lex|base" "en.tag|base"
   "ru.lex|base" "ru.tag|base" "zh.lex|base" "zh.tag|base"
-  "fr.rel|base" "en.rel|base" "ru.rel|base" "zh.rel|base"
+  "fr.rel|base|fr.v2.rel" "en.rel|base|en.v2.rel" "ru.rel|base|ru.v2.rel" "zh.rel|base|zh.v2.rel"
   "parser-multi/parser.json|parser" "parser-multi/tokenizer.nkt|parser"
   "parser-multi/model.q4k-q8.gguf|standard" "parser-multi/model.q4k.gguf|light"
 )
@@ -22,8 +24,8 @@ files=(
   echo "# Généré par packaging/models/stage.sh : ne pas modifier à la main."
   echo "release = \"https://github.com/$repo/releases/download/$tag\""
   for entry in "${files[@]}"; do
-    path=${entry%%|*}; group=${entry##*|}
-    asset=${path//\//--}
+    IFS='|' read -r path group asset <<< "$entry"
+    asset=${asset:-${path//\//--}}
     cp -L "$src/$path" "$out/$asset"
     size=$(stat -c %s "$out/$asset")
     sum=$(sha256sum "$out/$asset" | cut -d' ' -f1)

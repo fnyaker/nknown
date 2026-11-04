@@ -82,7 +82,13 @@ nknown lexicon lookup fr.lex été "l'" aujourd'hui
 # définitions et voisins communs, pondérés ; la recherche s'en sert pour élargir les requêtes.
 #   https://kaikki.org/frwiktionary/Français/kaikki.org-dictionary-Français.jsonl.gz
 zcat kaikki.org-dictionary-Français.jsonl.gz | nknown relations build fr.rel fr.lex - fr
-nknown relations lookup fr.rel élection voiture
+nknown relations lookup fr.rel élection voiture   # sens, liens rattachés, contraires
+
+# Liens appris des documents de la base (le démon les recalcule quand la base a grossi de
+# 20 %) : contextes syntaxiques (adjectifs d'un nom) et thématiques (mots du passage). Ils
+# confirment les liens du dictionnaire ; seuls, ils ne servent que pour les mots dont le
+# dictionnaire ne dit rien.
+nknown learn base.redb modèles/ élection
 
 # Tagueur (couche 2) entraîné sur UD French-GSD (CC BY-SA 4.0)
 #   https://github.com/UniversalDependencies/UD_French-GSD

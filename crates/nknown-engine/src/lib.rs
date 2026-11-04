@@ -6,6 +6,7 @@
 
 pub mod graph;
 pub mod ingest;
+pub mod learn;
 pub mod rank;
 pub mod schema;
 pub mod search;
@@ -21,6 +22,7 @@ use serde::de::DeserializeOwned;
 
 pub use graph::{Edge, EdgeKind, NodeId, NodeKind};
 pub use ingest::{Document, Ingested, ItemStatus};
+pub use learn::{LearnOptions, LearnStats, Learned, LearnedLink, LinkKind};
 pub use rank::RankStats;
 pub use search::{
     Hit, Intent, Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, Related, ScoreParts,
@@ -444,6 +446,99 @@ mod tests {
         };
         let hits = search(vec![term(linked), dimanche]);
         assert!(hits[0].text.contains("scrutin"), "{hits:#?}");
+    }
+
+    #[test]
+    fn links_are_learned_from_shared_contexts() {
+        let mut e = Engine::new(MemStorage::default());
+        // Mots de remplissage uniques par document (sans chiffres : ils seraient écartés).
+        let filler = |k: usize| -> String {
+            let a = (b'a' + (k % 26) as u8) as char;
+            let b = (b'a' + (k / 26 % 26) as u8) as char;
+            format!("z{a}{b}q/N y{b}{a}w/N")
+        };
+        let vote_adjs = [
+            "présidentiel",
+            "municipal",
+            "anticipé",
+            "législatif",
+            "régional",
+        ];
+        let person_adjs = [
+            "républicain",
+            "démocrate",
+            "malheureux",
+            "sortant",
+            "favori",
+        ];
+        let market_adjs = [
+            "couvert",
+            "hebdomadaire",
+            "artisanal",
+            "nocturne",
+            "estival",
+        ];
+        let politics = ["voix", "tour", "résultat", "campagne", "bureau"];
+        let market = ["légume", "fruit", "étal", "panier", "primeur"];
+        let mut k = 0;
+        for round in 0..12 {
+            for (topic, adjs, person, ctx) in [
+                ("élection", &vote_adjs, Some("candidat"), &politics),
+                ("scrutin", &vote_adjs, Some("candidat"), &politics),
+                ("marché", &market_adjs, None, &market),
+                ("foire", &market_adjs, None, &market),
+            ] {
+                let a1 = adjs[round % adjs.len()];
+                let a2 = adjs[(round + 2) % adjs.len()];
+                let mut spec = format!("{topic}/N {a1}/A {a2}/A");
+                let mut q = vec![(1, 0), (2, 0)];
+                if let Some(p) = person {
+                    let pa = person_adjs[(round + k) % person_adjs.len()];
+                    spec.push_str(&format!(" {p}/N {pa}/A"));
+                    q.push((4, 3));
+                }
+                for i in 0..3 {
+                    spec.push_str(&format!(" {}/N", ctx[(round + i) % ctx.len()]));
+                }
+                spec.push_str(&format!(" dimanche/N {} Dupont/NP", filler(k)));
+                add(&mut e, SourceKind::Feed, 1, &spec, &q);
+                k += 1;
+            }
+        }
+        let opts = LearnOptions {
+            min_df: 5,
+            max_share: 0.9,
+            min_shared: 3,
+            ..LearnOptions::default()
+        };
+        let stats = e.learn(opts).unwrap();
+        assert!(stats.syntactic > 0 && stats.qualified > 0, "{stats:?}");
+        let of = |w: &str, kind: LinkKind| -> Vec<String> {
+            e.learned(Lang::FRA, schema::TermKind::Word(Pos::Noun), w)
+                .unwrap()
+                .into_iter()
+                .filter(|l| l.kind == kind)
+                .map(|l| l.lemma)
+                .collect()
+        };
+        let election = of("élection", LinkKind::Syntactic);
+        assert!(election.contains(&"scrutin".to_owned()), "{election:?}");
+        // Même sujet, autres adjectifs : pas interchangeable.
+        assert!(!election.contains(&"candidat".to_owned()), "{election:?}");
+        assert!(!election.contains(&"marché".to_owned()), "{election:?}");
+        assert!(of("marché", LinkKind::Syntactic).contains(&"foire".to_owned()));
+        // Les contextes de passage rapprochent aussi le sujet (« candidat ») : ces liens-là
+        // ne servent qu'à confirmer.
+        let topical = of("élection", LinkKind::Topical);
+        assert!(!topical.contains(&"marché".to_owned()), "{topical:?}");
+        // Noms propres : jamais appris.
+        assert!(
+            e.learned(Lang::FRA, schema::TermKind::Word(Pos::Propn), "Dupont")
+                .unwrap()
+                .is_empty()
+        );
+        // Base inchangée depuis : rien à réapprendre.
+        assert!(!e.learning_due(1, 0.2).unwrap());
     }
 
     #[test]

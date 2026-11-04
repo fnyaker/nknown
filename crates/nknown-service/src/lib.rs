@@ -114,6 +114,10 @@ impl Options {
 /// Source dont l'identifiant interne n'est lié à aucune collecte : textes ajoutés par l'API.
 const API_SOURCE: &str = "api";
 
+/// Apprentissage des liens entre mots : base minimale, et croissance qui le relance.
+const LEARN_MIN_PASSAGES: u64 = 2_000;
+const LEARN_GROWTH: f64 = 0.2;
+
 pub struct Service {
     /// Rechargé quand les modèles arrivent (téléchargement du premier lancement).
     pipeline: RwLock<Arc<Pipeline>>,
@@ -350,7 +354,9 @@ impl Service {
         on_event(api::SearchEvent::Phase {
             phase: api::Phase::Analyze,
         });
-        let q = query::build_query_with(&self.pipeline(), Some(&self.detector), &req.query);
+        let pipeline = self.pipeline();
+        let mut q = query::build_query_with(&pipeline, Some(&self.detector), &req.query);
+        query::add_learned(&pipeline, &self.engine(), &mut q);
         let terms: Vec<api::QueryTermView> = q
             .terms
             .iter()
@@ -588,10 +594,12 @@ impl Service {
     fn feed_view(&self, feed: &config::Feed) -> Result<api::FeedView, Error> {
         let mut by_doc: std::collections::HashMap<u64, api::Hit> = Default::default();
         for kw in feed.keywords.iter().filter(|k| !k.trim().is_empty()) {
-            let mut q = query::build_query_with(&self.pipeline(), Some(&self.detector), kw);
+            let pipeline = self.pipeline();
+            let mut q = query::build_query_with(&pipeline, Some(&self.detector), kw);
             if q.terms.is_empty() {
                 continue;
             }
+            query::add_learned(&pipeline, &self.engine(), &mut q);
             q.recency = Some(nknown_engine::RECENT_HALF_LIFE_DAYS);
             let found = self
                 .engine()
@@ -794,7 +802,37 @@ impl Service {
         if let Err(e) = self.engine_mut().compute_authority() {
             eprintln!("autorité : {e}");
         }
+        self.learn_if_due();
         out
+    }
+
+    /// Réapprend les liens entre mots si la base a assez grossi depuis la dernière fois
+    /// (voir `nknown_engine::learn`). Le calcul se fait sous verrou de lecture : les
+    /// recherches continuent pendant ce temps.
+    pub fn learn_if_due(&self) {
+        let due = self
+            .engine()
+            .learning_due(LEARN_MIN_PASSAGES, LEARN_GROWTH)
+            .unwrap_or(false);
+        if !due {
+            return;
+        }
+        let start = Instant::now();
+        let learned = self
+            .engine()
+            .compute_learned(nknown_engine::LearnOptions::default());
+        let stored = learned.and_then(|l| self.engine_mut().store_learned(l));
+        match stored {
+            Ok(s) => eprintln!(
+                "liens appris : {} syntaxiques, {} thématiques ({} mots, {} documents) [{:.1?}]",
+                s.syntactic,
+                s.links,
+                s.vocab,
+                s.docs,
+                start.elapsed()
+            ),
+            Err(e) => eprintln!("liens appris : {e}"),
+        }
     }
 
     /// Collecte incrémentale d'une source : seuls les contenus nouveaux ou modifiés sont

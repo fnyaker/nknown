@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use super::{ImportError, ImportStats, is_single_word, strip_stress};
 use crate::lexicon::Lexicon;
-use crate::relations::{Evidence, RelationsBuilder, gloss_strength, list_strength};
+use crate::relations::{Evidence, Origin, RelationsBuilder, gloss_strength, list_strength};
 use crate::tokenize;
 
 #[derive(Deserialize)]
@@ -38,6 +38,8 @@ struct Links {
     hyponyms: Vec<Item>,
     #[serde(default)]
     related: Vec<Item>,
+    #[serde(default)]
+    antonyms: Vec<Item>,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +67,11 @@ struct Item {
 
 /// Sens dont la définition est lue, au plus (les derniers sont rares et souvent techniques).
 const GLOSSED_SENSES: usize = 8;
+
+/// Vrai si `a` est un autre mot que `b` (sans tenir compte de la casse).
+fn is_other_word(a: &str, b: &str) -> bool {
+    a.to_lowercase() != b.to_lowercase()
+}
 
 /// Rangs ajoutés à un sens vieilli, rare ou régional.
 const MARGINAL_RANK: usize = 3;
@@ -122,15 +129,13 @@ pub fn import(
             continue;
         }
         stats.used += 1;
-        let mut add = |target: &str, e: Evidence, strength: f32| {
+        let keep = |target: &str| -> Option<String> {
             let target = strip_stress(target);
             // Une lettre seule (« G » pour « portable ») n'est pas un mot à chercher.
             let short = target.chars().count() < 2 && !target.chars().any(tokenize::is_cjk);
-            if !short && is_single_word(&target) {
-                builder.link(&word, &target, e, strength);
-                stats.analyses += 1;
-            }
+            (!short && is_single_word(&target)).then_some(target)
         };
+        let entry_id = builder.entry(&word);
         // Rang effectif de chaque sens : un sens vieilli ou rare compte comme plus lointain.
         let ranks: Vec<usize> = entry
             .senses
@@ -144,36 +149,65 @@ pub fn import(
                 }
             })
             .collect();
-        // (liens, rang du sens s'ils en dépendent).
-        let mut links = vec![(&entry.links, None)];
-        let mut rank = 0usize;
-        for (i, sense) in entry.senses.iter().enumerate() {
-            links.push((&sense.links, Some(ranks[i])));
+        // Sens retenus (ni « forme de », ni au-delà de GLOSSED_SENSES), par position.
+        let mut sense_ids = Vec::with_capacity(entry.senses.len());
+        let mut kept = 0usize;
+        for sense in &entry.senses {
             let inflection = !sense.form_of.is_empty()
                 || !sense.alt_of.is_empty()
                 || sense.tags.iter().any(|t| t == "form-of" || t == "alt-of");
-            if inflection || rank >= GLOSSED_SENSES {
-                continue;
+            if inflection || kept >= GLOSSED_SENSES {
+                sense_ids.push(None);
+            } else {
+                sense_ids.push(Some(builder.sense(entry_id)));
+                kept += 1;
             }
-            if let Some(lex) = lexicon {
+        }
+        // Mots des définitions : indices et signature de leur sens.
+        if let Some(lex) = lexicon {
+            let mut rank = 0usize;
+            for (i, sense) in entry.senses.iter().enumerate() {
+                let Some(sid) = sense_ids[i] else { continue };
+                let r = rank
+                    + if is_marginal(&sense.tags) {
+                        MARGINAL_RANK
+                    } else {
+                        0
+                    };
                 for gloss in &sense.glosses {
                     for span in tokenize::words(gloss) {
                         let form = &gloss[span];
-                        if let Some(e) = lex.lookup(form).find(|e| is_content(e.pos)) {
-                            let r = rank
-                                + if is_marginal(&sense.tags) {
-                                    MARGINAL_RANK
-                                } else {
-                                    0
-                                };
-                            add(e.lemma, Evidence::Gloss, gloss_strength(r));
+                        // La lecture la plus fréquente : « la » est un article, pas la note.
+                        if let Some(e) = lex.lookup(form).next().filter(|e| is_content(e.pos))
+                            && let Some(lemma) = keep(e.lemma)
+                            && is_other_word(&lemma, &word)
+                        {
+                            builder.sign(sid, &lemma);
+                            builder.link_from(
+                                &word,
+                                &lemma,
+                                Evidence::Gloss,
+                                gloss_strength(r),
+                                Origin::Sense(sid),
+                            );
+                            stats.analyses += 1;
                         }
                     }
                 }
+                rank += 1;
             }
-            rank += 1;
         }
-        for (l, sense_rank) in links {
+        // Listes : de l'entrée (avec ou sans numéro de sens) ou d'un sens.
+        let mut lists: Vec<(&Links, Option<usize>)> = vec![(&entry.links, None)];
+        for (i, sense) in entry.senses.iter().enumerate() {
+            lists.push((&sense.links, Some(i)));
+        }
+        for (l, in_sense) in lists {
+            for item in &l.antonyms {
+                if let Some(t) = keep(&item.word) {
+                    builder.antonym(&word, &t);
+                }
+            }
             for (items, e) in [
                 (&l.synonyms, Evidence::Synonym),
                 (&l.hypernyms, Evidence::Broader),
@@ -187,12 +221,29 @@ pub fn import(
                     *sizes.entry(item.sense_index).or_default() += 1;
                 }
                 for item in items {
-                    let rank = sense_rank.or_else(|| {
-                        let i = item.sense_index?.checked_sub(1)?;
-                        Some(ranks.get(i).copied().unwrap_or(i))
-                    });
+                    let Some(target) = keep(&item.word) else {
+                        continue;
+                    };
+                    // Position du sens : celui de la liste, ou le numéro donné (à partir de 1).
+                    let at = in_sense.or_else(|| item.sense_index?.checked_sub(1));
+                    let rank = at.map(|i| ranks.get(i).copied().unwrap_or(i));
+                    let sid = at.and_then(|i| sense_ids.get(i).copied().flatten());
+                    let origin = match sid {
+                        Some(sid) => {
+                            builder.sign(sid, &target);
+                            Origin::Sense(sid)
+                        }
+                        None => Origin::Entry(entry_id),
+                    };
                     let len = sizes[&item.sense_index];
-                    add(&item.word, e, list_strength(len, rank.unwrap_or(0)));
+                    builder.link_from(
+                        &word,
+                        &target,
+                        e,
+                        list_strength(len, rank.unwrap_or(0)),
+                        origin,
+                    );
+                    stats.analyses += 1;
                 }
             }
         }
@@ -213,6 +264,7 @@ mod tests {
 {"word": "scrutin", "lang_code": "fr", "pos": "noun", "synonyms": [{"word": "votation"}], "senses": [{"glosses": ["Vote au moyen de bulletins."]}, {"glosses": ["Ensemble des opérations qui constituent une élection."]}]}
 {"word": "voiture", "lang_code": "fr", "pos": "noun", "senses": [{"glosses": ["Véhicule."], "synonyms": [{"word": "automobile"}]}]}
 {"word": "car", "lang_code": "en", "pos": "noun", "synonyms": [{"word": "automobile"}]}
+{"word": "portable", "lang_code": "fr", "pos": "noun", "synonyms": [{"word": "gsm", "sense_index": 1}, {"word": "mobile", "sense_index": 1}], "antonyms": [{"word": "fixe"}], "senses": [{"glosses": ["Téléphone portable ; téléphone cellulaire."]}, {"glosses": ["Ordinateur portable."]}]}
 "#;
 
     fn lexicon() -> Lexicon {
@@ -226,6 +278,9 @@ mod tests {
             ("pluriel", "pluriel", Pos::Noun),
             ("la", "le", Pos::Det),
             ("des", "de", Pos::Adp),
+            ("téléphone", "téléphone", Pos::Noun),
+            ("ordinateur", "ordinateur", Pos::Noun),
+            ("portable", "portable", Pos::Adj),
         ] {
             b.insert(form, lemma, pos, Feats::default());
         }
@@ -237,7 +292,7 @@ mod tests {
         let lex = lexicon();
         let mut b = RelationsBuilder::new();
         let stats = import(DUMP.as_bytes(), "fr", Some(&lex), &mut b).unwrap();
-        assert_eq!(stats.used, 4);
+        assert_eq!(stats.used, 5);
         let r = b
             .build(
                 BuildOptions {
@@ -247,7 +302,12 @@ mod tests {
                 |_| 1.0,
             )
             .unwrap();
-        let of = |w: &str| r.related(w).map(|(x, _)| x.to_owned()).collect::<Vec<_>>();
+        let of = |w: &str| {
+            r.related(w)
+                .into_iter()
+                .map(|(x, _)| x.to_owned())
+                .collect::<Vec<_>>()
+        };
         let election = of("élection");
         assert!(election.contains(&"scrutin".to_owned()), "{election:?}");
         assert!(election.contains(&"suffrage".to_owned()), "{election:?}");
@@ -262,5 +322,14 @@ mod tests {
         assert!(of("voiture").contains(&"automobile".to_owned()));
         // Autre langue : ignorée.
         assert!(!of("automobile").contains(&"car".to_owned()));
+
+        // Sens : « gsm » (synonyme du sens 1) s'efface devant « ordinateur ».
+        let rec = r.record("portable");
+        assert_eq!(rec.senses.len(), 2, "{rec:?}");
+        assert!(rec.senses[1].signature.contains(&"ordinateur"));
+        assert_eq!(rec.antonyms, ["fixe"]);
+        let ctx = |w: &str| if w == "ordinateur" { 1.0 } else { 0.0 };
+        let gsm = |list: Vec<(&str, f32)>| list.iter().find(|(w, _)| *w == "gsm").unwrap().1;
+        assert!(gsm(rec.in_context(&ctx)) <= 0.51 * gsm(rec.in_context(&|_| 0.0)));
     }
 }

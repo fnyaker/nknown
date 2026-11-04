@@ -24,6 +24,7 @@ usage :
   nknown search <base.redb> <lexique.lex> <requête> [nombre] [--explain]
   nknown rank <base.redb>                         (autorité des documents, PageRank)
   nknown stats <base.redb>                        (occupation de la base, par type de donnée)
+  nknown learn <base.redb> [lexiques/] [mot]...  (liens appris des documents ; démon arrêté)
   nknown compact <base.redb>                      (réécrit la base, sans place perdue ; démon arrêté)
   nknown watch <base.redb> <lexique.lex> <source> <intervalle> [modèle]...   (ex. 30m, 2h)
   nknown lexicon build <sortie.lex> <ressource>...
@@ -127,6 +128,7 @@ fn main() -> ExitCode {
         ["rank", base] => rank(base),
         ["stats", base] => stats(base),
         ["compact", base] => compact(base),
+        ["learn", base, rest @ ..] => learn(base, rest),
         ["models", action @ ("status" | "fetch"), dir @ ..] if dir.len() <= 1 => {
             models_cmd(action, dir.first().copied())
         }
@@ -242,6 +244,84 @@ fn lexicon_build(out: &str, mut sources: &[&str]) -> Res {
     Ok(())
 }
 
+/// Apprend les liens entre mots des documents de la base, puis montre ceux de `words`.
+fn learn(base: &str, rest: &[&str]) -> Res {
+    use nknown_engine::{Engine, LearnOptions, RedbStorage};
+    let mut engine = Engine::new(RedbStorage::open(base)?).with_stemmer(nknown_nlp::langid::stem);
+    if let Some(note) = engine.migrate()? {
+        eprintln!("base mise à jour : {note}");
+    }
+    let start = Instant::now();
+    let s = engine.learn(LearnOptions::default())?;
+    println!(
+        "{} paires nom-adjectif → {} liens syntaxiques ; {} passages ({} répétés écartés), \
+         {} documents, {} mots → {} liens thématiques [{:.1?}]",
+        s.qualified,
+        s.syntactic,
+        s.passages,
+        s.boilerplate,
+        s.docs,
+        s.vocab,
+        s.links,
+        start.elapsed()
+    );
+    if rest.iter().all(|w| std::path::Path::new(w).is_dir()) {
+        for (lemma, lang, links) in engine.learned_sample(40)? {
+            let list: Vec<String> = links
+                .iter()
+                .filter(|l| l.kind == nknown_engine::LinkKind::Syntactic)
+                .map(|l| format!("{} {:.2} ({})", l.lemma, l.cosine, l.shared))
+                .collect();
+            if !list.is_empty() {
+                println!("{lemma} ({lang}) : {}", list.join(", "));
+            }
+        }
+    }
+    let (words, lexicon) = match rest {
+        [dir, words @ ..] if std::path::Path::new(dir).is_dir() => (words, Some(*dir)),
+        words => (words, None),
+    };
+    let pipeline = match lexicon {
+        Some(dir) => Some(pipeline(dir, &[])?),
+        None => None,
+    };
+    for word in words {
+        // Lemme du mot selon le lexique, s'il y en a un ; sinon le mot tel quel.
+        let mut lemmas: Vec<(Lang, Pos, String)> = Vec::new();
+        if let Some(p) = &pipeline {
+            for lang in p.lexicon_langs() {
+                for e in p.lexicon(lang).into_iter().flat_map(|l| l.lookup(word)) {
+                    lemmas.push((lang, e.pos, e.lemma.to_owned()));
+                }
+            }
+        }
+        if lemmas.is_empty() {
+            for pos in [Pos::Noun, Pos::Adj, Pos::Verb] {
+                lemmas.push((Lang::FRA, pos, word.to_string()));
+            }
+        }
+        lemmas.dedup();
+        for (lang, pos, lemma) in lemmas {
+            let links = engine.learned(lang, nknown_engine::schema::TermKind::Word(pos), &lemma)?;
+            if links.is_empty() {
+                continue;
+            }
+            let list: Vec<String> = links
+                .iter()
+                .map(|l| {
+                    let kind = match l.kind {
+                        nknown_engine::LinkKind::Syntactic => "synt.",
+                        nknown_engine::LinkKind::Topical => "thème",
+                    };
+                    format!("{} {:.2} ({kind}, {})", l.lemma, l.cosine, l.shared)
+                })
+                .collect();
+            println!("{lemma} ({pos:?}, {}) : {}", lang.as_str(), list.join(", "));
+        }
+    }
+    Ok(())
+}
+
 fn relations_build(out: &str, lexicon: &str, dump: &str, lang: &str) -> Res {
     use nknown_nlp::import::relations;
     use nknown_nlp::relations::BuildOptions;
@@ -288,14 +368,33 @@ fn relations_build(out: &str, lexicon: &str, dump: &str, lang: &str) -> Res {
 fn relations_lookup(path: &str, words: &[&str]) -> Res {
     let rel = nknown_nlp::Relations::load(path)?;
     for word in words {
-        let list: Vec<String> = rel
-            .related(word)
-            .map(|(w, p)| format!("{w} {p:.2}"))
-            .collect();
-        if list.is_empty() {
+        let rec = rel.record(word);
+        if rec.links.is_empty() && rec.antonyms.is_empty() {
             println!("{word} : (aucun lien)");
-        } else {
-            println!("{word} : {}", list.join(", "));
+            continue;
+        }
+        println!("{word}");
+        for (i, s) in rec.senses.iter().enumerate() {
+            println!(
+                "  sens {} (entrée {}) : {}",
+                i + 1,
+                s.group + 1,
+                s.signature.join(", ")
+            );
+        }
+        let tag = |t: u8| match t {
+            nknown_nlp::relations::SHARED => String::new(),
+            t if t >= 128 => format!(" [entrée {}]", t - 127),
+            t => format!(" [sens {}]", t + 1),
+        };
+        let list: Vec<String> = rec
+            .links
+            .iter()
+            .map(|l| format!("{} {:.2}{}", l.word, l.weight, tag(l.tag)))
+            .collect();
+        println!("  liens : {}", list.join(", "));
+        if !rec.antonyms.is_empty() {
+            println!("  contraires : {}", rec.antonyms.join(", "));
         }
     }
     Ok(())
@@ -631,10 +730,6 @@ fn collect(
     Ok(())
 }
 
-fn build_query(pipeline: &Pipeline, text: &str) -> nknown_engine::Query {
-    nknown_service::query::build_query(pipeline, text)
-}
-
 fn stats(base: &str) -> Res {
     let file = std::fs::metadata(base)?.len();
     let r = nknown_engine::RedbStorage::open(base)?.report(file)?;
@@ -719,11 +814,27 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) ->
     if let Some(note) = engine.migrate()? {
         eprintln!("base mise à jour : {note}");
     }
-    let q = build_query(&pipeline, query);
+    // Comme le démon : langue détectée, mots étiquetés en contexte.
+    let mut q =
+        nknown_service::query::build_query_with(&pipeline, Some(&LangDetector::new()), query);
     if let Some(i) = &q.intent {
         println!("intention : {}", i.name);
     }
+    let notes = nknown_service::query::add_learned(&pipeline, &engine, &mut q);
     if explain {
+        for n in &notes {
+            println!(
+                "{} « {} » : {} {:.2}",
+                if n.confirmed {
+                    "confirmé par les documents, pour"
+                } else {
+                    "appris des documents, pour"
+                },
+                q.terms[n.term].text,
+                n.word,
+                n.weight
+            );
+        }
         for t in q.terms.iter().filter(|t| !t.related.is_empty()) {
             let list: Vec<String> = t
                 .related

@@ -16,6 +16,7 @@
 //! | `C` | source | date u64 de la dernière collecte (point de reprise) |
 //! | `A` | id du document | autorité f32 (PageRank, moyenne 1) |
 //! | `T` | langue, 0, racine, 0, id du lemme | catégorie (octet) : lemmes de même racine |
+//! | `R` | id du lemme | lemmes appris du corpus (voir [`crate::learn`]) |
 //!
 //! Identifiants : un seul compteur pour tous les nœuds (documents, passages, lemmes).
 
