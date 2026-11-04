@@ -1,0 +1,38 @@
+# Choix du sens d'un mot selon le reste de la requête (nknown relations eval).
+# Cas retirés : « bass guitar », « tennis court » (aucun lien du bon sens dans le dictionnaire).
+# requête	mot	lien attendu (doit l'emporter)	lien du mauvais sens (doit reculer)
+# ------------------------------------------------------------ français
+ordinateur portable	portable	laptop	gsm
+téléphone portable	portable	gsm	laptop
+avocat tribunal	avocat	procureur	avocatier
+avocat guacamole	avocat	avocatier	procureur
+souris ordinateur	souris	pointeur	rongeur
+souris chat fromage	souris	rongeur	pointeur
+pêche poisson	pêche	poisson	nectarine
+pêche abricot	pêche	nectarine	poisson
+glace vanille	glace	sorbet	miroir
+glace salle de bain	glace	miroir	sorbet
+carte restaurant	carte	menu	plan
+carte routière	carte	plan	menu
+# ------------------------------------------------------------ anglais
+bank account money	bank	banker	mound
+river bank erosion	bank	mound	banker
+computer mouse click	mouse	touchpad	vole
+mouse trap cheese	mouse	vole	touchpad
+bass fishing lake	bass	barse	bassist
+laptop battery	battery	accumulator	assault
+assault and battery	battery	assault	accumulator
+crane bird	crane	heron	derrick
+construction crane	crane	derrick	heron
+court judge	court	tribunal	courtship
+football match	match	contest	lucifer
+match fire	match	lucifer	contest
+spring flowers	spring	springtime	geyser
+hot spring water	spring	geyser	springtime
+# ------------------------------------------------------------ russe
+мышь компьютер	мышь	указатель	мышастый
+серая мышь кошка	мышь	мышастый	указатель
+лук стрела	лук	стрела	лук-порей
+зеленый лук овощ	лук	лук-порей	стрела
+ключ от замка	ключ	замок	родник
+холодный ключ вода	ключ	родник	замок

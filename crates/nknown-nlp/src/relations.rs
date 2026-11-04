@@ -36,7 +36,9 @@
 //!           varint nombre de liens ; par lien : varint position du lemme lié dans strings,
 //!           u8 poids (0..=255 pour 0..=1), u8 rattachement (sens 0..=127, entrée 128 + n,
 //!           255 : tous les sens), par poids décroissant ;
-//!           varint nombre d'antonymes, leurs positions dans strings
+//!           varint nombre d'antonymes, leurs positions dans strings ;
+//!           varint nombre de mots plus généraux (hyperonymes, genre de la définition : ils
+//!           servent à juger d'un contexte, pas à élargir), leurs positions (version 3)
 //! strings : lemmes, chacun préfixé de sa longueur en varint
 //! ```
 
@@ -46,7 +48,9 @@ use std::{fs, mem};
 
 use crate::lexicon::{LexiconError, normalize, read_varint, write_varint};
 
-const MAGIC: &[u8; 8] = b"NKREL\0\0\x02";
+const MAGIC: &[u8; 8] = b"NKREL\0\0\x03";
+/// Version 2 : sans la liste des mots plus généraux.
+const MAGIC_V2: &[u8; 8] = b"NKREL\0\0\x02";
 const HEADER_LEN: usize = MAGIC.len() + 3 * 8;
 
 /// Nature d'un indice direct entre deux mots.
@@ -158,8 +162,15 @@ const FANOUT_MIN: f32 = 0.2;
 const MAX_SENSES: usize = 32;
 const MAX_SIGNATURE: usize = 16;
 const MAX_ANTONYMS: usize = 16;
+const MAX_BROADER: usize = 12;
+/// Lesk étendu : mots de signature dont on prend les voisins, voisins par mot, poids minimal,
+/// et mots ajoutés au plus.
+const EXTEND_FROM: usize = 8;
+const EXTEND_PER_WORD: usize = 2;
+const EXTEND_MIN: f32 = 0.6;
+const EXTENDED: usize = 16;
 /// Spécificité minimale d'un mot de définition dans une signature (« être », « faire » : non).
-const SIGNATURE_SPEC: f32 = 0.3;
+const SIGNATURE_SPEC: f32 = 0.18;
 /// Part d'un sens qui doit dominer les indices pour qu'un lien lui soit rattaché d'office.
 const DOMINANT: f32 = 0.6;
 /// Un sens l'emporte sur un autre par affinité s'il le dépasse de ce facteur.
@@ -324,10 +335,18 @@ impl RelationsBuilder {
         // Indices directs, dans les deux sens, chacun avec sa part ; l'origine (sens, entrée)
         // n'est connue que du côté du mot qui cite.
         let mut adj: Vec<Vec<(u32, f32, u32, u32)>> = vec![Vec::new(); n];
+        // Mots plus généraux de chaque mot (« heron » → « bird ») : affaiblis comme liens
+        // (élargir vers eux noie la recherche), mais précieux pour juger d'un contexte.
+        let mut broader: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
         for &(a, b, e, q, entry, sense) in &self.evidence {
             let mut p = e.weight() * f32::from(q) / 255.0;
             if e == Evidence::Gloss {
                 p *= spec(b);
+            }
+            match e {
+                Evidence::Broader | Evidence::Gloss => broader[a as usize].push((b, p)),
+                Evidence::Narrower => broader[b as usize].push((a, p)),
+                _ => {}
             }
             let (forward, backward) = e.directions();
             if p > 0.0 {
@@ -443,13 +462,33 @@ impl RelationsBuilder {
                 .collect();
             lists.insert(self.names[a].clone(), (a as u32, tagged));
         }
-        // Mots qui n'ont que des antonymes.
+        // Mots qui n'ont que des antonymes ou des mots plus généraux.
         self.antonyms.sort_unstable();
         self.antonyms.dedup();
         for &(a, _) in &self.antonyms {
             lists
                 .entry(self.names[a as usize].clone())
                 .or_insert_with(|| (a, Vec::new()));
+        }
+        for list in broader.iter_mut() {
+            list.sort_unstable_by_key(|&(b, _)| b);
+            list.dedup_by(|x, y| {
+                if x.0 == y.0 {
+                    y.1 = y.1.max(x.1);
+                    true
+                } else {
+                    false
+                }
+            });
+            list.sort_unstable_by(|x, y| y.1.total_cmp(&x.1));
+            list.truncate(MAX_BROADER);
+        }
+        for (a, list) in broader.iter().enumerate() {
+            if !list.is_empty() {
+                lists
+                    .entry(self.names[a].clone())
+                    .or_insert_with(|| (a as u32, Vec::new()));
+            }
         }
 
         // Écriture : seuls les lemmes cités sont gardés dans la table des chaînes.
@@ -484,6 +523,25 @@ impl RelationsBuilder {
                         .collect();
                     sig.sort_by(|&x, &y| spec(y).total_cmp(&spec(x)).then(x.cmp(&y)));
                     sig.truncate(MAX_SIGNATURE);
+                    // Lesk étendu : les voisins les plus sûrs des mots de la signature la
+                    // complètent (« bloom » amène « blossom », « flower »), pour qu'un contexte
+                    // qui ne reprend pas les mots exacts de la définition la retrouve.
+                    let mut extra: Vec<u32> = Vec::new();
+                    for &x in sig.iter().take(EXTEND_FROM) {
+                        let mut near: Vec<(u32, f32)> = direct[x as usize]
+                            .iter()
+                            .copied()
+                            .filter(|&(y, w)| w >= EXTEND_MIN && y != *a)
+                            .collect();
+                        near.sort_by(|p, q| q.1.total_cmp(&p.1));
+                        for (y, _) in near.into_iter().take(EXTEND_PER_WORD) {
+                            if !sig.contains(&y) && !extra.contains(&y) {
+                                extra.push(y);
+                            }
+                        }
+                    }
+                    extra.truncate(EXTENDED);
+                    sig.extend(extra);
                     write_varint(&mut records, sig.len() as u64);
                     for c in sig {
                         let off = offset_of(c, &mut strings);
@@ -512,11 +570,18 @@ impl RelationsBuilder {
                 let off = offset_of(b, &mut strings);
                 write_varint(&mut records, off);
             }
+            let wider = &broader[*a as usize];
+            write_varint(&mut records, wider.len() as u64);
+            for &(b, _) in wider {
+                let off = offset_of(b, &mut strings);
+                write_varint(&mut records, off);
+            }
         }
         Ok(Relations {
             fst: fst.into_map(),
             records,
             strings,
+            version: 3,
         })
     }
 
@@ -658,6 +723,8 @@ pub struct Record<'a> {
     pub senses: Vec<SenseSig<'a>>,
     pub links: Vec<Link<'a>>,
     pub antonyms: Vec<&'a str>,
+    /// Mots plus généraux (« bird » pour « heron ») : pour juger d'un contexte seulement.
+    pub broader: Vec<&'a str>,
 }
 
 /// Poids gardé par le sens le moins soutenu par le contexte.
@@ -710,20 +777,40 @@ impl Record<'_> {
             .iter()
             .map(|&s| ((SENSE_SMOOTHING + s) / (SENSE_SMOOTHING + best)).max(SENSE_FLOOR))
             .collect();
-        // Les sens d'une même entrée se soutiennent en partie : « livre » a huit sens
-        // « ouvrage », que le contexte ne départage guère.
-        self.senses
+        // Les sens proches se soutiennent : ceux dont les signatures se recoupent (un même sens
+        // réparti sur plusieurs entrées : « spring » saison, entrées 2 et 4), et, en partie,
+        // ceux d'une même entrée (« livre » a huit sens « ouvrage »).
+        let sigs: Vec<std::collections::HashSet<&str>> = self
+            .senses
             .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let group = self
-                    .senses
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, t)| t.group == s.group)
-                    .map(|(j, _)| own[j])
-                    .fold(0.0, f32::max);
-                own[i].max(GROUP_SHARE * group)
+            .map(|s| s.signature.iter().copied().collect())
+            .collect();
+        let similarity = |i: usize, j: usize| -> f32 {
+            let (a, b) = (&sigs[i], &sigs[j]);
+            let small = a.len().min(b.len());
+            if small == 0 {
+                return 0.0;
+            }
+            a.intersection(b).count() as f32 / small as f32
+        };
+        (0..self.senses.len())
+            .map(|i| {
+                (0..self.senses.len())
+                    .map(|j| {
+                        let share = if i == j {
+                            1.0
+                        } else {
+                            let group = if self.senses[i].group == self.senses[j].group {
+                                GROUP_SHARE
+                            } else {
+                                0.0
+                            };
+                            similarity(i, j).max(group)
+                        };
+                        own[j] * share
+                    })
+                    .fold(0.0, f32::max)
+                    .max(SENSE_FLOOR)
             })
             .collect()
     }
@@ -769,6 +856,7 @@ pub struct Relations {
     fst: fst::Map<Vec<u8>>,
     records: Vec<u8>,
     strings: Vec<u8>,
+    version: u8,
 }
 
 impl std::fmt::Debug for Relations {
@@ -825,10 +913,16 @@ impl Relations {
             });
         }
         let antonyms = words(&mut rest)?;
+        let broader = if self.version >= 3 {
+            words(&mut rest)?
+        } else {
+            Vec::new()
+        };
         Some(Record {
             senses,
             links,
             antonyms,
+            broader,
         })
     }
 
@@ -846,7 +940,7 @@ impl Relations {
         let fst = self.fst.as_fst().as_bytes();
         let mut out =
             Vec::with_capacity(HEADER_LEN + fst.len() + self.records.len() + self.strings.len());
-        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(if self.version >= 3 { MAGIC } else { MAGIC_V2 });
         for len in [fst.len(), self.records.len(), self.strings.len()] {
             out.extend_from_slice(&(len as u64).to_le_bytes());
         }
@@ -857,8 +951,13 @@ impl Relations {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LexiconError> {
-        if bytes.len() < HEADER_LEN || &bytes[..MAGIC.len()] != MAGIC {
-            return Err(LexiconError::Format("en-tête absent ou version inconnue"));
+        let version = match bytes.get(..MAGIC.len()) {
+            Some(m) if m == MAGIC => 3,
+            Some(m) if m == MAGIC_V2 => 2,
+            _ => return Err(LexiconError::Format("en-tête absent ou version inconnue")),
+        };
+        if bytes.len() < HEADER_LEN {
+            return Err(LexiconError::Format("fichier tronqué"));
         }
         let mut lens = [0usize; 3];
         for (i, len) in lens.iter_mut().enumerate() {
@@ -885,6 +984,7 @@ impl Relations {
             fst,
             records,
             strings,
+            version,
         })
     }
 

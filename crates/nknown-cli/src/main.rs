@@ -31,9 +31,10 @@ usage :
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
                    lexique <Lexique383.tsv>
   nknown lexicon lookup <lexique.lex> <mot>...
-  nknown relations build <sortie.rel> <lexique.lex> <dump.jsonl|-> <code-langue-wiktionary>
+  nknown relations build <sortie.rel> <lexique.lex> (<dump.jsonl[.gz]|-> <code-langue>)...
                                                 (liens de sens entre mots ; - : entrée standard)
   nknown relations lookup <liens.rel> <mot>...
+  nknown relations eval <modèles/> <cas.tsv> [base.redb]   (choix du sens : eval/senses.tsv)
   nknown analyze <lexique.lex> <texte> [modèle]...
   nknown eval <lexique.lex> <corpus.conllu> [modèle]...
   nknown tagger train <lexique.lex> <train.conllu> <sortie.tag> [passes]
@@ -160,8 +161,13 @@ fn main() -> ExitCode {
         ["lexicon", "lookup", lexicon, words @ ..] if !words.is_empty() => {
             lexicon_lookup(lexicon, words)
         }
-        ["relations", "build", out, lexicon, dump, lang] => {
-            relations_build(out, lexicon, dump, lang)
+        ["relations", "build", out, lexicon, dumps @ ..]
+            if !dumps.is_empty() && dumps.len() % 2 == 0 =>
+        {
+            relations_build(out, lexicon, dumps)
+        }
+        ["relations", "eval", models, cases, base @ ..] if base.len() <= 1 => {
+            relations_eval(models, cases, base.first().copied())
         }
         ["relations", "lookup", rel, words @ ..] if !words.is_empty() => {
             relations_lookup(rel, words)
@@ -322,30 +328,37 @@ fn learn(base: &str, rest: &[&str]) -> Res {
     Ok(())
 }
 
-fn relations_build(out: &str, lexicon: &str, dump: &str, lang: &str) -> Res {
+fn relations_build(out: &str, lexicon: &str, dumps: &[&str]) -> Res {
     use nknown_nlp::import::relations;
     use nknown_nlp::relations::BuildOptions;
     let start = Instant::now();
     let lexicon = Lexicon::load(lexicon)?;
     let mut builder = nknown_nlp::RelationsBuilder::new();
-    let stats = if dump == "-" {
-        relations::import(std::io::stdin().lock(), lang, Some(&lexicon), &mut builder)?
-    } else {
-        relations::import(
-            BufReader::new(File::open(dump)?),
-            lang,
-            Some(&lexicon),
-            &mut builder,
-        )?
-    };
-    eprintln!(
-        "{dump} : {} lignes ({} entrées utilisées, {} invalides) -> {} indices [{:.1?}]",
-        stats.entries,
-        stats.used,
-        stats.invalid,
-        builder.evidence_count(),
-        start.elapsed()
-    );
+    // Plusieurs dictionnaires : le Wiktionnaire de la langue (définitions dans la langue) et
+    // le Wiktionary anglais (autres synonymes) se complètent.
+    for pair in dumps.chunks(2) {
+        let (dump, lang) = (pair[0], pair[1]);
+        let reader: Box<dyn std::io::BufRead> = if dump == "-" {
+            Box::new(std::io::stdin().lock())
+        } else if dump.ends_with(".gz") {
+            let child = std::process::Command::new("zcat")
+                .arg(dump)
+                .stdout(std::process::Stdio::piped())
+                .spawn()?;
+            Box::new(BufReader::new(child.stdout.ok_or("zcat sans sortie")?))
+        } else {
+            Box::new(BufReader::new(File::open(dump)?))
+        };
+        let stats = relations::import(reader, lang, Some(&lexicon), &mut builder)?;
+        eprintln!(
+            "{dump} : {} lignes ({} entrées utilisées, {} invalides) -> {} indices [{:.1?}]",
+            stats.entries,
+            stats.used,
+            stats.invalid,
+            builder.evidence_count(),
+            start.elapsed()
+        );
+    }
     // Mot courant : fréquence d'usage (par million) du lexique, 100 et plus = 1.
     let familiarity = |w: &str| {
         let f: f32 = lexicon.lookup(w).map(|e| e.freq).sum();
@@ -362,6 +375,61 @@ fn relations_build(out: &str, lexicon: &str, dump: &str, lang: &str) -> Res {
         rel.lemma_count(),
         start.elapsed()
     );
+    Ok(())
+}
+
+/// Banc d'essai du choix du sens : pour chaque cas (requête, mot, lien attendu, lien du
+/// mauvais sens), le lien attendu doit peser plus que l'autre dans la requête.
+fn relations_eval(models: &str, cases: &str, base: Option<&str>) -> Res {
+    use nknown_engine::{Engine, RedbStorage};
+    let pipeline = pipeline(models, &[])?;
+    let detector = LangDetector::new();
+    let engine = match base {
+        Some(b) => Some(Engine::new(RedbStorage::open(b)?).with_stemmer(nknown_nlp::langid::stem)),
+        None => None,
+    };
+    let weights = |text: &str, word: &str| -> std::collections::HashMap<String, f32> {
+        let mut q = match &engine {
+            Some(e) => nknown_service::query::build_query_in(&pipeline, Some(&detector), text, e),
+            None => nknown_service::query::build_query_with(&pipeline, Some(&detector), text),
+        };
+        if let Some(e) = &engine {
+            nknown_service::query::add_learned(&pipeline, e, &mut q);
+        }
+        q.terms
+            .iter()
+            .find(|t| t.text.to_lowercase() == word.to_lowercase())
+            .map(|t| t.related.iter().map(|(_, w, p)| (w.clone(), *p)).collect())
+            .unwrap_or_default()
+    };
+    let (mut pass, mut alone_pass, mut total) = (0, 0, 0);
+    for line in std::fs::read_to_string(cases)?.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        let [query, word, good, bad] = cols[..] else {
+            return Err(format!("ligne invalide : {line}").into());
+        };
+        let w = weights(query, word);
+        let a = weights(word, word);
+        let get =
+            |m: &std::collections::HashMap<String, f32>, k: &str| m.get(k).copied().unwrap_or(0.0);
+        let ok = get(&w, good) > get(&w, bad);
+        let ok_alone = get(&a, good) > get(&a, bad);
+        total += 1;
+        pass += usize::from(ok);
+        alone_pass += usize::from(ok_alone);
+        println!(
+            "{} {query:<28} {word:<10} {good} {:.2} / {bad} {:.2}   (seul : {:.2} / {:.2})",
+            if ok { "✓" } else { "✗" },
+            get(&w, good),
+            get(&w, bad),
+            get(&a, good),
+            get(&a, bad)
+        );
+    }
+    println!("\n{pass}/{total} cas réussis en contexte (mot seul : {alone_pass}/{total})");
     Ok(())
 }
 

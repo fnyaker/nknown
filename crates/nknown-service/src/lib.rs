@@ -355,8 +355,12 @@ impl Service {
             phase: api::Phase::Analyze,
         });
         let pipeline = self.pipeline();
-        let mut q = query::build_query_with(&pipeline, Some(&self.detector), &req.query);
-        query::add_learned(&pipeline, &self.engine(), &mut q);
+        let q = {
+            let engine = self.engine();
+            let mut q = query::build_query_in(&pipeline, Some(&self.detector), &req.query, &engine);
+            query::add_learned(&pipeline, &engine, &mut q);
+            q
+        };
         let terms: Vec<api::QueryTermView> = q
             .terms
             .iter()
@@ -595,11 +599,15 @@ impl Service {
         let mut by_doc: std::collections::HashMap<u64, api::Hit> = Default::default();
         for kw in feed.keywords.iter().filter(|k| !k.trim().is_empty()) {
             let pipeline = self.pipeline();
-            let mut q = query::build_query_with(&pipeline, Some(&self.detector), kw);
+            let mut q = {
+                let engine = self.engine();
+                let mut q = query::build_query_in(&pipeline, Some(&self.detector), kw, &engine);
+                query::add_learned(&pipeline, &engine, &mut q);
+                q
+            };
             if q.terms.is_empty() {
                 continue;
             }
-            query::add_learned(&pipeline, &self.engine(), &mut q);
             q.recency = Some(nknown_engine::RECENT_HALF_LIFE_DAYS);
             let found = self
                 .engine()

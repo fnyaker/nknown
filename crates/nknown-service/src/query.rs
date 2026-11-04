@@ -51,6 +51,28 @@ const MIN_RELATED: f32 = 0.3;
 const READING_SMOOTHING: f32 = 0.1;
 const READING_FLOOR: f32 = 0.15;
 
+/// Voisins d'un lemme dans les documents (langue, catégorie, lemme → (lemme, force)).
+pub type Corpus<'a> = &'a dyn Fn(Lang, TermKind, &str) -> Vec<(String, f32)>;
+
+/// Un mot écrit dans l'écriture de sa langue : « mouse » n'est pas un mot chinois, même si le
+/// lexique chinois le connaît (ses liens chinois prendraient la place des liens anglais).
+fn written_in(lang: Lang, lemma: &str) -> bool {
+    let letters = || lemma.chars().filter(|c| c.is_alphabetic());
+    match lang.as_str() {
+        "zho" | "jpn" => lemma.chars().any(tokenize::is_cjk),
+        "rus" | "ukr" | "bul" | "srp" => letters().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c)),
+        _ => letters().all(|c| c.is_ascii() || ('\u{00C0}'..='\u{024F}').contains(&c)),
+    }
+}
+
+/// Contexte au second pas : mots liés suivis, voisins pris pour chacun, et poids.
+const SECOND_HOP_FROM: usize = 8;
+const SECOND_HOP_PER_WORD: usize = 8;
+const SECOND_HOP: f32 = 0.25;
+
+/// Poids des voisins d'un mot dans les documents, face aux autres mots de la requête.
+const CORPUS_CONTEXT: f32 = 0.5;
+
 /// Contexte d'un mot de la requête : présence (0..=1) d'un lemme autour de lui.
 type Context<'a> = &'a dyn Fn(Lang, &str) -> f32;
 
@@ -88,7 +110,10 @@ fn related_words(
     let mut records = Vec::new();
     for (lang, kind, lemma) in readings {
         let TermKind::Word(pos) = kind else { continue };
-        if !nknown_engine::ingest::is_content(*pos) || (restrict && !matches(kind)) {
+        if !nknown_engine::ingest::is_content(*pos)
+            || (restrict && !matches(kind))
+            || !written_in(*lang, lemma)
+        {
             continue;
         }
         let Some(rel) = pipeline.relations(*lang) else {
@@ -111,15 +136,42 @@ fn related_words(
             1.0
         };
         let links: Vec<(&str, f32)> = match context {
-            Some(ctx) => record.in_context(&|w| ctx(lang, w)),
             None => record.links.iter().map(|l| (l.word, l.weight)).collect(),
+            Some(ctx) => {
+                let rel = pipeline.relations(lang).expect("fiche lue dans ces liens");
+                record
+                    .in_context(&|w| ctx(lang, w))
+                    .into_iter()
+                    .zip(&record.links)
+                    .map(|((word, by_sense), link)| {
+                        // Le mot lié plaide aussi sa propre cause : « heron », rattaché à un
+                        // sens voisin de l'oiseau, est lui-même lié à « bird ».
+                        // ses liens et ses mots plus généraux (« heron » → « bird »).
+                        let rec = rel.record(word);
+                        let own = rec
+                            .links
+                            .iter()
+                            .map(|l| l.weight * ctx(lang, l.word))
+                            .chain(rec.broader.iter().map(|w| BROADER_SUPPORT * ctx(lang, w)))
+                            .fold(ctx(lang, word), f32::max)
+                            .min(1.0);
+                        let sense = by_sense * factor;
+                        let w = (sense * (UNSUPPORTED + (1.0 - UNSUPPORTED) * own))
+                            .max(link.weight * own);
+                        (word, w)
+                    })
+                    .collect()
+            }
         };
-        let links = links.into_iter().map(|(w, p)| (w, p * factor));
+        // Seuil sur le lien du dictionnaire ; le contexte classe ensuite, sans éliminer (un
+        // lien écarté par le sens recule, le moteur ne garde que les meilleurs).
+        let links = links
+            .into_iter()
+            .zip(&record.links)
+            .filter(|(_, l)| l.weight >= MIN_RELATED)
+            .map(|((w, p), _)| (w, if context.is_some() { p } else { p * factor }));
         let lang = &lang;
         for (word, w) in links {
-            if w < MIN_RELATED {
-                continue;
-            }
             let key = (*lang, word.to_owned());
             if own.contains(&key) {
                 continue;
@@ -134,7 +186,10 @@ fn related_words(
     out
 }
 
-/// Poids gardé par un mot lié que rien dans le reste de la requête ne soutient.
+/// Soutien qu'apporte au mot lié un mot plus général présent dans le contexte.
+const BROADER_SUPPORT: f32 = 0.8;
+
+/// Poids gardé par un mot lié que rien dans le contexte ne soutient (voir [`related_words`]).
 const UNSUPPORTED: f32 = 0.75;
 
 /// Lemmes de contenu d'un mot de la requête et ses mots liés, avec leur présence.
@@ -155,61 +210,76 @@ fn surroundings(t: &QueryTerm) -> HashMap<(Lang, String), f32> {
 /// Sens de chaque mot selon les autres : « portable » près d'« ordinateur » est l'ordinateur,
 /// pas le téléphone ; « livre » près de « sterling » est la monnaie. Les mots liés de chaque
 /// mot sont recalculés avec, pour contexte, les autres mots et leurs propres mots liés.
-fn choose_senses(pipeline: &Pipeline, terms: &mut [QueryTerm], tags: &[Option<Pos>]) {
-    if terms.len() < 2 || terms.iter().all(|t| t.related.is_empty()) {
+///
+/// `corpus` : voisins d'un lemme dans les documents de l'utilisateur (liens appris). Ils
+/// donnent l'usage dominant du mot chez lui (« battery » au milieu de « charge », « laptop »),
+/// qui départage les sens même quand la requête n'a qu'un mot, avec un poids moindre que les
+/// autres mots de la requête.
+fn choose_senses(
+    pipeline: &Pipeline,
+    terms: &mut [QueryTerm],
+    tags: &[Option<Pos>],
+    corpus: Option<Corpus<'_>>,
+) {
+    if terms.iter().all(|t| t.related.is_empty()) {
         return;
     }
-    let around: Vec<HashMap<(Lang, String), f32>> = terms.iter().map(surroundings).collect();
+    let own: Vec<HashMap<(Lang, String), f32>> = terms
+        .iter()
+        .map(|t| {
+            let mut m = HashMap::new();
+            let Some(corpus) = corpus else { return m };
+            for (lang, kind, lemma) in &t.readings {
+                if !matches!(kind, TermKind::Word(p) if nknown_engine::ingest::is_content(*p)) {
+                    continue;
+                }
+                for (w, p) in corpus(*lang, *kind, lemma) {
+                    let slot = m.entry((*lang, w.to_lowercase())).or_insert(0.0f32);
+                    *slot = slot.max(CORPUS_CONTEXT * p);
+                }
+            }
+            m
+        })
+        .collect();
+    if terms.len() < 2 && own.iter().all(HashMap::is_empty) {
+        return;
+    }
+    let around: Vec<HashMap<(Lang, String), f32>> = terms
+        .iter()
+        .map(|t| {
+            let mut m = surroundings(t);
+            // Un pas de plus : les voisins des mots liés les plus proches, à poids réduit
+            // (« vanille » → « dessert » ← « sorbet »).
+            let mut near: Vec<(Lang, String, f32)> = t.related.clone();
+            near.sort_by(|a, b| b.2.total_cmp(&a.2));
+            for (lang, w, p) in near.into_iter().take(SECOND_HOP_FROM) {
+                let Some(rel) = pipeline.relations(lang) else {
+                    continue;
+                };
+                for (x, q) in rel.related(&w).into_iter().take(SECOND_HOP_PER_WORD) {
+                    let slot = m.entry((lang, x.to_owned())).or_insert(0.0);
+                    *slot = slot.max(SECOND_HOP * p * q);
+                }
+            }
+            m
+        })
+        .collect();
     for (i, term) in terms.iter_mut().enumerate() {
         if term.related.is_empty() {
             continue;
         }
         let ctx = |lang: Lang, w: &str| {
+            let key = (lang, w.to_owned());
             around
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != i)
-                .filter_map(|(_, m)| m.get(&(lang, w.to_owned())).copied())
+                .filter_map(|(_, m)| m.get(&key).copied())
+                .chain(own[i].get(&key).copied())
                 .fold(0.0, f32::max)
         };
         let tag = tags.get(i).copied().flatten();
         term.related = related_words(pipeline, &term.readings, tag, Some(&ctx));
-    }
-}
-
-/// Sens d'un mot selon les autres mots de la requête : dans « ordinateur portable »,
-/// « laptop » (lié aussi à « ordinateur ») garde son poids, « gsm » (le téléphone) en perd.
-/// Un mot lié est soutenu s'il est lié à un mot de la requête ou à l'un de leurs mots liés.
-fn weigh_by_context(pipeline: &Pipeline, terms: &mut [QueryTerm]) {
-    if terms.iter().filter(|t| !t.related.is_empty()).count() == 0 || terms.len() < 2 {
-        return;
-    }
-    // Pour chaque mot : ses lemmes et ses mots liés, avec leur force.
-    let around: Vec<HashMap<(Lang, String), f32>> = terms.iter().map(surroundings).collect();
-    for (i, term) in terms.iter_mut().enumerate() {
-        for (lang, word, weight) in &mut term.related {
-            let mut support = 0.0f32;
-            for (j, other) in around.iter().enumerate() {
-                if j == i {
-                    continue;
-                }
-                // Le mot lié est lui-même lié à ce mot de la requête…
-                if let Some(&p) = other.get(&(*lang, word.clone())) {
-                    support = support.max(p);
-                }
-                // … ou l'un de ses propres liens y mène.
-                if let Some(rel) = pipeline.relations(*lang) {
-                    for (w, p) in rel.related(word) {
-                        if let Some(&q) = other.get(&(*lang, w.to_owned())) {
-                            support = support.max(p * q);
-                        }
-                    }
-                }
-            }
-            *weight *= UNSUPPORTED + (1.0 - UNSUPPORTED) * support.min(1.0);
-        }
-        term.related
-            .sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
     }
 }
 
@@ -341,6 +411,34 @@ pub fn build_query(pipeline: &Pipeline, text: &str) -> Query {
 
 /// Comme [`build_query`], avec la détection de langue pour étiqueter la requête en contexte.
 pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, text: &str) -> Query {
+    build_query_inner(pipeline, detector, text, None)
+}
+
+/// Comme [`build_query_with`], en laissant les documents de `engine` (liens appris) départager
+/// les sens des mots (voir [`choose_senses`]).
+pub fn build_query_in<S: nknown_engine::Storage>(
+    pipeline: &Pipeline,
+    detector: Option<&LangDetector>,
+    text: &str,
+    engine: &nknown_engine::Engine<S>,
+) -> Query {
+    let corpus = |lang: Lang, kind: TermKind, lemma: &str| -> Vec<(String, f32)> {
+        engine
+            .learned(lang, kind, lemma)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|l| (l.lemma, l.cosine))
+            .collect()
+    };
+    build_query_inner(pipeline, detector, text, Some(&corpus))
+}
+
+fn build_query_inner(
+    pipeline: &Pipeline,
+    detector: Option<&LangDetector>,
+    text: &str,
+    corpus: Option<Corpus<'_>>,
+) -> Query {
     // Catégorie de chaque mot (par position dans `text`) selon le tagueur de sa langue.
     let tagged: std::collections::HashMap<usize, Pos> = detector
         .and_then(|d| d.detect(text))
@@ -457,8 +555,7 @@ pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, te
         let mut keep = function.iter().map(|f| !f);
         tags.retain(|_| keep.next().unwrap_or(true));
     }
-    choose_senses(pipeline, &mut terms, &tags);
-    weigh_by_context(pipeline, &mut terms);
+    choose_senses(pipeline, &mut terms, &tags, corpus);
     kinds.sort_unstable();
     kinds.dedup();
     Query {

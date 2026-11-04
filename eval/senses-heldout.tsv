@@ -1,0 +1,13 @@
+# Cas jamais utilisés pour régler les paramètres (contrôle de généralisation).
+# requête	mot	lien attendu	lien du mauvais sens
+seal animal ocean	seal	pinniped	stamp
+seal the envelope	seal	stamp	pinniped
+garden plant flower	plant	flower	plantation
+mousse au chocolat	mousse	écume	matelot
+mousse marin bateau	mousse	matelot	écume
+vol cambriolage police	vol	cambriolage	volée
+vol oiseaux migration	vol	volée	cambriolage
+коса волосы	коса	косичка	газонокосилка
+коса трава	коса	газонокосилка	косичка
+мир война	мир	спокойствие	вселенная
+мир планеты космос	мир	вселенная	спокойствие

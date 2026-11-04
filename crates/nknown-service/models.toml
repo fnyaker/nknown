@@ -59,31 +59,31 @@ sha256 = "8b60098110fef4153346a7d68ecd86a762a06f365eb9eae2f434ff85165e30c6"
 
 [[file]]
 path = "fr.rel"
-asset = "fr.v2.rel"
+asset = "fr.v3.rel"
 group = "base"
-size = 13094198
-sha256 = "14e64812994587f41ba2a8fafffab58d63346c517916508a0d788c967ddf006c"
+size = 23526653
+sha256 = "b5a71ae620ca600c55ff156d30342788fde044c6536903793c07ceda503138e9"
 
 [[file]]
 path = "en.rel"
-asset = "en.v2.rel"
+asset = "en.v3.rel"
 group = "base"
-size = 19872499
-sha256 = "233b2c212cbfb9a2f405bd6f49c96a5b505d61879ee2edbc206dbf0e25482ed0"
+size = 38159764
+sha256 = "b99343cfb139c4ed3b1c7ae8fa0cc9f994746206986a1ea5ba1bbd78e394c72a"
 
 [[file]]
 path = "ru.rel"
-asset = "ru.v2.rel"
+asset = "ru.v3.rel"
 group = "base"
-size = 3952668
-sha256 = "8090ab5f0439bcf11df62d7d9e4b8fcbf11fe6e92dd7d9a3c47e09184bde4d27"
+size = 44209496
+sha256 = "70e107e11c51b5317175921e9cc647b69eae04ddb3fef9010616980b5d3f57b3"
 
 [[file]]
 path = "zh.rel"
-asset = "zh.v2.rel"
+asset = "zh.v3.rel"
 group = "base"
-size = 10203904
-sha256 = "3b5d44e69b8dd24bd7b9e27f96119632649d151b78d56c861724dfc8a8bb68b7"
+size = 14042774
+sha256 = "8d9d5b005f156e631a0ec802c20a63931551b9b11827375a7f98d4c4acb2a07a"
 
 [[file]]
 path = "parser-multi/parser.json"
