@@ -165,6 +165,7 @@ impl Table {
     }
 
     /// Nombre de lignes (sous-mots du vocabulaire).
+    #[cfg(feature = "vulkan")]
     pub(crate) fn rows(&self) -> Result<usize> {
         Ok(match self {
             Self::Full(t) => t.dim(0)?,
