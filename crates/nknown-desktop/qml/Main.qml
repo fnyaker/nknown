@@ -291,11 +291,26 @@ ApplicationWindow {
 
         }
 
+        // ------------------------------------------------------------------ traduction
+        TranslationOffer {
+            id: offer
+            anchors.top: top.bottom
+            anchors.topMargin: 20
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Math.min(parent.width - 2 * Theme.margin, 820)
+            translation: win.engineState.translation || null
+            opacity: win.searching ? 0 : 1
+            visible: shown && opacity > 0
+            height: implicitHeight
+            Behavior on opacity { NumberAnimation { duration: Theme.standard } }
+            onAnswer: (spec, accept) => backend.answerTranslation(spec, accept)
+        }
+
         // ------------------------------------------------------------------ flux d'info
         FeedBoard {
             id: board
-            anchors.top: top.bottom
-            anchors.topMargin: win.hasFeeds ? 36 : 48
+            anchors.top: offer.visible ? offer.bottom : top.bottom
+            anchors.topMargin: offer.visible ? 20 : win.hasFeeds ? 36 : 48
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -469,6 +484,7 @@ ApplicationWindow {
             onSetEngine: (mode, url, token) => backend.setEngine(mode, url, token)
             onSetDaemonEnabled: (enabled) => backend.setDaemonEnabled(enabled)
             onSetAnalysis: (parser, precision, device) => backend.setAnalysis(parser, precision, device)
+            onSetTranslateDevice: (device) => backend.setTranslateDevice(device)
         }
 
         // Message bref (source ajoutée, réglage appliqué, erreur), en bas au centre.

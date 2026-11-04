@@ -14,12 +14,14 @@ Item {
     signal setEngine(string mode, string url, string token)
     signal setDaemonEnabled(bool enabled)
     signal setAnalysis(bool parser, string precision, string device)
+    signal setTranslateDevice(string device)
 
     visible: open || panel.x < width
     readonly property var sources: state.sources || []
     readonly property var settings: state.settings || ({ engine: "auto", remote_url: "" })
     readonly property var daemon: state.daemon || ({ installed: false, enabled: false })
     readonly property var analysis: state.analysis || null
+    readonly property var translation: state.translation || null
     function applyAnalysis(change) {
         const a = Object.assign({}, root.analysis, change)
         root.setAnalysis(a.parser, a.precision, a.device)
@@ -214,6 +216,35 @@ Item {
                                         : s && s.parser_device === "cpu" ? "Calcule sur le processeur, en priorité basse."
                                         : "Chargement…"
                             return where + (root.analysis.precision === "light" ? " Version légère (CPU)." : "")
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------------ traduction
+                Section {
+                    title: "Traduction"
+                    visible: !!root.translation && root.translation.available
+                    Segmented {
+                        width: column.width
+                        options: [
+                            { key: "auto", label: "Auto" },
+                            { key: "gpu", label: "GPU" },
+                            { key: "cpu", label: "CPU" }
+                        ]
+                        current: root.translation ? root.translation.device : "auto"
+                        onPicked: (key) => root.setTranslateDevice(key)
+                    }
+                    Text {
+                        width: column.width
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.pixelSize: 12
+                        text: {
+                            const t = root.translation
+                            const n = t ? (t.sources || []).filter(s => s.state === "accepted").length : 0
+                            return (n > 0 ? n + (n > 1 ? " sources traduites" : " source traduite") + " en français. "
+                                          : "Les sources dans une autre langue vous sont proposées à la traduction. ")
+                                 + "Modèles locaux (OPUS-MT) : rien ne quitte cet ordinateur."
                         }
                     }
                 }

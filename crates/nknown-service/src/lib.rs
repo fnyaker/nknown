@@ -19,7 +19,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use nknown_api as api;
 use nknown_core::analyze::Analyzer;
@@ -136,7 +136,15 @@ pub struct Service {
     translators: translation::Translators,
     /// Traduction en cours des documents déjà indexés d'une source.
     translating: Mutex<Option<api::TranslationProgress>>,
+    /// Langues des documents par source (nombre de documents de la base, quand, décompte).
+    source_langs: Mutex<Option<(u64, Instant, Arc<SourceLangs>)>>,
 }
+
+/// Langues des documents (hors copies traduites), par identifiant de source.
+type SourceLangs = HashMap<String, Vec<Lang>>;
+
+/// Décompte des langues par source : recalculé au plus aussi souvent (la base entière est lue).
+const SOURCE_LANGS_EVERY: Duration = Duration::from_secs(60);
 
 const PARSER_NONE: u8 = 0;
 const PARSER_CPU: u8 = 1;
@@ -204,6 +212,7 @@ impl Service {
             models: Mutex::new(api::ModelsState::Missing),
             translators: translation::Translators::default(),
             translating: Mutex::new(None),
+            source_langs: Mutex::new(None),
             pipeline: RwLock::new(Arc::new(pipeline)),
         })
     }
@@ -615,19 +624,7 @@ impl Service {
     pub fn translation(&self) -> Result<api::TranslationView, Error> {
         let config = self.config();
         let dir = config.models_dir(&self.data_dir);
-        let mut langs: HashMap<String, Vec<Lang>> = HashMap::new();
-        for (_, d) in self.engine().documents()? {
-            let copy = d
-                .external_id
-                .as_deref()
-                .is_some_and(|e| translation::translated_from(e).is_some());
-            if copy {
-                continue;
-            }
-            if let Some(l) = Lang::from_code(&d.lang) {
-                langs.entry(d.source).or_default().push(l);
-            }
-        }
+        let langs = self.source_langs()?;
         let mut out = Vec::new();
         for (spec, id) in self.source_ids(&config.sources) {
             let state = if config.translate.contains(&spec) {
@@ -656,6 +653,32 @@ impl Service {
             sources: out,
             busy: lock(&self.translating).clone(),
         })
+    }
+
+    /// Langues des documents par source, en cache (voir [`SOURCE_LANGS_EVERY`]).
+    fn source_langs(&self) -> Result<Arc<SourceLangs>, Error> {
+        let docs = self.engine().stats()?.docs;
+        if let Some((n, at, langs)) = lock(&self.source_langs).as_ref()
+            && (*n == docs || at.elapsed() < SOURCE_LANGS_EVERY)
+        {
+            return Ok(langs.clone());
+        }
+        let mut langs: SourceLangs = HashMap::new();
+        for (_, d) in self.engine().documents()? {
+            let copy = d
+                .external_id
+                .as_deref()
+                .is_some_and(|e| translation::translated_from(e).is_some());
+            if copy {
+                continue;
+            }
+            if let Some(l) = Lang::from_code(&d.lang) {
+                langs.entry(d.source).or_default().push(l);
+            }
+        }
+        let langs = Arc::new(langs);
+        *lock(&self.source_langs) = Some((docs, Instant::now(), langs.clone()));
+        Ok(langs)
     }
 
     /// Réponse à une proposition de traduction, ou changement de périphérique. Acceptée : les

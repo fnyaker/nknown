@@ -284,6 +284,32 @@ mod tests {
     }
 
     #[test]
+    fn translation_models_are_wanted_per_accepted_language() {
+        let m = manifest();
+        let mut c = Config::default();
+        assert!(wanted_pairs(&c).is_empty());
+        c.translate_langs = vec!["zho".into()];
+        // Le chinois passe par l'anglais.
+        assert_eq!(wanted_pairs(&c), ["en-fr", "zh-en"]);
+        let dir = tempfile::tempdir().unwrap();
+        let files = missing_pairs(&m, dir.path(), &wanted_pairs(&c));
+        assert_eq!(files.len(), 8, "{files:?}");
+        assert!(files.iter().all(|f| f.group == Group::Translate));
+        // Chaque langue traduisible a tous ses fichiers au manifeste.
+        for lang in crate::translation::languages() {
+            for pair in crate::translation::chain(lang).unwrap() {
+                assert_eq!(missing_pairs(&m, dir.path(), &[pair]).len(), 4, "{pair}");
+            }
+        }
+        // Les modèles de traduction ne font pas partie de la base.
+        assert!(
+            missing(&m, dir.path(), &groups(&c))
+                .iter()
+                .all(|f| f.group != Group::Translate)
+        );
+    }
+
+    #[test]
     fn groups_follow_the_configuration() {
         let mut c = Config {
             parser: Some(crate::config::DEFAULT_PARSER.into()),

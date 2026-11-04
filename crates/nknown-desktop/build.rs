@@ -16,6 +16,7 @@ fn main() {
                 "qml/Import.qml",
                 "qml/Pill.qml",
                 "qml/IconButton.qml",
+                "qml/TranslationOffer.qml",
             ])
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true)),
     )

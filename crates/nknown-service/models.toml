@@ -112,3 +112,227 @@ asset = "parser-multi--model.q4k.gguf"
 group = "light"
 size = 168513280
 sha256 = "9d2dafaad854f00527609c108751b607dba54afa7770f6439a72c3fe48eabd49"
+
+[[file]]
+path = "translate/en-fr/config.json"
+asset = "translate--en-fr--config.json"
+group = "translate"
+pair = "en-fr"
+size = 1416
+sha256 = "df92c371911b45282caac6101fe7e7f5d5e9af7f9a99356067ffe306278ce72b"
+
+[[file]]
+path = "translate/en-fr/model.safetensors"
+asset = "translate--en-fr--model.safetensors"
+group = "translate"
+pair = "en-fr"
+size = 150415940
+sha256 = "ce1e750ecdb64cb192a08330962a90ec455f675854ebe0f3ab1f5ce64b567219"
+
+[[file]]
+path = "translate/en-fr/source.spm"
+asset = "translate--en-fr--source.spm"
+group = "translate"
+pair = "en-fr"
+size = 778395
+sha256 = "173e9f493a668fe396d599e28d414a201193094e6ffd7a4678e5aab0f6d3d838"
+
+[[file]]
+path = "translate/en-fr/vocab.json"
+asset = "translate--en-fr--vocab.json"
+group = "translate"
+pair = "en-fr"
+size = 1339166
+sha256 = "945c604346ce15ce4aff9001001e7f925e336d942c4087017f191871162cbdc4"
+
+[[file]]
+path = "translate/de-fr/config.json"
+asset = "translate--de-fr--config.json"
+group = "translate"
+pair = "de-fr"
+size = 1381
+sha256 = "2373c1036c20af2d1fbdf5c201bf50db53e2cc7e81c9846a928db6a66d7def40"
+
+[[file]]
+path = "translate/de-fr/model.safetensors"
+asset = "translate--de-fr--model.safetensors"
+group = "translate"
+pair = "de-fr"
+size = 152097554
+sha256 = "380bb5b23f0e7b0a3185fe7dcdf046085bc05dfd9ed4094ae084c76d768fb89b"
+
+[[file]]
+path = "translate/de-fr/source.spm"
+asset = "translate--de-fr--source.spm"
+group = "translate"
+pair = "de-fr"
+size = 827737
+sha256 = "965802053f4a59f81d48283bd1160ed49950124891f8f532d98945de4f5e58eb"
+
+[[file]]
+path = "translate/de-fr/vocab.json"
+asset = "translate--de-fr--vocab.json"
+group = "translate"
+pair = "de-fr"
+size = 1464136
+sha256 = "f0b50c6f6c01e5d7ad62872e61aefe1ddeb52c7740c80f0caa16cc6c0bdd129b"
+
+[[file]]
+path = "translate/es-fr/config.json"
+asset = "translate--es-fr--config.json"
+group = "translate"
+pair = "es-fr"
+size = 1381
+sha256 = "19c5e47d074a8a6000d95d84061a2e8d40511cede49bb16307a760f50196f811"
+
+[[file]]
+path = "translate/es-fr/model.safetensors"
+asset = "translate--es-fr--model.safetensors"
+group = "translate"
+pair = "es-fr"
+size = 166121948
+sha256 = "ca969e12833793f727446b1e09bb01ae8293b4f40aa601209bb90a485b232acf"
+
+[[file]]
+path = "translate/es-fr/source.spm"
+asset = "translate--es-fr--source.spm"
+group = "translate"
+pair = "es-fr"
+size = 818689
+sha256 = "0807c7b3dabe387a083700920a4b406c7656db09922bf934c25c2fab24706c4d"
+
+[[file]]
+path = "translate/es-fr/vocab.json"
+asset = "translate--es-fr--vocab.json"
+group = "translate"
+pair = "es-fr"
+size = 2337705
+sha256 = "c9030ac4070b1477fd6e697ba9d867add990214942e93dcd6af679044dc1e269"
+
+[[file]]
+path = "translate/it-fr/config.json"
+asset = "translate--it-fr--config.json"
+group = "translate"
+pair = "it-fr"
+size = 1381
+sha256 = "79cfdfe0d9b2b39ed538879836705f05020eb54f662776fd8518e1cf46746216"
+
+[[file]]
+path = "translate/it-fr/model.safetensors"
+asset = "translate--it-fr--model.safetensors"
+group = "translate"
+pair = "it-fr"
+size = 150248702
+sha256 = "0a982778dfc35609f4f8e6d8a6e3ed623defae7e7946c58af3a4865802503b25"
+
+[[file]]
+path = "translate/it-fr/source.spm"
+asset = "translate--it-fr--source.spm"
+group = "translate"
+pair = "it-fr"
+size = 813967
+sha256 = "7bdce190b91dcd93a386b7f584dbed229fa78a89d16ed0742ad1f348d9082005"
+
+[[file]]
+path = "translate/it-fr/vocab.json"
+asset = "translate--it-fr--vocab.json"
+group = "translate"
+pair = "it-fr"
+size = 1417263
+sha256 = "25098142de80d839f09f4933a9623f0ca53ee2f4e2967c2578cb2cbbef97625d"
+
+[[file]]
+path = "translate/nl-fr/config.json"
+asset = "translate--nl-fr--config.json"
+group = "translate"
+pair = "nl-fr"
+size = 1381
+sha256 = "90719d0deccc1fd1535221b813ddeceac1542ab71c787ed45a22a46de04f4329"
+
+[[file]]
+path = "translate/nl-fr/model.safetensors"
+asset = "translate--nl-fr--model.safetensors"
+group = "translate"
+pair = "nl-fr"
+size = 148495268
+sha256 = "002017e452959ad2c3393cfcf2be6cad161d44a46f9beb511b65ef6228a03c6f"
+
+[[file]]
+path = "translate/nl-fr/source.spm"
+asset = "translate--nl-fr--source.spm"
+group = "translate"
+pair = "nl-fr"
+size = 814095
+sha256 = "a2452ac5c28605107318ee5369f7a46b63692f2dcb584397a89fbb876a5e321d"
+
+[[file]]
+path = "translate/nl-fr/vocab.json"
+asset = "translate--nl-fr--vocab.json"
+group = "translate"
+pair = "nl-fr"
+size = 1347674
+sha256 = "6aca2f29007b7cc24fcc3e96428aa04cdcc121c1ea4c9a1326e70fe3dbfb7004"
+
+[[file]]
+path = "translate/ru-fr/config.json"
+asset = "translate--ru-fr--config.json"
+group = "translate"
+pair = "ru-fr"
+size = 1416
+sha256 = "ddbf638c83cdcc2073fff8e5949d137daa364b5c93975b60ddead7199efca103"
+
+[[file]]
+path = "translate/ru-fr/model.safetensors"
+asset = "translate--ru-fr--model.safetensors"
+group = "translate"
+pair = "ru-fr"
+size = 155405378
+sha256 = "74115cf2775f899717eb2fb8f78e69b5960768bcab5a64d8d80b85ee3bc029ff"
+
+[[file]]
+path = "translate/ru-fr/source.spm"
+asset = "translate--ru-fr--source.spm"
+group = "translate"
+pair = "ru-fr"
+size = 1063848
+sha256 = "50a16a6e7a21936d7a5cd1764c61364660353e2cebb2ed78e55b97bd74e85771"
+
+[[file]]
+path = "translate/ru-fr/vocab.json"
+asset = "translate--ru-fr--vocab.json"
+group = "translate"
+pair = "ru-fr"
+size = 2658919
+sha256 = "ab4eb145fa5b698946f002a5e513ade6cfadd31abc7f0b69f95b41915be58e1a"
+
+[[file]]
+path = "translate/zh-en/config.json"
+asset = "translate--zh-en--config.json"
+group = "translate"
+pair = "zh-en"
+size = 1394
+sha256 = "d84104da12fa90da59acf5f0ed30428e43cc92574ad4b9dfa88f29eeeb2b0eb0"
+
+[[file]]
+path = "translate/zh-en/model.safetensors"
+asset = "translate--zh-en--model.safetensors"
+group = "translate"
+pair = "zh-en"
+size = 156045602
+sha256 = "dbf106c7f62b74d9044dad4503736d4f2d2a2ddf06299fac741696efdf95deea"
+
+[[file]]
+path = "translate/zh-en/source.spm"
+asset = "translate--zh-en--source.spm"
+group = "translate"
+pair = "zh-en"
+size = 804677
+sha256 = "e27a3a1b539f4959ec72ea60e453f49156289f95d4e6000b29332efc45616203"
+
+[[file]]
+path = "translate/zh-en/vocab.json"
+asset = "translate--zh-en--vocab.json"
+group = "translate"
+pair = "zh-en"
+size = 1617902
+sha256 = "c0f79ee4c413ccb24cd808a0c727eec85b2130f23c82802cc1caeb07b5f0d458"

@@ -216,6 +216,25 @@ impl Engine {
         }
     }
 
+    /// Traduction : sources proposées ou décidées, périphérique.
+    pub fn translation(&self) -> Result<api::TranslationView> {
+        match self {
+            Self::Embedded(s) => s.translation().map_err(|e| e.to_string()),
+            _ => self.route_json("GET", api::routes::TRANSLATION, None),
+        }
+    }
+
+    /// Réponse à une proposition de traduction, ou changement de périphérique.
+    pub fn answer_translation(&self, req: api::TranslationRequest) -> Result<api::TranslationView> {
+        match self {
+            Self::Embedded(s) => s.answer_translation(req).map_err(|e| e.to_string()),
+            _ => {
+                let body = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
+                self.route_json("POST", api::routes::TRANSLATION, Some(&body))
+            }
+        }
+    }
+
     /// Catalogue de sources proposées (flux par thème et par langue).
     pub fn catalog(&self) -> Result<api::Catalog> {
         match self {

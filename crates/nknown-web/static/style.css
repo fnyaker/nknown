@@ -106,6 +106,18 @@ body {
 .gauge.done span i { opacity: 0; }
 .error { margin-top: 10px; text-align: center; color: var(--danger); font-size: 12px; }
 
+/* Proposition de traduction (accueil). */
+.offer {
+  margin: 18px auto 0; max-width: 820px; padding: 12px 14px 12px 16px;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg-raised); border: 1px solid var(--line-subtle); border-radius: 10px;
+  font-size: 13px; color: var(--text-primary);
+}
+.offer span { flex: 1; }
+.offer small { display: block; color: var(--text-secondary); font-size: 12px; margin-top: 2px; }
+.searching .offer { display: none; }
+.pill.quiet { background: transparent; color: var(--text-primary); border: 1px solid var(--line-subtle); }
+
 /* ------------------------------------------------------------------ carte et liste */
 .content {
   position: absolute; inset: 86px 0 0 0;

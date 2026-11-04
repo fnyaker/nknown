@@ -63,6 +63,7 @@ Rectangle {
             // Un fichier se reconnaît à la fin de son chemin.
             text: (card.hit.location || card.hit.source) + (card.hit.date ? "  ·  " + Theme.ago(card.hit.date) : "")
                   + (card.hit.code_lang ? "  ·  " + card.hit.code_lang : "")
+                  + (card.hit.translated_from ? "  ·  traduit de l'" + card.hit.translated_from : "")
             elide: Text.ElideMiddle
             color: Theme.textSecondary
             font.family: Theme.fontUi

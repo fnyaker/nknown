@@ -50,6 +50,7 @@ fn App() -> impl IntoView {
     let selected = RwSignal::new(String::new());
     let inspected = RwSignal::new(String::new());
     let generation = StoredValue::new(0u64);
+    let translation = RwSignal::new(None::<a::TranslationView>);
 
     let refresh = move || {
         spawn_local(async move {
@@ -57,6 +58,9 @@ fn App() -> impl IntoView {
                 Ok(Some(s)) => {
                     status.set(Some(s));
                     auth.set(Auth::Ok);
+                    if let Ok(t) = api::translation().await {
+                        translation.set(Some(t));
+                    }
                 }
                 Ok(None) => auth.set(Auth::Needed),
                 Err(e) => {
@@ -167,6 +171,7 @@ fn App() -> impl IntoView {
                     <Show when=move || !error.get().is_empty()>
                         <div class="error">{move || error.get()}</div>
                     </Show>
+                    <Offer translation=translation hidden=searching />
                 </div>
                 <div class="content">
                     <div class="map" on:click=move |_| inspected.set(String::new())>
@@ -208,6 +213,64 @@ fn App() -> impl IntoView {
     }
 }
 
+/// Nom français d'une langue (code ISO 639-3).
+fn lang_name(code: &str) -> &str {
+    match code {
+        "eng" => "anglais",
+        "deu" => "allemand",
+        "spa" => "espagnol",
+        "ita" => "italien",
+        "nld" => "néerlandais",
+        "rus" => "russe",
+        "zho" => "chinois",
+        other => other,
+    }
+}
+
+/// Proposition de traduire une source qui publie surtout dans une autre langue (une à la fois ;
+/// « Non merci » ne la repropose plus).
+#[component]
+fn Offer(
+    translation: RwSignal<Option<a::TranslationView>>,
+    hidden: RwSignal<bool>,
+) -> impl IntoView {
+    let current = move || {
+        translation.with(|t| {
+            t.as_ref().filter(|t| t.available).and_then(|t| {
+                t.sources
+                    .iter()
+                    .find(|s| s.state == a::TranslationState::Suggested)
+                    .cloned()
+            })
+        })
+    };
+    let answer = move |spec: String, accept: bool| {
+        spawn_local(async move {
+            if let Ok(t) = api::answer_translation(&spec, accept).await {
+                translation.set(Some(t));
+            }
+        });
+    };
+    view! {
+        {move || (!hidden.get()).then(current).flatten().map(|s| {
+            let (yes, no) = (s.spec.clone(), s.spec.clone());
+            let name = s.spec.rsplit('/').find(|p| !p.is_empty()).unwrap_or(&s.spec).to_owned();
+            view! {
+                <div class="offer">
+                    <span>
+                        <b>{name}</b>
+                        {format!(" publie surtout en {} ({} % de {} documents). La traduire en français, sur cet ordinateur ?",
+                            lang_name(&s.lang), (s.share * 100.0).round(), s.docs)}
+                        {(!s.model_ready).then(|| view! { <small>" Modèle de traduction à télécharger (≈ 150 Mo, une fois)."</small> })}
+                    </span>
+                    <button class="pill" on:click=move |_| answer(yes.clone(), true)>"Traduire"</button>
+                    <button class="pill quiet" on:click=move |_| answer(no.clone(), false)>"Non merci"</button>
+                </div>
+            }
+        })}
+    }
+}
+
 /// Carte de résultat : barre de score, nature, titre, source et date, extrait.
 #[component]
 fn Card(
@@ -225,7 +288,7 @@ fn Card(
         (index * 30).min(300)
     );
     let meta = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         hit.source,
         if hit.date > 0 {
             format!("  ·  {}", ago(hit.date))
@@ -235,6 +298,10 @@ fn Card(
         hit.code_lang
             .as_deref()
             .map(|l| format!("  ·  {l}"))
+            .unwrap_or_default(),
+        hit.translated_from
+            .as_deref()
+            .map(|l| format!("  ·  traduit de l'{}", lang_name(l)))
             .unwrap_or_default()
     );
     let snippet = highlight(&hit.snippet, &hit.matched);

@@ -90,6 +90,12 @@ nknown relations lookup fr.rel élection voiture   # sens, liens rattachés, con
 # dictionnaire ne dit rien.
 nknown learn base.redb modèles/ élection
 
+# Traduction locale (OPUS-MT, Marian) : une source qui publie surtout dans une autre langue est
+# proposée à la traduction en français (app, interface web, GET/POST /api/v1/translation) ;
+# acceptée, ses documents sont indexés aussi en français. CPU ou GPU (translate_device).
+nknown translate convert opus-mt-en-fr/ translate/en-fr/   # dossier Hugging Face → f16
+nknown translate vulkan:translate/en-fr "The results will be announced on Sunday."
+
 # Tagueur (couche 2) entraîné sur UD French-GSD (CC BY-SA 4.0)
 #   https://github.com/UniversalDependencies/UD_French-GSD
 nknown tagger train fr.lex fr_gsd-ud-train.conllu fr.tag

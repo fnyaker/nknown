@@ -20,17 +20,24 @@ files=(
   "parser-multi/parser.json|parser" "parser-multi/tokenizer.nkt|parser"
   "parser-multi/model.q4k-q8.gguf|standard" "parser-multi/model.q4k.gguf|light"
 )
+# Traduction (OPUS-MT, voir NOTICE.md) : téléchargée par paire, quand une langue est acceptée.
+for pair in en-fr de-fr es-fr it-fr nl-fr ru-fr zh-en; do
+  for f in config.json model.safetensors source.spm vocab.json; do
+    files+=("translate/$pair/$f|translate||$pair")
+  done
+done
 {
   echo "# Généré par packaging/models/stage.sh : ne pas modifier à la main."
   echo "release = \"https://github.com/$repo/releases/download/$tag\""
   for entry in "${files[@]}"; do
-    IFS='|' read -r path group asset <<< "$entry"
+    IFS='|' read -r path group asset pair <<< "$entry"
     asset=${asset:-${path//\//--}}
     cp -L "$src/$path" "$out/$asset"
     size=$(stat -c %s "$out/$asset")
     sum=$(sha256sum "$out/$asset" | cut -d' ' -f1)
-    printf '\n[[file]]\npath = "%s"\nasset = "%s"\ngroup = "%s"\nsize = %s\nsha256 = "%s"\n' \
-      "$path" "$asset" "$group" "$size" "$sum"
+    printf '\n[[file]]\npath = "%s"\nasset = "%s"\ngroup = "%s"\n' "$path" "$asset" "$group"
+    [ -n "$pair" ] && printf 'pair = "%s"\n' "$pair"
+    printf 'size = %s\nsha256 = "%s"\n' "$size" "$sum"
   done
 } > "$manifest"
 cp "$(dirname "$0")/NOTICE.md" "$out/NOTICE.md"

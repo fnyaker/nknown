@@ -71,6 +71,36 @@ pub async fn status() -> Result<Option<api::Status>> {
     }
 }
 
+/// Traduction : sources proposées ou décidées.
+pub async fn translation() -> Result<api::TranslationView> {
+    let resp = call("GET", api::routes::TRANSLATION, None, "application/json").await?;
+    if !resp.ok() {
+        return Err(failure(&resp).await);
+    }
+    serde_json::from_str(&text(&resp).await?).map_err(|e| e.to_string())
+}
+
+/// Réponse à une proposition de traduction.
+pub async fn answer_translation(spec: &str, accept: bool) -> Result<api::TranslationView> {
+    let body = serde_json::to_string(&api::TranslationRequest {
+        spec: Some(spec.to_owned()),
+        accept: Some(accept),
+        device: None,
+    })
+    .map_err(|e| e.to_string())?;
+    let resp = call(
+        "POST",
+        api::routes::TRANSLATION,
+        Some(body),
+        "application/json",
+    )
+    .await?;
+    if !resp.ok() {
+        return Err(failure(&resp).await);
+    }
+    serde_json::from_str(&text(&resp).await?).map_err(|e| e.to_string())
+}
+
 /// Échange le jeton contre un cookie de session ; le jeton ne reste pas dans la page.
 pub async fn login(token: &str) -> Result<()> {
     let body = serde_json::to_string(&api::SessionRequest {

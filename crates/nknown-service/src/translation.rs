@@ -121,7 +121,7 @@ enum Engine {
 }
 
 impl Engine {
-    #[cfg_attr(not(feature = "neural"), allow(unused_variables))]
+    #[cfg_attr(not(feature = "vulkan"), allow(unused_variables))]
     fn load(dir: &Path, gpu: bool) -> Result<Self, Error> {
         #[cfg(feature = "vulkan")]
         if gpu {

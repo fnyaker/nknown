@@ -129,6 +129,16 @@ pub mod qobject {
         #[cxx_name = "setDaemonEnabled"]
         fn set_daemon_enabled(self: Pin<&mut Backend>, enabled: bool);
 
+        /// Réponse à la proposition de traduire une source en français.
+        #[qinvokable]
+        #[cxx_name = "answerTranslation"]
+        fn answer_translation(self: Pin<&mut Backend>, spec: &QString, accept: bool);
+
+        /// Où calculer la traduction : `auto`, `gpu`, `cpu`.
+        #[qinvokable]
+        #[cxx_name = "setTranslateDevice"]
+        fn set_translate_device(self: Pin<&mut Backend>, device: &QString);
+
         /// Action venue de l'icône de la zone de notification : `toggle`, `search`, `quit`.
         #[qsignal]
         #[cxx_name = "trayAction"]
@@ -332,6 +342,7 @@ impl qobject::Backend {
                                 "status": s,
                                 "sources": e.sources().unwrap_or_default(),
                                 "analysis": e.settings().ok(),
+                                "translation": e.translation().ok(),
                                 })
                             }
                             Err(err) => serde_json::json!({ "engine": e.name(), "error": err }),
@@ -557,6 +568,38 @@ impl qobject::Backend {
                 )),
                 Some(e) => Err(format!("{ok} ajoutée(s), {} en échec — {e}", errors.len())),
             }
+        });
+    }
+
+    fn answer_translation(self: Pin<&mut Self>, spec: &QString, accept: bool) {
+        let spec = spec.to_string();
+        self.background(move |slot| {
+            slot.wait()?.answer_translation(api::TranslationRequest {
+                spec: Some(spec.clone()),
+                accept: Some(accept),
+                device: None,
+            })?;
+            Ok(if accept {
+                format!("{} : traduction en français lancée", short(&spec))
+            } else {
+                String::new()
+            })
+        });
+    }
+
+    fn set_translate_device(self: Pin<&mut Self>, device: &QString) {
+        let device = match device.to_string().as_str() {
+            "gpu" => api::DeviceChoice::Gpu,
+            "cpu" => api::DeviceChoice::Cpu,
+            _ => api::DeviceChoice::Auto,
+        };
+        self.background(move |slot| {
+            slot.wait()?.answer_translation(api::TranslationRequest {
+                spec: None,
+                accept: None,
+                device: Some(device),
+            })?;
+            Ok(String::new())
         });
     }
 

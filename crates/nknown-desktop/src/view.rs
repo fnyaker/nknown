@@ -124,6 +124,25 @@ pub struct HitView {
     /// Fichier local : chemin complet, et sa fin pour l'affichage (`…/src/lib.rs`).
     pub path: Option<String>,
     pub location: Option<String>,
+    /// Copie traduite : langue d'origine, en toutes lettres (« anglais »).
+    pub translated_from: Option<String>,
+}
+
+/// Nom français d'une langue (code ISO 639-3) ; le code lui-même si elle n'est pas connue.
+pub fn lang_name(code: &str) -> String {
+    match code {
+        "eng" => "anglais",
+        "deu" => "allemand",
+        "spa" => "espagnol",
+        "ita" => "italien",
+        "nld" => "néerlandais",
+        "rus" => "russe",
+        "zho" => "chinois",
+        "por" => "portugais",
+        "fra" => "français",
+        other => other,
+    }
+    .to_owned()
 }
 
 /// Fin d'un chemin : les `n` derniers éléments, précédés de `…/` s'il en manque.
@@ -159,6 +178,7 @@ pub fn hit_views(hits: &[api::Hit]) -> Vec<HitView> {
             url: h.url.clone(),
             path: h.path.clone(),
             location: h.path.as_deref().map(|p| path_tail(p, 3)),
+            translated_from: h.translated_from.as_deref().map(lang_name),
         })
         .collect()
 }
