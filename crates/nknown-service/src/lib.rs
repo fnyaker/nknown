@@ -11,6 +11,7 @@ pub mod graph;
 pub mod models;
 pub mod query;
 pub mod sources;
+pub mod translation;
 pub mod watch;
 
 use std::collections::HashMap;
@@ -132,6 +133,9 @@ pub struct Service {
     /// Analyseur chargé : 0 aucun, 1 CPU, 2 GPU.
     parser: AtomicU8,
     models: Mutex<api::ModelsState>,
+    translators: translation::Translators,
+    /// Traduction en cours des documents déjà indexés d'une source.
+    translating: Mutex<Option<api::TranslationProgress>>,
 }
 
 const PARSER_NONE: u8 = 0;
@@ -198,6 +202,8 @@ impl Service {
             collecting: AtomicUsize::new(0),
             parser: AtomicU8::new(parser),
             models: Mutex::new(api::ModelsState::Missing),
+            translators: translation::Translators::default(),
+            translating: Mutex::new(None),
             pipeline: RwLock::new(Arc::new(pipeline)),
         })
     }
@@ -215,7 +221,12 @@ impl Service {
         let config = self.config();
         let dir = config.models_dir(&self.data_dir);
         let manifest = fetch::manifest();
-        let missing = fetch::missing(&manifest, &dir, &fetch::groups(&config));
+        let mut missing = fetch::missing(&manifest, &dir, &fetch::groups(&config));
+        missing.extend(fetch::missing_pairs(
+            &manifest,
+            &dir,
+            &fetch::wanted_pairs(&config),
+        ));
         if !missing.is_empty() {
             let total = missing.iter().map(|f| f.size).sum();
             *lock(&self.models) = api::ModelsState::Downloading { done: 0, total };
@@ -488,15 +499,18 @@ impl Service {
             };
             item.meta.push(("format".into(), hint));
         }
-        let (doc, outcome) = self.ingest_item(&item, SourceKind::Other)?;
+        let (doc, outcome) = self.ingest_item(&item, SourceKind::Other, false)?;
         Ok(api::Added { id: doc.0, outcome })
     }
 
     /// Analyse hors verrou, puis enregistre.
+    /// Analyse et enregistre `item` ; avec `translate`, en indexe aussi une copie traduite en
+    /// français s'il est dans une autre langue (voir [`translation`]).
     fn ingest_item(
         &self,
         item: &RawItem,
         kind: SourceKind,
+        translate: bool,
     ) -> Result<(NodeId, api::AddOutcome), Error> {
         if let ItemStatus::Unchanged(doc) = self.engine().status(item)? {
             return Ok((doc, api::AddOutcome::Unchanged));
@@ -532,11 +546,232 @@ impl Service {
             analysis: &analysis,
             title: title.as_ref(),
         })?;
+        if translate && let Err(e) = self.translate_copy(item, kind, lang) {
+            eprintln!("traduction : {e}");
+        }
         Ok(match ingested {
             Ingested::Added { doc, .. } => (doc, api::AddOutcome::Added),
             Ingested::Updated { doc, .. } => (doc, api::AddOutcome::Updated),
             Ingested::Duplicate(doc) => (doc, api::AddOutcome::Unchanged),
         })
+    }
+
+    // ------------------------------------------------------------ traduction
+
+    /// Indexe la copie traduite en français de `item` (langue `lang`), si elle manque ou si
+    /// l'original a changé. Sans modèle pour cette langue, rien.
+    fn translate_copy(&self, item: &RawItem, kind: SourceKind, lang: Lang) -> Result<(), Error> {
+        if lang == translation::TARGET || translation::chain(lang).is_none() {
+            return Ok(());
+        }
+        let config = self.config();
+        let dir = config.models_dir(&self.data_dir);
+        if !translation::models_present(&dir, lang) {
+            return Ok(());
+        }
+        let original = item
+            .external_id
+            .clone()
+            .or_else(|| item.url.clone())
+            .unwrap_or_else(|| format!("text:{}", sources::id_of(&item.text)));
+        if translation::translated_from(&original).is_some() {
+            return Ok(());
+        }
+        let copy_id = translation::copy_id(&original, lang);
+        let mut copy = item.clone();
+        copy.external_id = Some(copy_id);
+        copy.lang_hint = Some(translation::TARGET);
+        // Inchangée depuis la dernière traduction : l'original n'a pas bougé non plus.
+        let text = self
+            .translators
+            .translate(&dir, config.translate_device, lang, &item.text)?;
+        copy.text = text;
+        copy.title = match &item.title {
+            Some(t) => Some(
+                self.translators
+                    .translate(&dir, config.translate_device, lang, t)?,
+            ),
+            None => None,
+        };
+        copy.meta.retain(|(k, _)| k != "format");
+        copy.meta
+            .push(("translated_from".into(), lang.as_str().to_owned()));
+        self.ingest_item(&copy, kind, false)?;
+        Ok(())
+    }
+
+    /// Identifiant de source (`SourceId`) de chaque spécification configurée.
+    fn source_ids(&self, specs: &[String]) -> Vec<(String, String)> {
+        specs
+            .iter()
+            .filter_map(|spec| {
+                let s = sources::open_in(spec, &self.data_dir).ok()?;
+                Some((spec.clone(), s.id().0.clone()))
+            })
+            .collect()
+    }
+
+    /// Traduction : sources proposées ou décidées, périphérique, travail en cours.
+    pub fn translation(&self) -> Result<api::TranslationView, Error> {
+        let config = self.config();
+        let dir = config.models_dir(&self.data_dir);
+        let mut langs: HashMap<String, Vec<Lang>> = HashMap::new();
+        for (_, d) in self.engine().documents()? {
+            let copy = d
+                .external_id
+                .as_deref()
+                .is_some_and(|e| translation::translated_from(e).is_some());
+            if copy {
+                continue;
+            }
+            if let Some(l) = Lang::from_code(&d.lang) {
+                langs.entry(d.source).or_default().push(l);
+            }
+        }
+        let mut out = Vec::new();
+        for (spec, id) in self.source_ids(&config.sources) {
+            let state = if config.translate.contains(&spec) {
+                api::TranslationState::Accepted
+            } else if config.translate_declined.contains(&spec) {
+                api::TranslationState::Declined
+            } else {
+                api::TranslationState::Suggested
+            };
+            let found = langs.get(&id).map(Vec::as_slice).unwrap_or_default();
+            let Some(sugg) = translation::suggest(found) else {
+                continue;
+            };
+            out.push(api::TranslationSource {
+                spec,
+                lang: sugg.lang.as_str().to_owned(),
+                docs: sugg.docs,
+                share: sugg.share,
+                state,
+                model_ready: translation::models_present(&dir, sugg.lang),
+            });
+        }
+        Ok(api::TranslationView {
+            available: cfg!(feature = "neural"),
+            device: config.translate_device,
+            sources: out,
+            busy: lock(&self.translating).clone(),
+        })
+    }
+
+    /// Réponse à une proposition de traduction, ou changement de périphérique. Acceptée : les
+    /// modèles de la langue sont téléchargés, puis les documents déjà indexés traduits en
+    /// tâche de fond.
+    pub fn answer_translation(
+        self: &Arc<Self>,
+        req: api::TranslationRequest,
+    ) -> Result<api::TranslationView, Error> {
+        if let Some(device) = req.device {
+            let mut c = lock(&self.config);
+            if c.translate_device != device {
+                c.translate_device = device;
+                self.save_config(&c)?;
+                self.translators.clear();
+            }
+        }
+        if let (Some(spec), Some(accept)) = (req.spec, req.accept) {
+            let view = self.translation()?;
+            let lang = view
+                .sources
+                .iter()
+                .find(|s| s.spec == spec)
+                .map(|s| s.lang.clone());
+            {
+                let mut c = lock(&self.config);
+                c.translate.retain(|s| *s != spec);
+                c.translate_declined.retain(|s| *s != spec);
+                if accept {
+                    c.translate.push(spec.clone());
+                    if let Some(l) = &lang
+                        && !c.translate_langs.contains(l)
+                    {
+                        c.translate_langs.push(l.clone());
+                    }
+                } else {
+                    c.translate_declined.push(spec.clone());
+                }
+                self.save_config(&c)?;
+            }
+            if accept {
+                let svc = self.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = svc.ensure_models() {
+                        eprintln!("traduction : modèles : {e}");
+                        return;
+                    }
+                    if let Err(e) = svc.translate_existing(&spec) {
+                        eprintln!("traduction de {spec} : {e}");
+                    }
+                    *lock(&svc.translating) = None;
+                });
+            }
+        }
+        self.translation()
+    }
+
+    /// Traduit les documents déjà indexés de la source `spec` qui n'ont pas encore de copie.
+    fn translate_existing(&self, spec: &str) -> Result<(), Error> {
+        let source = sources::open_in(spec, &self.data_dir)?;
+        let (id, kind) = (source.id().clone(), source.kind());
+        let docs: Vec<_> = self
+            .engine()
+            .documents()?
+            .into_iter()
+            .filter(|(_, d)| d.source == id.0)
+            .filter(|(_, d)| {
+                Lang::from_code(&d.lang)
+                    .is_some_and(|l| l != translation::TARGET && translation::chain(l).is_some())
+                    && d.external_id
+                        .as_deref()
+                        .is_none_or(|e| translation::translated_from(e).is_none())
+            })
+            .collect();
+        let total = docs.len();
+        for (done, (_, d)) in docs.into_iter().enumerate() {
+            *lock(&self.translating) = Some(api::TranslationProgress {
+                spec: spec.to_owned(),
+                done,
+                total,
+            });
+            // La source a été retirée de la traduction entre-temps : on s'arrête.
+            if !self.config().translate.iter().any(|s| s == spec) {
+                break;
+            }
+            let Some(lang) = Lang::from_code(&d.lang) else {
+                continue;
+            };
+            let Some(ext) = d.external_id.clone() else {
+                continue;
+            };
+            if self
+                .engine()
+                .known(&id.0, &translation::copy_id(&ext, lang))?
+                .is_some()
+            {
+                continue;
+            }
+            let text = self.engine().doc_text(&d)?;
+            let mut item = RawItem::new(id.clone(), text, Timestamp(d.fetched_at));
+            item.external_id = Some(ext);
+            item.url = d.url.clone();
+            item.title = d.title.clone();
+            item.published_at = Some(nknown_core::time::Dated {
+                at: Timestamp(d.date),
+                confidence: match d.date_confidence {
+                    0 => nknown_core::time::DateConfidence::Declared,
+                    1 => nknown_core::time::DateConfidence::Inferred,
+                    _ => nknown_core::time::DateConfidence::FetchTimeOnly,
+                },
+            });
+            if let Err(e) = self.translate_copy(&item, kind, lang) {
+                eprintln!("traduction : {e}");
+            }
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------ sources
@@ -884,6 +1119,7 @@ impl Service {
             .fetch_new(since, &known)
             .map_err(|e| Error::Invalid(format!("{name} : {e}")))?;
         let mut stats = CollectStats::default();
+        let translate = lock(&self.config).translate.iter().any(|s| s == spec);
         for (i, item) in items.enumerate() {
             // Mise en pause pendant la collecte : on s'arrête là (un dump reprendra au bloc
             // suivant).
@@ -891,7 +1127,7 @@ impl Service {
                 return Ok(stats);
             }
             match item {
-                Ok(item) => match self.ingest_item(&item, kind)?.1 {
+                Ok(item) => match self.ingest_item(&item, kind, translate)?.1 {
                     api::AddOutcome::Added => stats.added += 1,
                     api::AddOutcome::Updated => stats.updated += 1,
                     api::AddOutcome::Unchanged => stats.unchanged += 1,
@@ -958,22 +1194,21 @@ fn convert_hits(
             source: h.doc.source.clone(),
         });
         let p = h.parts;
+        // Copie traduite : titre, lien et chemin de l'original.
+        let ext = h.doc.external_id.as_deref();
+        let original = ext.map(translation::original_id);
+        let translated_from = ext
+            .and_then(translation::translated_from)
+            .map(|l| l.as_str().to_owned());
         hits.push(api::Hit {
             doc: h.doc_id.0,
             passage: h.passage.0,
-            title: sources::display_title(
-                h.doc.title.as_deref(),
-                h.doc.external_id.as_deref(),
-                &h.doc.source,
-            ),
+            title: sources::display_title(h.doc.title.as_deref(), original, &h.doc.source),
             source: sources::label(&h.doc.source),
             source_kind: sources::api_kind(h.doc.kind),
-            url: sources::open_url(
-                h.doc.url.as_deref(),
-                h.doc.external_id.as_deref(),
-                &h.doc.source,
-            ),
-            path: sources::local_path(h.doc.external_id.as_deref(), &h.doc.source),
+            url: sources::open_url(h.doc.url.as_deref(), original, &h.doc.source),
+            path: sources::local_path(original, &h.doc.source),
+            translated_from,
             date: h.doc.date,
             score: h.score,
             relative: (h.score / best) as f32,
@@ -1115,6 +1350,49 @@ mod tests {
         for bad in ["wiki-top:fr:beaucoup", "wiki-dump:", "wiki-dump:FR/../x"] {
             assert!(sources::open_in(bad, dir.path()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn foreign_sources_are_suggested_for_translation() {
+        let (dir, svc) = service();
+        let svc = Arc::new(svc);
+        let folder = dir.path().join("english");
+        std::fs::create_dir_all(&folder).unwrap();
+        for (i, text) in [
+            "The election results will be announced on Sunday evening by the commission.",
+            "Researchers found that the new drug reduced symptoms in most of the patients.",
+            "The city council voted to build a new bridge across the river next spring.",
+            "Heavy rain is expected across the region during the whole of next week.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            std::fs::write(folder.join(format!("{i}.txt")), text).unwrap();
+        }
+        let spec = folder.to_str().unwrap().to_owned();
+        svc.add_source(&spec).unwrap();
+        svc.collect_all();
+        let view = svc.translation().unwrap();
+        let s = view
+            .sources
+            .iter()
+            .find(|s| s.spec == spec)
+            .expect("proposée");
+        assert_eq!(s.lang, "eng");
+        assert_eq!(s.state, api::TranslationState::Suggested);
+        assert!(!s.model_ready);
+        // Refus : retenu, plus proposé comme tel.
+        let view = svc
+            .answer_translation(api::TranslationRequest {
+                spec: Some(spec.clone()),
+                accept: Some(false),
+                device: Some(api::DeviceChoice::Cpu),
+            })
+            .unwrap();
+        let s = view.sources.iter().find(|s| s.spec == spec).unwrap();
+        assert_eq!(s.state, api::TranslationState::Declined);
+        assert_eq!(view.device, api::DeviceChoice::Cpu);
+        assert!(svc.config().translate_declined.contains(&spec));
     }
 
     #[test]

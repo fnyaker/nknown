@@ -37,6 +37,9 @@ pub struct ModelFile {
     /// Nom de l'asset dans la release.
     pub asset: String,
     pub group: Group,
+    /// Groupe `translate` : paire de langues du modèle (`en-fr`).
+    #[serde(default)]
+    pub pair: Option<String>,
     pub size: u64,
     pub sha256: String,
 }
@@ -52,6 +55,8 @@ pub enum Group {
     Standard,
     /// Poids de l'analyseur, précision `light`.
     Light,
+    /// Modèles de traduction : seulement ceux des langues acceptées (voir [`missing_pairs`]).
+    Translate,
 }
 
 pub fn manifest() -> Manifest {
@@ -87,6 +92,32 @@ pub fn missing(manifest: &Manifest, dir: &Path, groups: &[Group]) -> Vec<ModelFi
         .filter(|f| std::fs::metadata(dir.join(&f.path)).map(|m| m.len()).ok() != Some(f.size))
         .cloned()
         .collect()
+}
+
+/// Fichiers de traduction des paires `pairs` absents ou de taille inattendue dans `dir`.
+pub fn missing_pairs(manifest: &Manifest, dir: &Path, pairs: &[&str]) -> Vec<ModelFile> {
+    manifest
+        .files
+        .iter()
+        .filter(|f| f.group == Group::Translate)
+        .filter(|f| f.pair.as_deref().is_some_and(|p| pairs.contains(&p)))
+        .filter(|f| std::fs::metadata(dir.join(&f.path)).map(|m| m.len()).ok() != Some(f.size))
+        .cloned()
+        .collect()
+}
+
+/// Paires de traduction voulues par la configuration (langues acceptées).
+pub fn wanted_pairs(config: &Config) -> Vec<&'static str> {
+    let mut pairs: Vec<&'static str> = config
+        .translate_langs
+        .iter()
+        .filter_map(|l| nknown_core::lang::Lang::from_code(l))
+        .filter_map(crate::translation::chain)
+        .flat_map(|c| c.iter().copied())
+        .collect();
+    pairs.sort_unstable();
+    pairs.dedup();
+    pairs
 }
 
 /// Télécharge `files` dans `dir`. `progress(fait, total)` en octets, sur l'ensemble.
@@ -317,6 +348,7 @@ mod tests {
             path: "sub/model.bin".into(),
             asset: "sub--model.bin".into(),
             group: Group::Base,
+            pair: None,
             size: body.len() as u64,
             sha256: sha,
         };

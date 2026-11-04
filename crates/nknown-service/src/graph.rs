@@ -244,6 +244,7 @@ mod tests {
 
     fn hit(doc: u64, relative: f32) -> Hit {
         Hit {
+            translated_from: None,
             doc,
             passage: doc * 10,
             title: Some(format!("doc {doc}")),

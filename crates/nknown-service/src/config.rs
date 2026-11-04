@@ -79,6 +79,14 @@ pub struct Config {
     pub feeds: Vec<Feed>,
     /// Sources en pause (leurs spécifications) : ni collecte périodique ni reprise.
     pub paused: Vec<String>,
+    /// Sources traduites en français (leurs spécifications), acceptées par l'utilisateur.
+    pub translate: Vec<String>,
+    /// Sources dont l'utilisateur a refusé la traduction (plus proposées).
+    pub translate_declined: Vec<String>,
+    /// Langues dont les modèles de traduction sont voulus (codes ISO 639-3).
+    pub translate_langs: Vec<String>,
+    /// Où calculer la traduction : `auto` (GPU Vulkan s'il répond), `gpu`, `cpu`.
+    pub translate_device: nknown_api::DeviceChoice,
 }
 
 /// Un flux d'info : titre, mots-clés (chacun est une requête), date de dernière consultation.
@@ -133,6 +141,10 @@ impl Default for Config {
             compute_threads: 0,
             feeds: Vec::new(),
             paused: Vec::new(),
+            translate: Vec::new(),
+            translate_declined: Vec::new(),
+            translate_langs: Vec::new(),
+            translate_device: nknown_api::DeviceChoice::Auto,
         }
     }
 }

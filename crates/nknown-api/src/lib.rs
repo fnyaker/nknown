@@ -25,6 +25,8 @@ pub mod routes {
     pub const FEEDS: &str = "/feeds";
     /// Estimation d'un import de Wikipédia (taille, durée) avant de le lancer.
     pub const WIKIPEDIA_ESTIMATE: &str = "/wikipedia/estimate";
+    /// Traduction des sources dans une autre langue : état, propositions, réponses.
+    pub const TRANSLATION: &str = "/translation";
 }
 
 // ---------------------------------------------------------------- recherche
@@ -129,6 +131,9 @@ pub struct Hit {
     pub code_lang: Option<String>,
     pub nature: Nature,
     pub parts: ScoreParts,
+    /// Copie traduite en français : langue d'origine (code ISO 639-3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_from: Option<String>,
 }
 
 /// Facteurs du score, dont le produit donne `Hit::score`.
@@ -490,6 +495,60 @@ pub struct FeedView {
 pub struct FeedRequest {
     pub title: String,
     pub keywords: Vec<String>,
+}
+
+/// Traduction (`GET /translation`) : périphérique, sources proposées ou décidées, travail en
+/// cours.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranslationView {
+    /// Le binaire sait traduire (fonctionnalité « neural »).
+    pub available: bool,
+    pub device: DeviceChoice,
+    pub sources: Vec<TranslationSource>,
+    /// Traduction en cours des documents déjà indexés d'une source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy: Option<TranslationProgress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranslationSource {
+    pub spec: String,
+    /// Langue dominante de ses documents (code ISO 639-3).
+    pub lang: String,
+    pub docs: usize,
+    /// Part des documents dans cette langue.
+    pub share: f64,
+    pub state: TranslationState,
+    /// Modèles déjà présents pour cette langue (sinon : téléchargement à l'acceptation).
+    pub model_ready: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationState {
+    /// À proposer à l'utilisateur.
+    Suggested,
+    Accepted,
+    Declined,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranslationProgress {
+    pub spec: String,
+    pub done: usize,
+    pub total: usize,
+}
+
+/// Réponse à une proposition (`POST /translation`), ou changement de périphérique (`spec`
+/// absent).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranslationRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceChoice>,
 }
 
 /// Réglages d'analyse du moteur (`GET`/`PUT /settings`).

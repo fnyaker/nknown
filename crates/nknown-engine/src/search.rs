@@ -836,4 +836,29 @@ impl<S: Storage> Engine<S> {
             .map(|v| decode(&v))
             .transpose()
     }
+
+    /// Tous les documents (identifiant, fiche), dans l'ordre des identifiants.
+    pub fn documents(&self) -> Result<Vec<(NodeId, DocRecord)>> {
+        self.scan(&[schema::DOC])?
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let id = k.get(1..9)?.try_into().ok().map(u64::from_be_bytes)?;
+                Some(decode(&v).map(|d| (NodeId(id), d)))
+            })
+            .collect()
+    }
+
+    /// Texte d'un document : ses passages, une ligne chacun.
+    pub fn doc_text(&self, doc: &DocRecord) -> Result<String> {
+        let mut out = String::new();
+        for p in doc.first_passage..doc.first_passage + u64::from(doc.passages) {
+            if let Some(rec) = self.passage(NodeId(p))? {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&rec.text);
+            }
+        }
+        Ok(out)
+    }
 }

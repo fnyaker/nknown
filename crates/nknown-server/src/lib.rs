@@ -42,6 +42,7 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
         .route(&format!("{DOCUMENTS}/{{id}}"), get(document))
         .route(SOURCES, get(sources).post(add_source))
         .route(SETTINGS, get(settings).put(update_settings))
+        .route(TRANSLATION, get(translation).post(answer_translation))
         .route(CATALOG, get(catalog))
         .route(FEEDS, get(feeds).post(add_feed))
         .route(
@@ -315,6 +316,25 @@ async fn update_settings(
 ) -> Response {
     match blocking(move || state.service.update_settings(req)).await {
         Ok(s) => Json(s).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// Traduction : sources proposées ou décidées, périphérique, travail en cours.
+async fn translation(State(state): State<AppState>) -> Response {
+    match blocking(move || state.service.translation()).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// Réponse à une proposition de traduction (ou changement de périphérique).
+async fn answer_translation(
+    State(state): State<AppState>,
+    Json(req): Json<api::TranslationRequest>,
+) -> Response {
+    match blocking(move || state.service.answer_translation(req)).await {
+        Ok(v) => Json(v).into_response(),
         Err(r) => r,
     }
 }
