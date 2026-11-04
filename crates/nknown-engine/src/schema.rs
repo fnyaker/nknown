@@ -15,6 +15,7 @@
 //! | `X` | source, 0, identifiant externe | doc u64, empreinte u64, date i64 : contenu déjà vu |
 //! | `C` | source | date u64 de la dernière collecte (point de reprise) |
 //! | `A` | id du document | autorité f32 (PageRank, moyenne 1) |
+//! | `T` | langue, 0, racine, 0, id du lemme | catégorie (octet) : lemmes de même racine |
 //!
 //! Identifiants : un seul compteur pour tous les nœuds (documents, passages, lemmes).
 
@@ -37,6 +38,11 @@ pub const QUALIFIED_REV: u8 = b'q';
 pub const SEEN: u8 = b'X';
 pub const CHECKPOINT: u8 = b'C';
 pub const AUTHORITY: u8 = b'A';
+pub const STEM: u8 = b'T';
+
+/// Version du format de la base (compteur `schema`) : 2 ajoute l'index des racines.
+pub const SCHEMA: &str = "schema";
+pub const SCHEMA_VERSION: u64 = 2;
 
 pub const NEXT_ID: &str = "next_id";
 pub const PASSAGES: &str = "passages";
@@ -101,6 +107,22 @@ pub fn lexeme_key(lang: Lang, kind: TermKind, lemma: &str) -> Vec<u8> {
     k.extend_from_slice(lang.as_str().as_bytes());
     k.push(kind.byte());
     k.extend_from_slice(normalize_lemma(lemma).as_bytes());
+    k
+}
+
+/// Préfixe des lemmes de racine `stem` dans la langue `lang`.
+pub fn stem_prefix(lang: Lang, stem: &str) -> Vec<u8> {
+    let mut k = vec![STEM];
+    k.extend_from_slice(lang.as_str().as_bytes());
+    k.push(0);
+    k.extend_from_slice(stem.as_bytes());
+    k.push(0);
+    k
+}
+
+pub fn stem_key(lang: Lang, stem: &str, lemma: NodeId) -> Vec<u8> {
+    let mut k = stem_prefix(lang, stem);
+    k.extend_from_slice(&lemma.0.to_be_bytes());
     k
 }
 

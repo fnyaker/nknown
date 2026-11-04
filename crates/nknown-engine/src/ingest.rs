@@ -494,6 +494,10 @@ impl<'e, S: Storage> Tx<'e, S> {
             None => {
                 let id = self.next();
                 self.put(key, id.0.to_be_bytes().to_vec());
+                if kind != TermKind::Code {
+                    let stem = self.engine.stem_of(lang, &norm);
+                    self.put(schema::stem_key(lang, &stem, id), vec![kind.byte()]);
+                }
                 self.put(
                     schema::id_key(schema::NODE, id),
                     encode(&LemmaRecord {

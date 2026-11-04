@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::Path;
 
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 pub type KvPair = (Vec<u8>, Vec<u8>);
 
@@ -63,6 +63,9 @@ impl Storage for MemStorage {
     }
 }
 
+/// En dessous, une base n'est jamais réécrite (le gain ne vaut pas l'écriture).
+const TIDY_MIN_BYTES: u64 = 16 << 20;
+
 const KV: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
 
 /// Stockage sur disque : base redb (un fichier, transactions ACID, lectures concurrentes).
@@ -84,6 +87,108 @@ impl RedbStorage {
         txn.open_table(KV)?;
         txn.commit()?;
         Ok(Self { db })
+    }
+}
+
+/// Occupation d'une base : fichier, octets utiles, fragmentation, et volume par espace de clés
+/// (premier octet de la clé ; pour les arêtes `E`, par type d'arête).
+#[derive(Debug, Default)]
+pub struct StorageReport {
+    pub file_bytes: u64,
+    pub stored_bytes: u64,
+    pub metadata_bytes: u64,
+    pub fragmented_bytes: u64,
+    /// (espace, nombre de paires, octets de clés, octets de valeurs).
+    pub spaces: Vec<(String, u64, u64, u64)>,
+}
+
+impl RedbStorage {
+    /// Octets perdus (pages vides ou à moitié vides) d'après redb.
+    pub fn fragmented_bytes(&self) -> Result<u64, redb::Error> {
+        let txn = self.db.begin_write()?;
+        let bytes = txn.stats()?.fragmented_bytes();
+        txn.abort()?;
+        Ok(bytes)
+    }
+
+    /// Ouvre la base à `path` ; si plus d'un tiers du fichier est perdu (pages vides ou à moitié
+    /// pleines, que redb ne rend jamais), la réécrit d'abord dans l'ordre des clés, à côté, puis
+    /// remplace l'ancienne (qui reste intacte en cas d'échec). Renvoie aussi ce qui a été fait.
+    /// `force` : réécrit quel que soit l'état (commande `nknown compact`).
+    pub fn open_tidy(
+        path: impl AsRef<Path>,
+        force: bool,
+    ) -> Result<(Self, Option<String>), redb::Error> {
+        let path = path.as_ref();
+        let storage = Self::open(path)?;
+        let file = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let lost = storage.fragmented_bytes()?;
+        if !force && (file < TIDY_MIN_BYTES || lost * 3 < file) {
+            return Ok((storage, None));
+        }
+        let tmp = path.with_extension("redb.tidy");
+        let _ = std::fs::remove_file(&tmp);
+        storage.rewrite_to(&tmp)?;
+        drop(storage);
+        std::fs::rename(&tmp, path).map_err(redb::Error::Io)?;
+        let after = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let note = format!(
+            "base réécrite : {:.1} Mo → {:.1} Mo",
+            file as f64 / 1e6,
+            after as f64 / 1e6
+        );
+        Ok((Self::open(path)?, Some(note)))
+    }
+
+    /// Copie toute la base dans `path`, dans l'ordre des clés : pages pleines, sans trou.
+    pub fn rewrite_to(&self, path: impl AsRef<Path>) -> Result<(), redb::Error> {
+        let out = Database::create(path)?;
+        let read = self.db.begin_read()?;
+        let table = read.open_table(KV)?;
+        let txn = out.begin_write()?;
+        {
+            let mut dst = txn.open_table(KV)?;
+            for entry in table.iter()? {
+                let (k, v) = entry?;
+                dst.insert(k.value(), v.value())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Parcourt toute la base (lecture seule) et mesure son occupation.
+    pub fn report(&self, file_bytes: u64) -> Result<StorageReport, redb::Error> {
+        use std::collections::BTreeMap;
+        let txn = self.db.begin_write()?;
+        let stats = txn.stats()?;
+        txn.abort()?;
+        let mut spaces: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+        let read = self.db.begin_read()?;
+        let table = read.open_table(KV)?;
+        for entry in table.iter()? {
+            let (k, v) = entry?;
+            let (k, v) = (k.value(), v.value());
+            let name = match k.first() {
+                Some(b'E') => format!("E{}", k.get(9).copied().unwrap_or(0)),
+                Some(&c) => (c as char).to_string(),
+                None => "?".into(),
+            };
+            let e = spaces.entry(name).or_default();
+            e.0 += 1;
+            e.1 += k.len() as u64;
+            e.2 += v.len() as u64;
+        }
+        Ok(StorageReport {
+            file_bytes,
+            stored_bytes: stats.stored_bytes(),
+            metadata_bytes: stats.metadata_bytes(),
+            fragmented_bytes: stats.fragmented_bytes(),
+            spaces: spaces
+                .into_iter()
+                .map(|(k, (n, kb, vb))| (k, n, kb, vb))
+                .collect(),
+        })
     }
 }
 

@@ -173,11 +173,20 @@ impl Service {
         std::fs::create_dir_all(&opts.data_dir)?;
         tune_compute(opts.config.compute_threads);
         let (pipeline, parser) = load_models(&opts.config, &opts.data_dir)?;
-        let storage = RedbStorage::open(opts.data_dir.join("base.redb"))
+        // Migration automatique à la mise à jour : base réécrite si elle a beaucoup de place
+        // perdue, puis mise au format courant.
+        let (storage, tidied) = RedbStorage::open_tidy(opts.data_dir.join("base.redb"), false)
             .map_err(|e| Error::Storage(e.to_string()))?;
+        if let Some(note) = tidied {
+            eprintln!("{note}");
+        }
+        let mut engine = Engine::new(storage).with_stemmer(nknown_nlp::langid::stem);
+        if let Some(note) = engine.migrate()? {
+            eprintln!("base mise à jour : {note}");
+        }
         Ok(Self {
             detector: LangDetector::new(),
-            engine: RwLock::new(Engine::new(storage)),
+            engine: RwLock::new(engine),
             data_dir: opts.data_dir,
             config: Mutex::new(opts.config),
             config_path: opts.config_path,

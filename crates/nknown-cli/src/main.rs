@@ -23,6 +23,8 @@ usage :
   nknown index <base.redb> <lexique.lex> <source> [modèle]...
   nknown search <base.redb> <lexique.lex> <requête> [nombre] [--explain]
   nknown rank <base.redb>                         (autorité des documents, PageRank)
+  nknown stats <base.redb>                        (occupation de la base, par type de donnée)
+  nknown compact <base.redb>                      (réécrit la base, sans place perdue ; démon arrêté)
   nknown watch <base.redb> <lexique.lex> <source> <intervalle> [modèle]...   (ex. 30m, 2h)
   nknown lexicon build <sortie.lex> <ressource>...
       ressources : wiktextract <dump.jsonl> <code-langue-wiktionary>
@@ -120,6 +122,8 @@ fn main() -> ExitCode {
             search(base, lexicon, query, limit, explain)
         }
         ["rank", base] => rank(base),
+        ["stats", base] => stats(base),
+        ["compact", base] => compact(base),
         ["models", action @ ("status" | "fetch"), dir @ ..] if dir.len() <= 1 => {
             models_cmd(action, dir.first().copied())
         }
@@ -435,7 +439,8 @@ fn open_sources(spec: &str) -> Result<Vec<Box<dyn Source>>, Box<dyn Error>> {
 
 fn index(base: &str, lexicon: &str, spec: &str, models: &[&str]) -> Res {
     let pipeline = pipeline(lexicon, models)?;
-    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?);
+    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?)
+        .with_stemmer(nknown_nlp::langid::stem);
     collect(&mut engine, &pipeline, spec)
 }
 
@@ -448,7 +453,8 @@ fn watch(base: &str, lexicon: &str, spec: &str, every: &str, models: &[&str]) ->
         _ => return Err(format!("intervalle invalide : {every} (ex. 30m, 2h)").into()),
     };
     let pipeline = pipeline(lexicon, models)?;
-    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?);
+    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?)
+        .with_stemmer(nknown_nlp::langid::stem);
     loop {
         let (y, m, d) = nknown_core::time::Timestamp::now().ymd();
         println!("--- collecte du {y}-{m:02}-{d:02}");
@@ -561,9 +567,68 @@ fn build_query(pipeline: &Pipeline, text: &str) -> nknown_engine::Query {
     nknown_service::query::build_query(pipeline, text)
 }
 
+fn stats(base: &str) -> Res {
+    let file = std::fs::metadata(base)?.len();
+    let r = nknown_engine::RedbStorage::open(base)?.report(file)?;
+    let mb = |b: u64| b as f64 / 1e6;
+    println!(
+        "fichier {:.1} Mo · données {:.1} Mo · métadonnées {:.1} Mo · fragmenté {:.1} Mo",
+        mb(r.file_bytes),
+        mb(r.stored_bytes),
+        mb(r.metadata_bytes),
+        mb(r.fragmented_bytes)
+    );
+    let name = |s: &str| match s {
+        "M" => "compteurs",
+        "H" => "empreintes",
+        "D" => "documents",
+        "P" => "passages (texte)",
+        "L" => "lexique (clé → lemme)",
+        "N" => "lemmes",
+        "S" => "fréquences (df)",
+        "Q" => "qualifications",
+        "q" => "qualifications (inverse)",
+        "X" => "contenus vus",
+        "C" => "points de reprise",
+        "A" => "autorité",
+        "E1" => "arêtes lemme → passage",
+        "E2" => "arêtes cooccurrence",
+        "E3" => "arêtes qualifie",
+        "E4" => "arêtes similarité",
+        "E5" => "arêtes passage → document",
+        "E6" => "arêtes document → source",
+        "E7" => "arêtes passage → lemme",
+        "E8" => "arêtes titre",
+        _ => "?",
+    };
+    let total: u64 = r.spaces.iter().map(|s| s.2 + s.3).sum();
+    let mut spaces = r.spaces;
+    spaces.sort_by_key(|s| std::cmp::Reverse(s.2 + s.3));
+    for (space, n, k, v) in spaces {
+        println!(
+            "{:>5.1} %  {:>8.1} Mo  {:>10} paires  clés {:>7.1} Mo  valeurs {:>7.1} Mo  {space} {}",
+            100.0 * (k + v) as f64 / total.max(1) as f64,
+            mb(k + v),
+            n,
+            mb(k),
+            mb(v),
+            name(&space)
+        );
+    }
+    Ok(())
+}
+
+/// Réécrit la base dans l'ordre des clés (le démon le fait seul quand elle a beaucoup perdu).
+fn compact(base: &str) -> Res {
+    let (_, note) = nknown_engine::RedbStorage::open_tidy(base, true)?;
+    println!("{}", note.unwrap_or_default());
+    Ok(())
+}
+
 fn rank(base: &str) -> Res {
     let start = Instant::now();
-    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?);
+    let mut engine = nknown_engine::Engine::new(nknown_engine::RedbStorage::open(base)?)
+        .with_stemmer(nknown_nlp::langid::stem);
     let s = engine.compute_authority()?;
     println!(
         "autorité : {} documents, {} paires reliées, maximum {:.2} (moyenne 1) [{:.1?}]",
@@ -582,7 +647,7 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) ->
         .parse()
         .map_err(|_| format!("nombre invalide : {limit}"))?;
     let pipeline = pipeline(lexicon, &[])?;
-    let engine = Engine::new(RedbStorage::open(base)?);
+    let engine = Engine::new(RedbStorage::open(base)?).with_stemmer(nknown_nlp::langid::stem);
     let q = build_query(&pipeline, query);
     if let Some(i) = &q.intent {
         println!("intention : {}", i.name);

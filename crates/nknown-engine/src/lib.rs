@@ -13,6 +13,7 @@ pub mod storage;
 
 use std::fmt;
 
+use nknown_core::lang::Lang;
 use nknown_core::source::SourceKind;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -24,7 +25,7 @@ pub use search::{
     Hit, Intent, Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, Related, ScoreParts,
     SearchResult, Stage, Thresholds, intent_for, modifier_for,
 };
-pub use storage::{MemStorage, Op, RedbStorage, Storage};
+pub use storage::{MemStorage, Op, RedbStorage, Storage, StorageReport};
 
 #[derive(Debug)]
 pub enum Error {
@@ -78,14 +79,78 @@ pub struct Stats {
     pub indexed_words: u64,
 }
 
+/// Racine d'un mot dans une langue (Snowball), si la langue en a une.
+pub type Stemmer = fn(Lang, &str) -> Option<String>;
+
 #[derive(Debug)]
 pub struct Engine<S: Storage> {
     storage: S,
+    stemmer: Option<Stemmer>,
 }
 
 impl<S: Storage> Engine<S> {
     pub fn new(storage: S) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            stemmer: None,
+        }
+    }
+
+    /// Racines des lemmes : une requête retrouve les variantes d'un mot (« midterm »,
+    /// « midterms »), y compris celles indexées sous une autre catégorie.
+    pub fn with_stemmer(mut self, stemmer: Stemmer) -> Self {
+        self.stemmer = Some(stemmer);
+        self
+    }
+
+    /// Racine d'un lemme (normalisé) ; le lemme lui-même pour une langue sans racinisation.
+    pub(crate) fn stem_of(&self, lang: Lang, lemma: &str) -> String {
+        let norm = schema::normalize_lemma(lemma);
+        self.stemmer
+            .and_then(|f| f(lang, &norm))
+            .filter(|s| !s.is_empty())
+            .unwrap_or(norm)
+    }
+
+    /// Met la base au format courant ; renvoie ce qui a été fait (journal), rien si elle l'était.
+    pub fn migrate(&mut self) -> Result<Option<String>> {
+        let version = schema::u64_value(self.get(&schema::meta_key(schema::SCHEMA))?);
+        if version >= schema::SCHEMA_VERSION {
+            return Ok(None);
+        }
+        // 1 → 2 : index des racines, depuis les lemmes existants.
+        let mut ops = Vec::new();
+        let mut count = 0usize;
+        for (key, value) in self.scan(&[schema::NODE])? {
+            let Ok(rec) = decode::<schema::LemmaRecord>(&value) else {
+                continue;
+            };
+            let (Some(lang), Some(id)) = (
+                Lang::from_code(&rec.lang),
+                key.get(1..9)
+                    .and_then(|b| b.try_into().ok())
+                    .map(u64::from_be_bytes),
+            ) else {
+                continue;
+            };
+            if rec.pos == schema::CODE_TERM {
+                continue;
+            }
+            ops.push(Op::Put(
+                schema::stem_key(lang, &self.stem_of(lang, &rec.lemma), NodeId(id)),
+                vec![rec.pos],
+            ));
+            count += 1;
+            if ops.len() >= 50_000 {
+                self.apply(std::mem::take(&mut ops))?;
+            }
+        }
+        ops.push(Op::Put(
+            schema::meta_key(schema::SCHEMA),
+            schema::SCHEMA_VERSION.to_be_bytes().to_vec(),
+        ));
+        self.apply(ops)?;
+        Ok(Some(format!("index des racines : {count} lemmes")))
     }
 
     pub fn stats(&self) -> Result<Stats> {
@@ -260,6 +325,40 @@ mod tests {
             &[(2, 1)],
         );
         e
+    }
+
+    /// Racinisation jouet : le pluriel en -s.
+    fn plural_stem(_: Lang, w: &str) -> Option<String> {
+        Some(w.trim_end_matches('s').to_owned())
+    }
+
+    #[test]
+    fn variants_of_a_word_are_found() {
+        let midterm: (&str, &[(Pos, &str)]) = ("midterm", &[(Pos::Noun, "midterm")]);
+        // « Midterms » indexé comme nom propre, tel quel (titre d'actualité).
+        let mut plain = Engine::new(MemStorage::default());
+        add(
+            &mut plain,
+            SourceKind::Feed,
+            1,
+            "Midterms/NP approchent/V",
+            &[],
+        );
+        assert!(query(&plain, &[midterm], None).is_empty());
+
+        let mut e = Engine::new(MemStorage::default()).with_stemmer(plural_stem);
+        add(&mut e, SourceKind::Feed, 1, "Midterms/NP approchent/V", &[]);
+        add(&mut e, SourceKind::Feed, 1, "le/D midterm/N décisif/A", &[]);
+        assert_eq!(query(&e, &[midterm], None).len(), 2);
+
+        // Base d'avant l'index des racines : la migration le construit.
+        let mut migrated = Engine {
+            storage: plain.storage,
+            stemmer: Some(plural_stem),
+        };
+        assert!(migrated.migrate().unwrap().is_some());
+        assert!(migrated.migrate().unwrap().is_none());
+        assert_eq!(query(&migrated, &[midterm], None).len(), 1);
     }
 
     #[test]
@@ -439,7 +538,7 @@ mod tests {
         let live = |d: Vec<(Vec<u8>, Vec<u8>)>| {
             d.into_iter()
                 .filter(|(k, v)| {
-                    !matches!(k[0], b'L' | b'N' | b'S')
+                    !matches!(k[0], b'L' | b'N' | b'S' | b'T')
                         && !(k[0] == b'E'
                             && schema::f32_value(v) == 0.0
                             && k.len() == 18

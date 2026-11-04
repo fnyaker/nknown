@@ -101,6 +101,16 @@ nknown search base.redb data/fr.lex "@actu paris"
 nknown search base.redb data/fr.lex "paris sportifs"         # bonus si « sportifs » qualifie « paris »
 ```
 
+Variantes d'un mot : chaque lemme indexé est rangé sous sa racine (Snowball pour les langues qui en
+ont une) ; une requête cherche aussi les lemmes de même racine (« midterm » trouve « Midterms »
+indexé comme nom propre), avec un poids un peu moindre que les lectures directes.
+
+Taille de la base : redb ne rend jamais la place libérée, et les insertions dans le désordre
+laissent des pages à moitié vides. Au démarrage, une base dont plus d'un tiers est perdu est
+réécrite dans l'ordre des clés (÷2 mesuré), et mise au format courant (migration automatique).
+`nknown stats <base.redb>` montre l'occupation par type de donnée ; `nknown compact <base.redb>`
+force la réécriture (démon arrêté).
+
 Modificateurs de requête, combinables, n'importe où dans la requête :
 
 | Modificateur | Effet |

@@ -102,6 +102,9 @@ pub fn modifier_for(word: &str) -> Option<Modifier> {
     })
 }
 
+/// Poids d'une variante (même racine) face à une lecture directe du mot.
+const VARIANT_SHARE: f64 = 0.8;
+
 /// Demi-vie de base de `@new`, en jours (allongée selon l'âge des candidats).
 pub const RECENT_HALF_LIFE_DAYS: f64 = 14.0;
 
@@ -332,6 +335,38 @@ impl<S: Storage> Engine<S> {
                         idf: 0.0,
                         share: df,
                     });
+                }
+            }
+            // Variantes : lemmes de même racine (« midterms » pour « midterm », un nom propre
+            // pour un nom commun), un peu moins sûres que les lectures directes.
+            let stems: HashSet<(Lang, String)> = term
+                .readings
+                .iter()
+                .filter(|(_, kind, _)| *kind != TermKind::Code)
+                .map(|(lang, _, lemma)| (*lang, self.stem_of(*lang, lemma)))
+                .collect();
+            for (lang, stem) in stems {
+                for (key, value) in self.scan(&schema::stem_prefix(lang, &stem))? {
+                    let Some(id) = key
+                        .get(key.len().saturating_sub(8)..)
+                        .and_then(|b| b.try_into().ok())
+                        .map(|b| NodeId(u64::from_be_bytes(b)))
+                    else {
+                        continue;
+                    };
+                    let Some(pos) = value.first().and_then(|&b| Pos::from_u8(b)) else {
+                        continue;
+                    };
+                    if seen.insert(id) {
+                        let df =
+                            schema::u64_value(self.get(&schema::id_key(schema::STATS, id))?) as f64;
+                        found.push(Reading {
+                            id,
+                            kind: TermKind::Word(pos),
+                            idf: 0.0,
+                            share: df * VARIANT_SHARE,
+                        });
+                    }
                 }
             }
             // La spécificité (IDF) est celle du mot tapé, toutes lectures réunies ;
