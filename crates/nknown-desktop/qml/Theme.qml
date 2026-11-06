@@ -57,6 +57,11 @@ QtObject {
     readonly property int radiusCard: 10
     readonly property int radiusPanel: 14
     readonly property int margin: 24
+    // Curseur de variété (design/tokens.toml, section 7 de la charte).
+    readonly property int varietyTrack: 72
+    readonly property int varietyKnob: 12
+    readonly property int varietyTick: 4
+    readonly property int varietyLabel: 64
 
     /// Date relative courte (« il y a 3 h »).
     function ago(seconds) {

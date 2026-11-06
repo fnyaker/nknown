@@ -6,6 +6,7 @@ fn main() {
             .qml_files([
                 "qml/Main.qml",
                 "qml/SearchField.qml",
+                "qml/VarietySlider.qml",
                 "qml/MapView.qml",
                 "qml/ResultCard.qml",
                 "qml/Inspector.qml",

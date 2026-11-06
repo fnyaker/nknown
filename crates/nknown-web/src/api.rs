@@ -118,10 +118,15 @@ pub async fn login(token: &str) -> Result<()> {
 }
 
 /// Recherche en flux : `on_event` reçoit chaque évènement dès son arrivée.
-pub async fn search(query: &str, mut on_event: impl FnMut(api::SearchEvent)) -> Result<()> {
+pub async fn search(
+    query: &str,
+    variety: api::Variety,
+    mut on_event: impl FnMut(api::SearchEvent),
+) -> Result<()> {
     let body = serde_json::to_string(&api::SearchRequest {
         query: query.to_owned(),
         limit: 20,
+        variety,
     })
     .map_err(|e| e.to_string())?;
     let resp = call("POST", api::routes::SEARCH, Some(body), api::NDJSON).await?;

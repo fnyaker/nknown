@@ -440,6 +440,15 @@ impl Service {
 
     // ------------------------------------------------------------ recherche
 
+    /// Niveau de variété de l'API vers celui du moteur.
+    fn engine_variety(variety: api::Variety) -> nknown_engine::Variety {
+        match variety {
+            api::Variety::Strict => nknown_engine::Variety::Strict,
+            api::Variety::Normal => nknown_engine::Variety::Normal,
+            api::Variety::Diverse => nknown_engine::Variety::Diverse,
+        }
+    }
+
     /// Recherche ; `on_event` reçoit la progression, puis le résultat (aussi renvoyé).
     pub fn search(
         &self,
@@ -451,9 +460,16 @@ impl Service {
             phase: api::Phase::Analyze,
         });
         let pipeline = self.pipeline();
+        let variety = Self::engine_variety(req.variety);
         let q = {
             let engine = self.engine();
-            let mut q = query::build_query_in(&pipeline, Some(&self.detector), &req.query, &engine);
+            let mut q = query::build_query_in_variety(
+                &pipeline,
+                Some(&self.detector),
+                &req.query,
+                &engine,
+                variety,
+            );
             query::add_learned(&pipeline, &engine, &mut q);
             q
         };
@@ -494,7 +510,7 @@ impl Service {
             &mut |stage| match stage {
                 nknown_engine::Stage::Candidates { hits, .. } => {
                     // Résultats provisoires : la carte s'étoffe avant les scores définitifs.
-                    let (hits, links) = convert_hits(hits.to_vec(), &term_index, false);
+                    let (hits, links) = convert_hits(hits.to_vec(), &term_index, false, false);
                     let mut g = graph::build(&terms, &hits, &links);
                     for n in &mut g.nodes {
                         n.hit = None;
@@ -510,7 +526,7 @@ impl Service {
         on_event(api::SearchEvent::Phase {
             phase: api::Phase::Graph,
         });
-        let (hits, links) = convert_hits(result.hits, &term_index, true);
+        let (hits, links) = convert_hits(result.hits, &term_index, true, true);
         let graph = graph::build(&terms, &hits, &links);
         show(graph.clone(), &mut on_event);
         let response = api::SearchResponse {
@@ -950,7 +966,7 @@ impl Service {
                 .engine()
                 .search(&q, Timestamp::now(), FEED_PER_KEYWORD)?;
             let term_index = |text: &str| q.terms.iter().position(|t| t.text == text);
-            for h in convert_hits(found, &term_index, true).0 {
+            for h in convert_hits(found, &term_index, true, false).0 {
                 let keep = by_doc.get(&h.doc).is_none_or(|old| old.score < h.score);
                 if keep {
                     by_doc.insert(h.doc, h);
@@ -1432,12 +1448,18 @@ const WIKI_DOWNLOAD_RATE: u64 = 4_000_000;
 const FEED_PER_KEYWORD: usize = 20;
 const FEED_ITEMS: usize = 12;
 
-/// Résultats du moteur → résultats de l'API et entrées du graphe. Sans `with_snippets`
-/// (carte provisoire), pas d'extrait : seule la carte s'en sert.
+/// Fenêtre du texte de fiche envoyée par résultat : 20 résultats d'environ 1600 caractères
+/// tiennent en une trentaine de kilo-octets, sans envoyer tout un long document.
+const PASSAGE_TEXT_WIDTH: usize = 1600;
+
+/// Résultats du moteur → résultats de l'API et entrées du graphe. `with_snippets` : extrait
+/// court pour le teaser ; `with_passage_text` : texte de la fiche (carte provisoire et flux
+/// d'info s'en passent, pour ne pas alourdir la charge utile).
 fn convert_hits(
     found: Vec<nknown_engine::Hit>,
     term_index: &dyn Fn(&str) -> Option<usize>,
     with_snippets: bool,
+    with_passage_text: bool,
 ) -> (Vec<api::Hit>, Vec<graph::HitLinks>) {
     let best = found
         .first()
@@ -1473,6 +1495,16 @@ fn convert_hits(
         let translated_from = ext
             .and_then(translation::translated_from)
             .map(|l| l.as_str().to_owned());
+        let snippet = if with_snippets {
+            query::snippet(&h.text, &h.matched, 240)
+        } else {
+            String::new()
+        };
+        let passage_text = if with_passage_text {
+            query::passage_text(&h.text, &h.matched, PASSAGE_TEXT_WIDTH)
+        } else {
+            String::new()
+        };
         hits.push(api::Hit {
             doc: h.doc_id.0,
             passage: h.passage.0,
@@ -1485,11 +1517,8 @@ fn convert_hits(
             date: h.doc.date,
             score: h.score,
             relative: (h.score / best) as f32,
-            snippet: if with_snippets {
-                query::snippet(&h.text, &h.matched, 240)
-            } else {
-                String::new()
-            },
+            snippet,
+            passage_text,
             matched: h.matched,
             is_code: h.is_code,
             code_lang: h.code_lang,
@@ -1745,6 +1774,9 @@ mod tests {
         assert_eq!(feed.title, "vulkan, introuvable");
         assert_eq!(feed.items.len(), 1);
         assert_eq!(feed.items[0].title.as_deref(), Some("Vulkan"));
+        // Un flux d'info ne paie pas le texte de fiche.
+        assert!(!feed.items[0].snippet.is_empty());
+        assert!(feed.items[0].passage_text.is_empty());
         let updated = svc
             .update_feed(
                 &feed.id,
@@ -1792,12 +1824,18 @@ mod tests {
                 &api::SearchRequest {
                     query: "moteur fichiers".into(),
                     limit: 10,
+                    variety: api::Variety::Normal,
                 },
                 |e| events.push(e),
             )
             .unwrap();
         assert_eq!(r.hits.len(), 1);
         assert_eq!(r.hits[0].relative, 1.0);
+        assert!(!r.hits[0].snippet.is_empty());
+        assert_eq!(
+            r.hits[0].passage_text,
+            "Le moteur de recherche indexe les fichiers locaux."
+        );
         let phases: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
@@ -1856,6 +1894,7 @@ mod tests {
                 &api::SearchRequest {
                     query: "compilateur mémoire".into(),
                     limit: 10,
+                    variety: api::Variety::Normal,
                 },
                 |e| events.push(e),
             )
@@ -1899,6 +1938,53 @@ mod tests {
             (nodes, edges)
         };
         assert_eq!(sorted(&live), sorted(&r.graph));
+    }
+
+    /// Le texte de fiche ne voyage que dans les résultats définitifs : la carte provisoire et
+    /// les flux d'info gardent des résultats légers.
+    #[test]
+    fn passage_text_is_only_in_final_hits() {
+        let (_dir, svc) = service();
+        svc.add_document(api::AddDocument {
+            text: format!(
+                "{} aiguille {}",
+                "contexte ".repeat(200),
+                "suite ".repeat(200)
+            ),
+            title: Some("Aiguille".into()),
+            url: None,
+            format: None,
+        })
+        .unwrap();
+        let q = {
+            let engine = svc.engine();
+            query::build_query_in(&svc.pipeline(), Some(&svc.detector), "aiguille", &engine)
+        };
+        let term_index = |text: &str| q.terms.iter().position(|t| t.text == text);
+        let found = svc.engine().search(&q, Timestamp::now(), 10).unwrap();
+        assert!(!found.is_empty());
+
+        let (provisional, _) = convert_hits(found.clone(), &term_index, false, false);
+        assert!(
+            provisional
+                .iter()
+                .all(|h| h.snippet.is_empty() && h.passage_text.is_empty())
+        );
+
+        let (final_hits, _) = convert_hits(found, &term_index, true, true);
+        let hit = &final_hits[0];
+        assert!(!hit.snippet.is_empty());
+        assert!(!hit.passage_text.is_empty());
+        assert!(
+            hit.passage_text.contains("aiguille"),
+            "{}",
+            hit.passage_text
+        );
+        assert!(
+            hit.passage_text.chars().count() <= PASSAGE_TEXT_WIDTH + 2,
+            "{} caractères",
+            hit.passage_text.chars().count()
+        );
     }
 
     #[test]

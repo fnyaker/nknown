@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use nknown_core::analyze::{Analysis, Pos};
 use nknown_core::lang::Lang;
 use nknown_engine::schema::TermKind;
-use nknown_engine::{Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, modifier_for};
+use nknown_engine::{Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, Variety, modifier_for};
 use nknown_nlp::langid::{self, LangDetector};
 use nknown_nlp::{Pipeline, segment, tokenize};
 
@@ -47,6 +47,76 @@ fn lexicon_lang(pipeline: &Pipeline, text: &str) -> Option<Lang> {
 const MAX_RELATED: usize = 24;
 const MIN_RELATED: f32 = 0.3;
 
+/// Niveaux Strict et Diversifié : bornes du dictionnaire et du nombre de mots liés.
+const STRICT_MIN_RELATED: f32 = 0.55;
+const STRICT_MIN_EFFECTIVE: f32 = 0.50;
+const STRICT_MAX_RELATED: usize = 12;
+const DIVERSE_MIN_RELATED: f32 = 0.20;
+const DIVERSE_MAX_RELATED: usize = 48;
+
+/// Politique d'élargissement d'un niveau de variété.
+#[derive(Debug, Clone, Copy)]
+struct Relax {
+    /// Force minimale du lien dans le dictionnaire.
+    min_related: f32,
+    /// Mots liés gardés côté requête.
+    max_related: usize,
+    /// Poids minimal après pondération par le contexte (0 : pas de plancher).
+    min_effective: f32,
+    /// Second pas utilisé pour le contexte de choix du sens ; aucun niveau n'en fait un lien
+    /// (Diversifié ajoute les siens, validés, dans [`add_diverse_links`]).
+    context_second_hop: bool,
+    /// Signatures de définitions ajoutées aux mots liés.
+    signatures: bool,
+    /// Politique des liens appris seuls.
+    learned_alone: LearnedAlone,
+}
+
+/// Ce qu'un niveau accepte comme lien appris seul.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LearnedAlone {
+    /// Aucun (Strict).
+    None,
+    /// Dictionnaire silencieux et lien syntactique net (comportement historique).
+    SilentSyntactic,
+    /// Syntactique et thématique, même quand le dictionnaire connaît le mot (Diversifié).
+    Broad,
+}
+
+impl Relax {
+    fn for_variety(variety: Variety) -> Self {
+        match variety {
+            Variety::Strict => Self {
+                min_related: STRICT_MIN_RELATED,
+                max_related: STRICT_MAX_RELATED,
+                min_effective: STRICT_MIN_EFFECTIVE,
+                // Le prototype mesuré filtrait après construction de la requête Normal : le
+                // second pas aidait encore à choisir le sens (« bug » logiciel, pas « bog »).
+                // Il n'ajoute jamais de lien de requête, même en Normal.
+                context_second_hop: true,
+                signatures: false,
+                learned_alone: LearnedAlone::None,
+            },
+            Variety::Normal => Self {
+                min_related: MIN_RELATED,
+                max_related: MAX_RELATED,
+                min_effective: 0.0,
+                context_second_hop: true,
+                signatures: false,
+                learned_alone: LearnedAlone::SilentSyntactic,
+            },
+            Variety::Diverse => Self {
+                min_related: DIVERSE_MIN_RELATED,
+                max_related: DIVERSE_MAX_RELATED,
+                min_effective: 0.0,
+                context_second_hop: true,
+                signatures: true,
+                learned_alone: LearnedAlone::Broad,
+            },
+        }
+    }
+}
+
 /// Lissage et plancher du choix entre lectures d'une forme (voir [`related_words`]).
 const READING_SMOOTHING: f32 = 0.1;
 const READING_FLOOR: f32 = 0.15;
@@ -87,6 +157,7 @@ fn related_words(
     readings: &[(Lang, TermKind, String)],
     tag: Option<Pos>,
     context: Option<Context<'_>>,
+    relax: Relax,
 ) -> Vec<(Lang, String, f32)> {
     let class = |p: Pos| match p {
         Pos::Propn => Pos::Noun,
@@ -168,8 +239,9 @@ fn related_words(
         let links = links
             .into_iter()
             .zip(&record.links)
-            .filter(|(_, l)| l.weight >= MIN_RELATED)
-            .map(|((w, p), _)| (w, if context.is_some() { p } else { p * factor }));
+            .filter(|(_, l)| l.weight >= relax.min_related)
+            .map(|((w, p), _)| (w, if context.is_some() { p } else { p * factor }))
+            .filter(|(_, p)| *p >= relax.min_effective);
         let lang = &lang;
         for (word, w) in links {
             let key = (*lang, word.to_owned());
@@ -182,7 +254,7 @@ fn related_words(
     }
     let mut out: Vec<(Lang, String, f32)> = best.into_iter().map(|((l, w), p)| (l, w, p)).collect();
     out.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-    out.truncate(MAX_RELATED);
+    out.truncate(relax.max_related);
     out
 }
 
@@ -220,6 +292,7 @@ fn choose_senses(
     terms: &mut [QueryTerm],
     tags: &[Option<Pos>],
     corpus: Option<Corpus<'_>>,
+    relax: Relax,
 ) {
     if terms.iter().all(|t| t.related.is_empty()) {
         return;
@@ -249,16 +322,18 @@ fn choose_senses(
         .map(|t| {
             let mut m = surroundings(t);
             // Un pas de plus : les voisins des mots liés les plus proches, à poids réduit
-            // (« vanille » → « dessert » ← « sorbet »).
-            let mut near: Vec<(Lang, String, f32)> = t.related.clone();
-            near.sort_by(|a, b| b.2.total_cmp(&a.2));
-            for (lang, w, p) in near.into_iter().take(SECOND_HOP_FROM) {
-                let Some(rel) = pipeline.relations(lang) else {
-                    continue;
-                };
-                for (x, q) in rel.related(&w).into_iter().take(SECOND_HOP_PER_WORD) {
-                    let slot = m.entry((lang, x.to_owned())).or_insert(0.0);
-                    *slot = slot.max(SECOND_HOP * p * q);
+            // (« vanille » → « dessert » ← « sorbet »). Ce contexte ne crée jamais de lien.
+            if relax.context_second_hop {
+                let mut near: Vec<(Lang, String, f32)> = t.related.clone();
+                near.sort_by(|a, b| b.2.total_cmp(&a.2));
+                for (lang, w, p) in near.into_iter().take(SECOND_HOP_FROM) {
+                    let Some(rel) = pipeline.relations(lang) else {
+                        continue;
+                    };
+                    for (x, q) in rel.related(&w).into_iter().take(SECOND_HOP_PER_WORD) {
+                        let slot = m.entry((lang, x.to_owned())).or_insert(0.0);
+                        *slot = slot.max(SECOND_HOP * p * q);
+                    }
                 }
             }
             m
@@ -279,7 +354,7 @@ fn choose_senses(
                 .fold(0.0, f32::max)
         };
         let tag = tags.get(i).copied().flatten();
-        term.related = related_words(pipeline, &term.readings, tag, Some(&ctx));
+        term.related = related_words(pipeline, &term.readings, tag, Some(&ctx), relax);
     }
 }
 
@@ -296,6 +371,28 @@ const LEARNED_CAP: f32 = 0.35;
 const LEARNED_MIN_COSINE: f32 = 0.45;
 const LEARNED_MIN_SHARED: u16 = 8;
 
+/// Diversifié : liens appris seuls, plus larges mais seuillés plus haut.
+const DIVERSE_LEARNED_CAP: f32 = 0.30;
+const DIVERSE_SYNTACTIC_MIN_COSINE: f32 = 0.55;
+const DIVERSE_SYNTACTIC_MIN_SHARED: u16 = 12;
+const DIVERSE_TOPICAL_MIN_COSINE: f32 = 0.45;
+const DIVERSE_TOPICAL_MIN_SHARED: u16 = 15;
+
+/// Signatures de définitions (Diversifié).
+const SIGNATURE_MIN_SENSES: usize = 2;
+const SIGNATURE_MAX: usize = 12;
+const SIGNATURE_BASE: f32 = 0.10;
+const SIGNATURE_PER_SENSE: f32 = 0.06;
+const SIGNATURE_CAP: f32 = 0.32;
+const SIGNATURE_REVERSE: f32 = 0.50;
+
+/// Second pas explicite (Diversifié) : voisins des meilleurs mots liés.
+const SECOND_STEP_MIN: f32 = 0.45;
+const SECOND_STEP_REVERSE: f32 = 0.50;
+const SECOND_STEP_SHARE: f32 = 0.12;
+const SECOND_STEP_CAP: f32 = 0.20;
+const SECOND_STEP_MAX: usize = 12;
+
 /// Origine d'un mot lié, pour l'explication d'une recherche.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LearnedNote {
@@ -306,12 +403,61 @@ pub struct LearnedNote {
     pub confirmed: bool,
 }
 
-/// Ajoute aux mots liés de la requête ceux que les documents ont appris (voir [`CONFIRM`]).
+/// Poids d'un lien appris seul selon la politique du niveau ; `None` : refusé.
+fn learned_alone_weight(
+    policy: LearnedAlone,
+    silent: bool,
+    kind: nknown_engine::LinkKind,
+    cosine: f32,
+    shared: u16,
+) -> Option<f32> {
+    use nknown_engine::LinkKind;
+    let mut best = None;
+    // Règle historique : dictionnaire silencieux, contexte syntaxique, lien net.
+    if silent
+        && matches!(policy, LearnedAlone::SilentSyntactic | LearnedAlone::Broad)
+        && kind == LinkKind::Syntactic
+        && cosine >= LEARNED_MIN_COSINE
+        && shared >= LEARNED_MIN_SHARED
+    {
+        best = Some((LEARNED_SHARE * cosine).min(LEARNED_CAP));
+    }
+    // Diversifié : mêmes liens même quand le dictionnaire connaît le mot, avec des seuils
+    // renforcés ; le thématique devient utilisable seul.
+    if policy == LearnedAlone::Broad {
+        let (min_cosine, min_shared) = match kind {
+            LinkKind::Syntactic => (DIVERSE_SYNTACTIC_MIN_COSINE, DIVERSE_SYNTACTIC_MIN_SHARED),
+            LinkKind::Topical => (DIVERSE_TOPICAL_MIN_COSINE, DIVERSE_TOPICAL_MIN_SHARED),
+        };
+        if cosine >= min_cosine && shared >= min_shared {
+            let w = (LEARNED_SHARE * cosine).min(DIVERSE_LEARNED_CAP);
+            best = Some(best.map_or(w, |b: f32| b.max(w)));
+        }
+    }
+    best
+}
+
+/// Ajoute aux mots liés de la requête ceux que les documents ont appris (voir [`CONFIRM`]),
+/// avec le niveau porté par `q.variety` ; en Diversifié, ajoute aussi les signatures et le
+/// second pas validé.
 pub fn add_learned<S: nknown_engine::Storage>(
     pipeline: &Pipeline,
     engine: &nknown_engine::Engine<S>,
     q: &mut Query,
 ) -> Vec<LearnedNote> {
+    add_learned_in(pipeline, engine, q, q.variety)
+}
+
+/// Comme [`add_learned`], avec le niveau explicite ; en Diversifié, ajoute aussi les
+/// signatures de définitions et le second pas validé.
+pub fn add_learned_in<S: nknown_engine::Storage>(
+    pipeline: &Pipeline,
+    engine: &nknown_engine::Engine<S>,
+    q: &mut Query,
+    variety: Variety,
+) -> Vec<LearnedNote> {
+    let relax = Relax::for_variety(variety);
+    q.variety = variety;
     let mut notes = Vec::new();
     for (t, term) in q.terms.iter_mut().enumerate() {
         let own: std::collections::HashSet<(Lang, String)> = term
@@ -358,14 +504,16 @@ pub fn add_learned<S: nknown_engine::Storage>(
                         *w = 1.0 - (1.0 - *w) * (1.0 - CONFIRM * l.cosine.min(1.0));
                         (*w, true)
                     }
-                    None if silent
-                        && l.kind == nknown_engine::LinkKind::Syntactic
-                        && l.cosine >= LEARNED_MIN_COSINE
-                        && l.shared >= LEARNED_MIN_SHARED =>
-                    {
-                        ((LEARNED_SHARE * l.cosine).min(LEARNED_CAP), false)
-                    }
-                    None => continue,
+                    None => match learned_alone_weight(
+                        relax.learned_alone,
+                        silent,
+                        l.kind,
+                        l.cosine,
+                        l.shared,
+                    ) {
+                        Some(w) => (w, false),
+                        None => continue,
+                    },
                 };
                 let slot = found.entry(key).or_insert(entry);
                 if entry.0 > slot.0 {
@@ -386,10 +534,148 @@ pub fn add_learned<S: nknown_engine::Storage>(
         }
         term.related
             .sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-        term.related.truncate(MAX_RELATED);
+        term.related.truncate(relax.max_related);
+        if relax.signatures {
+            add_diverse_links(pipeline, term);
+        }
     }
-    notes.sort_by(|a, b| a.term.cmp(&b.term).then(b.weight.total_cmp(&a.weight)));
+    notes.sort_by(|a, b| {
+        a.term
+            .cmp(&b.term)
+            .then(b.weight.total_cmp(&a.weight))
+            .then_with(|| a.word.cmp(&b.word))
+    });
     notes
+}
+
+/// Entrée de contenu du lexique pour un mot de signature (catégorie la plus fréquente).
+fn content_entry(pipeline: &Pipeline, lang: Lang, word: &str) -> Option<(Pos, String)> {
+    let lex = pipeline.lexicon(lang)?;
+    lex.lookup(word)
+        .filter(|e| nknown_engine::ingest::is_content(e.pos))
+        .max_by(|a, b| a.freq.total_cmp(&b.freq))
+        .map(|e| (e.pos, e.lemma.to_owned()))
+}
+
+/// Trie et garde les `max` meilleurs candidats (poids décroissant, mot croissant).
+fn keep_best(mut candidates: Vec<((Lang, String), f32)>, max: usize) -> Vec<((Lang, String), f32)> {
+    candidates.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then_with(|| a.0.1.cmp(&b.0.1))
+            .then_with(|| a.0.0.as_str().cmp(b.0.0.as_str()))
+    });
+    candidates.truncate(max);
+    candidates
+}
+
+/// Diversifié : signatures de définitions validées par un lien retour, puis second pas
+/// validé. Les deux plafonds s'appliquent après validation.
+fn add_diverse_links(pipeline: &Pipeline, term: &mut QueryTerm) {
+    let own: std::collections::HashSet<(Lang, String)> = term
+        .readings
+        .iter()
+        .map(|(l, _, w)| (*l, w.to_lowercase()))
+        .collect();
+    let source_lemmas: Vec<String> = term
+        .readings
+        .iter()
+        .filter(|(_, k, _)| matches!(k, TermKind::Word(p) if nknown_engine::ingest::is_content(*p)))
+        .map(|(_, _, lemma)| lemma.to_lowercase())
+        .collect();
+    let mut added: HashMap<(Lang, String), f32> = term
+        .related
+        .iter()
+        .map(|(l, w, p)| ((*l, w.clone()), *p))
+        .collect();
+
+    // Signatures de définition : un mot présent dans au moins deux sens est un indice.
+    let mut signatures: HashMap<(Lang, String), f32> = HashMap::new();
+    for (lang, kind, lemma) in &term.readings {
+        if !matches!(kind, TermKind::Word(p) if nknown_engine::ingest::is_content(*p)) {
+            continue;
+        }
+        let Some(rel) = pipeline.relations(*lang) else {
+            continue;
+        };
+        let record = rel.record(lemma);
+        let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+        for sense in &record.senses {
+            for word in &sense.signature {
+                *counts.entry(word).or_default() += 1;
+            }
+        }
+        for (word, n) in counts {
+            if n < SIGNATURE_MIN_SENSES {
+                continue;
+            }
+            let Some((_pos, candidate)) = content_entry(pipeline, *lang, word) else {
+                continue;
+            };
+            let key = (*lang, candidate.to_lowercase());
+            if own.contains(&key) || added.contains_key(&key) {
+                continue;
+            }
+            // Le mot de définition ne compte que si son propre lien revient vers le mot
+            // source : « vulnerability » définit « flaw » et « vulnerability » → « flaw »
+            // existe. Cela écarte « level », « high »… des sens voisins.
+            if !rel
+                .record(word)
+                .links
+                .iter()
+                .any(|l| l.word == lemma.as_str() && l.weight >= SIGNATURE_REVERSE)
+            {
+                continue;
+            }
+            let weight = (SIGNATURE_BASE + SIGNATURE_PER_SENSE * n as f32).min(SIGNATURE_CAP);
+            let slot = signatures.entry(key).or_insert(0.0);
+            *slot = slot.max(weight);
+        }
+    }
+    for (key, weight) in keep_best(signatures.into_iter().collect(), SIGNATURE_MAX) {
+        added.entry(key).or_insert(weight);
+    }
+
+    // Second pas : les voisins des meilleurs mots liés, à poids faible, validés par un lien
+    // retour vers le mot source.
+    let mut near = term.related.clone();
+    near.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    let mut second: HashMap<(Lang, String), f32> = HashMap::new();
+    for (lang, word, p) in near.into_iter().take(SECOND_HOP_FROM) {
+        let Some(rel) = pipeline.relations(lang) else {
+            continue;
+        };
+        for (neighbour, q) in rel.related(&word).into_iter().take(SECOND_HOP_PER_WORD) {
+            if q < SECOND_STEP_MIN {
+                continue;
+            }
+            let key = (lang, neighbour.to_owned());
+            if own.contains(&key) || added.contains_key(&key) {
+                continue;
+            }
+            if !source_lemmas.iter().any(|lemma| {
+                rel.record(neighbour)
+                    .links
+                    .iter()
+                    .any(|l| l.word == lemma.as_str() && l.weight >= SECOND_STEP_REVERSE)
+            }) {
+                continue;
+            }
+            let weight = (SECOND_STEP_SHARE * p * q).min(SECOND_STEP_CAP);
+            let slot = second.entry(key).or_insert(0.0);
+            *slot = slot.max(weight);
+        }
+    }
+    for (key, weight) in keep_best(second.into_iter().collect(), SECOND_STEP_MAX) {
+        added.entry(key).or_insert(weight);
+    }
+
+    term.related = added.into_iter().map(|((l, w), p)| (l, w, p)).collect();
+    term.related.sort_by(|a, b| {
+        b.2.total_cmp(&a.2)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.0.as_str().cmp(b.0.as_str()))
+    });
+    term.related.truncate(DIVERSE_MAX_RELATED);
 }
 
 /// Part d'usage au-delà de laquelle une forme est un mot outil.
@@ -406,12 +692,22 @@ const FUNCTION_SHARE: f32 = 0.8;
 /// préposition et pronom à 98 %, adverbe à 2 %). Une requête faite seulement de mots outils les
 /// garde.
 pub fn build_query(pipeline: &Pipeline, text: &str) -> Query {
-    build_query_with(pipeline, None, text)
+    build_query_with_variety(pipeline, None, text, Variety::Normal)
 }
 
 /// Comme [`build_query`], avec la détection de langue pour étiqueter la requête en contexte.
 pub fn build_query_with(pipeline: &Pipeline, detector: Option<&LangDetector>, text: &str) -> Query {
-    build_query_inner(pipeline, detector, text, None)
+    build_query_with_variety(pipeline, detector, text, Variety::Normal)
+}
+
+/// Comme [`build_query_with`], avec un niveau de variété explicite.
+pub fn build_query_with_variety(
+    pipeline: &Pipeline,
+    detector: Option<&LangDetector>,
+    text: &str,
+    variety: Variety,
+) -> Query {
+    build_query_inner(pipeline, detector, text, None, variety)
 }
 
 /// Comme [`build_query_with`], en laissant les documents de `engine` (liens appris) départager
@@ -422,6 +718,17 @@ pub fn build_query_in<S: nknown_engine::Storage>(
     text: &str,
     engine: &nknown_engine::Engine<S>,
 ) -> Query {
+    build_query_in_variety(pipeline, detector, text, engine, Variety::Normal)
+}
+
+/// Comme [`build_query_in`], avec un niveau de variété explicite.
+pub fn build_query_in_variety<S: nknown_engine::Storage>(
+    pipeline: &Pipeline,
+    detector: Option<&LangDetector>,
+    text: &str,
+    engine: &nknown_engine::Engine<S>,
+    variety: Variety,
+) -> Query {
     let corpus = |lang: Lang, kind: TermKind, lemma: &str| -> Vec<(String, f32)> {
         engine
             .learned(lang, kind, lemma)
@@ -430,7 +737,7 @@ pub fn build_query_in<S: nknown_engine::Storage>(
             .map(|l| (l.lemma, l.cosine))
             .collect()
     };
-    build_query_inner(pipeline, detector, text, Some(&corpus))
+    build_query_inner(pipeline, detector, text, Some(&corpus), variety)
 }
 
 fn build_query_inner(
@@ -438,7 +745,9 @@ fn build_query_inner(
     detector: Option<&LangDetector>,
     text: &str,
     corpus: Option<Corpus<'_>>,
+    variety: Variety,
 ) -> Query {
+    let relax = Relax::for_variety(variety);
     // Catégorie de chaque mot (par position dans `text`) selon le tagueur de sa langue.
     let tagged: std::collections::HashMap<usize, Pos> = detector
         .and_then(|d| d.detect(text))
@@ -531,7 +840,7 @@ fn build_query_inner(
             readings.push((Lang::NONE, TermKind::Code, form.to_lowercase()));
             readings.dedup();
             let tag = tagged.get(&at).copied();
-            let related = related_words(pipeline, &readings, tag, None);
+            let related = related_words(pipeline, &readings, tag, None, relax);
             terms.push(QueryTerm {
                 text: form.to_owned(),
                 readings,
@@ -555,7 +864,7 @@ fn build_query_inner(
         let mut keep = function.iter().map(|f| !f);
         tags.retain(|_| keep.next().unwrap_or(true));
     }
-    choose_senses(pipeline, &mut terms, &tags, corpus);
+    choose_senses(pipeline, &mut terms, &tags, corpus, relax);
     kinds.sort_unstable();
     kinds.dedup();
     Query {
@@ -563,6 +872,7 @@ fn build_query_inner(
         intent,
         recency,
         kinds,
+        variety,
     }
 }
 
@@ -617,6 +927,104 @@ pub fn snippet(text: &str, words: &[String], width: usize) -> String {
     format!("{before}{body}{after}")
 }
 
+/// Octet de `text` au début du `char_index`-ième caractère (fin du texte au-delà).
+fn char_byte(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map_or(text.len(), |(at, _)| at)
+}
+
+/// La coupure à `at` tombe-t-elle au milieu d'un mot (deux caractères qui ne sont pas des
+/// espaces se font face) ?
+fn splits_word(text: &str, at: usize) -> bool {
+    let before = text.get(..at).and_then(|s| s.chars().next_back());
+    let after = text.get(at..).and_then(|s| s.chars().next());
+    matches!((before, after), (Some(a), Some(b)) if !a.is_whitespace() && !b.is_whitespace())
+}
+
+/// Fin du mot qui commence avant `from` : juste avant l'espace suivant, ou fin du texte.
+fn word_end(text: &str, from: usize) -> usize {
+    text.get(from..)
+        .and_then(|s| s.char_indices().find(|(_, c)| c.is_whitespace()))
+        .map_or(text.len(), |(at, _)| from + at)
+}
+
+/// Texte du passage montré dans la fiche d'un résultat : fenêtre d'environ `width` caractères
+/// centrée sur la première correspondance, coupée aux limites de mots, espaces et retours à la
+/// ligne conservés (la fiche est pré-encadrée et défilante, contrairement à [`snippet`]).
+///
+/// Le texte n'est pas échappé : l'interface s'en charge. Les coupures tombent toujours sur une
+/// limite de caractère, y compris en écriture multioctet (accents, CJK).
+pub fn passage_text(text: &str, words: &[String], width: usize) -> String {
+    let total = text.chars().count();
+    if width == 0 || total <= width {
+        return text.to_owned();
+    }
+    let lower = text.to_lowercase();
+    // Première correspondance : octet dans `lower`, longueur du motif en caractères.
+    let first = words
+        .iter()
+        .filter_map(|w| {
+            let needle = w.to_lowercase();
+            if needle.is_empty() {
+                return None;
+            }
+            lower.find(&needle).map(|at| (at, needle.chars().count()))
+        })
+        .min_by_key(|&(at, _)| at);
+    let (hit_chars, hit_len) = first.map_or((0, 0), |(at, n)| {
+        (lower[..at].chars().count().min(total), n)
+    });
+    // Fenêtre centrée sur la correspondance ; sans correspondance, le début du texte.
+    let start_char = match first {
+        Some(_) => hit_chars.saturating_sub(width / 2).min(total - width),
+        None => 0,
+    };
+    let end_char = start_char + width;
+    let hit_start = char_byte(text, hit_chars);
+    let hit_end = char_byte(text, (hit_chars + hit_len).min(total));
+    let mut start = char_byte(text, start_char);
+    let mut end = char_byte(text, end_char);
+
+    // Début au milieu d'un mot : avancer au mot suivant, sans dépasser la correspondance.
+    if start > 0 && splits_word(text, start) {
+        if let Some((ws, c)) = text[start..end]
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+        {
+            let next = start + ws + c.len_utf8();
+            if next <= hit_start && next < end {
+                start = next;
+            }
+        }
+    }
+    // Fin au milieu d'un mot : reculer à la fin du mot précédent ; si cela couperait la
+    // correspondance, aller jusqu'à la fin de son mot.
+    if end < text.len() && splits_word(text, end) {
+        let cut = text[start..end]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(at, _)| start + at);
+        end = match cut {
+            Some(at) if at >= hit_end => at,
+            Some(_) => word_end(text, end.max(hit_end)),
+            None => end,
+        };
+    }
+
+    let mut body = &text[start..end];
+    if start > 0 {
+        body = body.trim_start();
+    }
+    if end < text.len() {
+        body = body.trim_end();
+    }
+    let before = if start > 0 { "…" } else { "" };
+    let after = if end < text.len() { "…" } else { "" };
+    format!("{before}{body}{after}")
+}
+
 /// Langue qui couvre le plus de tokens de prose.
 pub fn main_lang(a: &Analysis) -> Option<Lang> {
     let mut counts: Vec<(Lang, usize)> = Vec::new();
@@ -640,6 +1048,82 @@ mod tests {
         let text = format!("{} needle {}", "a ".repeat(200), "b ".repeat(200));
         let s = snippet(&text, &["needle".to_owned()], 60);
         assert!(s.starts_with('…') && s.ends_with('…') && s.contains("needle"));
+    }
+
+    #[test]
+    fn passage_text_returns_short_text_unchanged() {
+        let text = "Une phrase\ncourte, avec <b>balises</b> et accents : élève.";
+        assert_eq!(passage_text(text, &["élève".to_owned()], 100), text);
+        // Largeur comptée en caractères, pas en octets.
+        let accents = "é".repeat(30);
+        assert_eq!(passage_text(&accents, &[], 30), accents);
+    }
+
+    #[test]
+    fn passage_text_centers_the_window_on_the_match() {
+        let text = format!("{} aiguille {}", "mot ".repeat(200), "fin ".repeat(200));
+        let s = passage_text(&text, &["aiguille".to_owned()], 80);
+        assert!(s.starts_with('…') && s.ends_with('…'), "{s}");
+        assert!(s.contains(" aiguille "), "{s}");
+        assert!(
+            s.chars().count() <= 82,
+            "{} caractères : {s}",
+            s.chars().count()
+        );
+    }
+
+    #[test]
+    fn passage_text_keeps_ellipses_only_when_clipped() {
+        let start = passage_text(&"début ".repeat(100), &[], 40);
+        assert!(start.starts_with("début "), "{start:?}");
+        assert!(!start.starts_with('…') && start.ends_with('…'), "{start:?}");
+
+        let text = format!("{} cible", "début ".repeat(100));
+        let end = passage_text(&text, &["cible".to_owned()], 50);
+        assert!(end.starts_with('…') && end.ends_with("cible"), "{end:?}");
+        assert!(!end.ends_with('…'), "{end:?}");
+    }
+
+    #[test]
+    fn passage_text_preserves_whitespace_and_newlines() {
+        let text = format!(
+            "{}premier paragraphe\n\nligne   deux\nligne trois {}",
+            "avant ".repeat(50),
+            "après ".repeat(50)
+        );
+        // Trois espaces et deux retours à la ligne : rien n'est replié.
+        let s = passage_text(&text, &["deux".to_owned()], 100);
+        assert!(s.contains("\n\nligne   deux\nligne trois"), "{s:?}");
+    }
+
+    #[test]
+    fn passage_text_handles_multibyte_text() {
+        let text = format!("{} élève {}", "é ".repeat(200), "é ".repeat(200));
+        let s = passage_text(&text, &["élève".to_owned()], 60);
+        assert!(s.contains("élève"), "{s}");
+        assert!(s.starts_with('…') && s.ends_with('…'), "{s}");
+
+        let text = format!("{} 検索 {}", "漢字 ".repeat(200), "テスト ".repeat(200));
+        let s = passage_text(&text, &["検索".to_owned()], 60);
+        assert!(s.contains("検索"), "{s}");
+        assert!(s.starts_with('…') && s.ends_with('…'), "{s}");
+    }
+
+    #[test]
+    fn passage_text_finds_a_match_beyond_the_start_window() {
+        let text = format!("{} cible", "début ".repeat(100));
+        let s = passage_text(&text, &["cible".to_owned()], 50);
+        assert!(s.contains("cible"), "{s}");
+        assert!(s.starts_with('…'), "{s}");
+    }
+
+    #[test]
+    fn passage_text_without_match_returns_the_start_window() {
+        let text = "début ".repeat(100);
+        let s = passage_text(&text, &["absent".to_owned()], 40);
+        assert!(s.starts_with("début "), "{s:?}");
+        assert!(s.ends_with('…'), "{s:?}");
+        assert!(!s.contains("absent"), "{s:?}");
     }
 
     #[test]
@@ -719,5 +1203,200 @@ mod tests {
         );
         // Seulement des mots outils : on les garde.
         assert_eq!(words("des en"), ["des", "en"]);
+    }
+
+    fn lexicon(words: &[&str]) -> nknown_nlp::Lexicon {
+        use nknown_core::analyze::Feats;
+        use nknown_nlp::lexicon::LexiconBuilder;
+        let mut b = LexiconBuilder::new();
+        for word in words {
+            b.insert(word, word, Pos::Noun, Feats::default());
+        }
+        b.build().unwrap()
+    }
+
+    #[test]
+    fn normal_variety_matches_legacy_entry_points() {
+        let pipeline = Pipeline::default().with_lexicon(Lang::FRA, lexicon(&["carte"]));
+        let engine = nknown_engine::Engine::new(nknown_engine::MemStorage::default());
+        assert_eq!(
+            build_query(&pipeline, "carte"),
+            build_query_with_variety(&pipeline, None, "carte", Variety::Normal)
+        );
+        assert_eq!(
+            build_query_in(&pipeline, None, "carte", &engine),
+            build_query_in_variety(&pipeline, None, "carte", &engine, Variety::Normal)
+        );
+        assert_eq!(build_query(&pipeline, "carte").variety, Variety::Normal);
+    }
+
+    /// Strict ne garde que les liens forts du dictionnaire, et seulement s'ils résistent au
+    /// contexte ; Normal garde les liens faibles et non soutenus.
+    #[test]
+    fn strict_filters_weak_and_unsupported_links() {
+        use nknown_nlp::relations::{BuildOptions, Evidence, Origin};
+        let mut r = nknown_nlp::RelationsBuilder::new();
+        let entry = r.entry("alpha");
+        let unsupported = r.sense(entry);
+        r.sign(unsupported, "autre");
+        let supported = r.sense(entry);
+        r.sign(supported, "ctx");
+        r.link_from(
+            "alpha",
+            "beta",
+            Evidence::Synonym,
+            0.9,
+            Origin::Sense(unsupported),
+        );
+        r.link("alpha", "faible", Evidence::Related, 0.8);
+        r.link("alpha", "fort", Evidence::Synonym, 1.0);
+        let rel = r.build(BuildOptions::default(), |_| 1.0).unwrap();
+        let pipeline = Pipeline::default()
+            .with_lexicon(Lang::FRA, lexicon(&["alpha", "ctx"]))
+            .with_relations(Lang::FRA, rel);
+
+        let related = |variety| -> Vec<String> {
+            build_query_with_variety(&pipeline, None, "alpha ctx", variety).terms[0]
+                .related
+                .iter()
+                .map(|(_, w, _)| w.clone())
+                .collect()
+        };
+        let strict = related(Variety::Strict);
+        assert!(!strict.iter().any(|w| w == "faible"), "{strict:?}");
+        // Lien du dictionnaire fort, mais que le contexte du mauvais sens enterre.
+        assert!(!strict.iter().any(|w| w == "beta"), "{strict:?}");
+        assert!(strict.iter().any(|w| w == "fort"), "{strict:?}");
+
+        let normal = related(Variety::Normal);
+        assert!(normal.iter().any(|w| w == "faible"), "{normal:?}");
+        assert!(normal.iter().any(|w| w == "beta"), "{normal:?}");
+    }
+
+    /// Le cas `php flaw` : « vulnerability » définit « flaw » et son lien retour existe ;
+    /// « level » n'a pas de retour et n'est pas ajouté. Le dictionnaire de `flaw` n'a pas
+    /// `vulnerability` en sortie (comme la base réelle), 16 liens plus forts occupant la fiche.
+    #[test]
+    fn diverse_adds_signature_with_reverse_link() {
+        use nknown_nlp::relations::{BuildOptions, Evidence, Origin};
+        let mut r = nknown_nlp::RelationsBuilder::new();
+        let entry = r.entry("flaw");
+        let first = r.sense(entry);
+        r.sign(first, "vulnerability");
+        for _ in 0..2 {
+            let sense = r.sense(entry);
+            r.sign(sense, "vulnerability");
+        }
+        let sense = r.sense(entry);
+        r.sign(sense, "level");
+        r.link_from(
+            "flaw",
+            "vulnerability",
+            Evidence::Gloss,
+            1.0,
+            Origin::Sense(first),
+        );
+        for i in 0..16 {
+            let origin = if i == 0 {
+                Origin::Sense(first)
+            } else {
+                Origin::None
+            };
+            r.link_from("flaw", &format!("mot{i}"), Evidence::Synonym, 1.0, origin);
+        }
+        let rel = r.build(BuildOptions::default(), |_| 1.0).unwrap();
+        assert!(
+            rel.record("flaw")
+                .links
+                .iter()
+                .all(|l| l.word != "vulnerability"),
+            "{:?}",
+            rel.record("flaw").links
+        );
+        assert!(
+            rel.record("vulnerability")
+                .links
+                .iter()
+                .any(|l| l.word == "flaw" && l.weight >= 0.5)
+        );
+        let pipeline = Pipeline::default()
+            .with_lexicon(Lang::FRA, lexicon(&["flaw", "vulnerability", "level"]))
+            .with_relations(Lang::FRA, rel);
+        let engine = nknown_engine::Engine::new(nknown_engine::MemStorage::default());
+
+        let mut diverse =
+            build_query_in_variety(&pipeline, None, "flaw", &engine, Variety::Diverse);
+        add_learned(&pipeline, &engine, &mut diverse);
+        let weight = |q: &Query, word: &str| {
+            q.terms[0]
+                .related
+                .iter()
+                .find(|(_, w, _)| w == word)
+                .map(|(_, _, p)| *p)
+        };
+        let vulnerability = weight(&diverse, "vulnerability").expect("signature ajoutée");
+        assert!((vulnerability - 0.28).abs() < 1e-6, "{vulnerability}");
+        assert_eq!(weight(&diverse, "level"), None);
+
+        let mut normal = build_query_in_variety(&pipeline, None, "flaw", &engine, Variety::Normal);
+        add_learned(&pipeline, &engine, &mut normal);
+        assert_eq!(weight(&normal, "vulnerability"), None);
+    }
+
+    #[test]
+    fn diverse_accepts_topical_learned_link() {
+        use nknown_engine::LinkKind;
+        let diverse = Relax::for_variety(Variety::Diverse).learned_alone;
+        let normal = Relax::for_variety(Variety::Normal).learned_alone;
+        let strict = Relax::for_variety(Variety::Strict).learned_alone;
+        let w = learned_alone_weight(diverse, false, LinkKind::Topical, 0.46, 27);
+        assert!((w.unwrap() - 0.276).abs() < 1e-6);
+        assert_eq!(
+            learned_alone_weight(normal, false, LinkKind::Topical, 0.46, 27),
+            None
+        );
+        assert_eq!(
+            learned_alone_weight(strict, false, LinkKind::Topical, 0.46, 27),
+            None
+        );
+        // Seuils renforcés du Diversifié.
+        assert_eq!(
+            learned_alone_weight(diverse, false, LinkKind::Topical, 0.44, 27),
+            None
+        );
+        assert_eq!(
+            learned_alone_weight(diverse, false, LinkKind::Topical, 0.46, 14),
+            None
+        );
+        assert_eq!(
+            learned_alone_weight(diverse, false, LinkKind::Syntactic, 0.50, 20),
+            None
+        );
+        assert!(learned_alone_weight(diverse, false, LinkKind::Syntactic, 0.56, 12).is_some());
+    }
+
+    #[test]
+    fn related_caps_follow_variety() {
+        use nknown_nlp::relations::{BuildOptions, Evidence};
+        let mut r = nknown_nlp::RelationsBuilder::new();
+        for i in 0..60 {
+            r.link("alpha", &format!("mot{i}"), Evidence::Synonym, 1.0);
+        }
+        let opts = BuildOptions {
+            per_lemma: 64,
+            min_weight: 0.1,
+        };
+        let rel = r.build(opts, |_| 1.0).unwrap();
+        let pipeline = Pipeline::default()
+            .with_lexicon(Lang::FRA, lexicon(&["alpha"]))
+            .with_relations(Lang::FRA, rel);
+        for (variety, expected) in [
+            (Variety::Strict, STRICT_MAX_RELATED),
+            (Variety::Normal, MAX_RELATED),
+            (Variety::Diverse, DIVERSE_MAX_RELATED),
+        ] {
+            let q = build_query_with_variety(&pipeline, None, "alpha", variety);
+            assert_eq!(q.terms[0].related.len(), expected, "{variety:?}");
+        }
     }
 }

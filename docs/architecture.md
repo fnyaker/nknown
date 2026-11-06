@@ -57,7 +57,7 @@ identifiants opaques.
 | Méthode | Chemin | Corps / réponse |
 |---|---|---|
 | `GET` | `/status` | version, statistiques de la base, collectes en cours |
-| `POST` | `/search` | `{query, limit}` → flux NDJSON d'évènements de progression puis le résultat ; `Accept: application/json` pour le résultat seul |
+| `POST` | `/search` | `{query, limit, variety}` → flux NDJSON d'évènements de progression puis le résultat ; `Accept: application/json` pour le résultat seul. `variety` vaut `strict`, `normal` (défaut, absent = normal) ou `diverse` |
 | `GET` | `/documents/{id}` | document et ses passages |
 | `POST` | `/documents` | ajout direct d'un texte (servira au serveur MCP) |
 | `GET` | `/sources` | sources configurées et leur état |
@@ -87,8 +87,16 @@ Flux d'une recherche (`POST /search`, une ligne JSON par évènement) :
 
 La carte se construit en direct : chaque `graph_patch` ajoute ou remplace des nœuds et des liens
 (même `id` ; même `from`, `to`, `kind`) et en retire ; les appliquer dans l'ordre redonne la
-carte de `done`. Les résultats provisoires sont classés au seul score du texte ; la carte finale
-ajoute la propagation dans le graphe, l'autorité, les seuils et les documents apparentés.
+carte de `done`. L'identifiant d'un lien pour les interfaces est `from>to:kind` (par exemple
+`q>t0:query_term`), côté Qt comme côté web. Les résultats provisoires sont classés au seul score
+du texte ; la carte finale ajoute la propagation dans le graphe, l'autorité, les seuils et les
+documents apparentés.
+
+Chaque résultat porte `snippet`, un aperçu court (240 caractères), et `passage_text`, le texte
+du passage trouvé (fenêtre d'environ 1600 caractères centrée sur la correspondance, espaces et
+retours à la ligne conservés, échappement laissé aux interfaces). `passage_text` n'est envoyé
+que dans le résultat final ; il est absent (chaîne vide) dans les étapes provisoires et les
+flux d'info.
 
 Authentification :
 - serveur distant : `Authorization: Bearer <jeton>` (comparaison en temps constant), ou le

@@ -34,6 +34,7 @@ pub mod qobject {
         #[qproperty(QString, status)]
         #[qproperty(QString, automation)]
         #[qproperty(QString, request)]
+        #[qproperty(QString, variety)]
         #[qproperty(bool, tray_available, cxx_name = "trayAvailable")]
         type Backend = super::BackendRust;
 
@@ -205,7 +206,6 @@ const STATUS_EVERY: Duration = Duration::from_secs(2);
 /// Relecture des flux d'info au plus tard après ce délai (la fraîcheur évolue).
 const FEEDS_EVERY: Duration = Duration::from_secs(60);
 
-#[derive(Default)]
 pub struct BackendRust {
     status: QString,
     /// Pilotage pour les captures et les essais visuels (JSON ; vide sinon) :
@@ -214,12 +214,38 @@ pub struct BackendRust {
     /// Demande de lancement (`--query`, `--select`), la sienne puis celles des lancements
     /// suivants (JSON avec un numéro, pour que deux demandes identiques se distinguent).
     request: QString,
+    /// Niveau d'élargissement envoyé avec chaque recherche : `strict`, `normal`, `diverse`.
+    variety: QString,
     /// Une zone de notification accueille l'icône : fermer la fenêtre l'y range.
     tray_available: bool,
     engine: Arc<Slot>,
     generation: Arc<AtomicU64>,
     /// Flux d'info à relire au prochain tour du fil d'état.
     feeds_dirty: Arc<AtomicBool>,
+}
+
+impl Default for BackendRust {
+    fn default() -> Self {
+        Self {
+            status: QString::default(),
+            automation: QString::default(),
+            request: QString::default(),
+            variety: QString::from("normal"),
+            tray_available: false,
+            engine: Arc::default(),
+            generation: Arc::default(),
+            feeds_dirty: Arc::default(),
+        }
+    }
+}
+
+/// Niveau reçu du QML ; une valeur inconnue (ou vide) reste le comportement historique.
+fn api_variety(value: &str) -> api::Variety {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "strict" => api::Variety::Strict,
+        "diverse" => api::Variety::Diverse,
+        _ => api::Variety::Normal,
+    }
 }
 
 /// Le moteur courant, remplaçable (changement de réglages) : vide pendant une connexion, que
@@ -374,6 +400,7 @@ impl qobject::Backend {
 
     fn search(self: Pin<&mut Self>, query: &QString) {
         let query = query.to_string();
+        let variety = api_variety(&self.variety().to_string());
         let thread = self.qt_thread();
         let engine = self.rust().engine.clone();
         let generation = self.rust().generation.clone();
@@ -397,7 +424,7 @@ impl qobject::Backend {
                     }
                 };
                 let mut graph = Graph::default();
-                let result = engine.search(&query, &mut |event| match event {
+                let result = engine.search(&query, variety, &mut |event| match event {
                     api::SearchEvent::Phase { phase } => {
                         let name = QString::from(phase_name(phase));
                         send(Box::new(move |obj| obj.phase(name)));

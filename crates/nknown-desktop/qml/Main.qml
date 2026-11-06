@@ -3,6 +3,7 @@
 // Échap : referme l'inspecteur, puis désélectionne, puis revient à l'accueil.
 import QtQuick
 import QtQuick.Controls.Basic
+import QtCore as Core
 import org.nknown.app
 
 ApplicationWindow {
@@ -31,6 +32,13 @@ ApplicationWindow {
     property var feeds: []
     readonly property bool hasFeeds: feeds.length > 0
 
+    // Dernier niveau de variété choisi (le défaut reste Normal).
+    Core.Settings {
+        id: prefs
+        category: "search"
+        property string variety: "normal"
+    }
+
     function launch(query) {
         error = ""
         hits = []
@@ -39,6 +47,7 @@ ApplicationWindow {
         map.clear()
         searching = true
         phase = "analyze"
+        backend.variety = prefs.variety
         backend.search(query)
     }
 
@@ -158,6 +167,7 @@ ApplicationWindow {
             compact: win.searching
             phase: win.phase
             intent: win.intent
+            variety: prefs.variety
             width: Math.min(win.width - 2 * Theme.margin, win.searching ? 760 : 620)
             anchors.horizontalCenter: parent.horizontalCenter
             // Accueil : au centre ; avec des flux, en haut, les flux dessous.
@@ -165,6 +175,7 @@ ApplicationWindow {
             Behavior on y { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
             Behavior on width { NumberAnimation { duration: Theme.emphasis; easing.type: Easing.OutExpo } }
             onSubmitted: (query) => win.launch(query)
+            onVarietyPicked: (value) => prefs.variety = value
         }
 
         // Erreur : une ligne sous le champ, couleur danger (seul usage de cette couleur).

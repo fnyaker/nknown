@@ -33,12 +33,28 @@ pub mod routes {
 
 // ---------------------------------------------------------------- recherche
 
+/// Niveau de variété de l'élargissement d'une requête.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Variety {
+    /// Liens de sens très proches uniquement ; moins de résultats, plus précis.
+    Strict,
+    /// Élargissement habituel.
+    #[default]
+    Normal,
+    /// Liens plus larges, signatures et voisins de documents.
+    Diverse,
+}
+
 /// `POST /search`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Niveau d'élargissement ; absent dans un ancien corps JSON : [`Variety::Normal`].
+    #[serde(default)]
+    pub variety: Variety,
 }
 
 fn default_limit() -> usize {
@@ -127,6 +143,11 @@ pub struct Hit {
     /// Score rapporté au meilleur résultat, dans `]0, 1]`.
     pub relative: f32,
     pub snippet: String,
+    /// Texte du passage où la correspondance a eu lieu, pour la fiche du résultat : plus long
+    /// que `snippet`, espaces et retours à la ligne conservés. Absent (chaîne vide) quand
+    /// l'appelant ne le demande pas, notamment pour les flux d'info.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub passage_text: String,
     /// Mots de la requête trouvés dans le passage (pour les surligner).
     pub matched: Vec<String>,
     pub is_code: bool,
@@ -284,6 +305,12 @@ impl Edge {
             kind: self.kind,
         }
     }
+
+    /// Identifiant stable d'un lien pour les interfaces : `from>to:kind`, le même côté Qt et
+    /// côté web. Les patchs de carte remplacent les liens par cette identité.
+    pub fn view_id(&self) -> String {
+        format!("{}>{}:{}", self.from, self.to, self.kind.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -308,6 +335,19 @@ pub enum EdgeKind {
     HitSource,
     /// Résultat → document apparenté ; poids : similarité.
     Similar,
+}
+
+impl EdgeKind {
+    /// Nom stable du type de lien, celui du JSON et des interfaces (`snake_case`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QueryTerm => "query_term",
+            Self::TermHit => "term_hit",
+            Self::Qualifies => "qualifies",
+            Self::HitSource => "hit_source",
+            Self::Similar => "similar",
+        }
+    }
 }
 
 // ---------------------------------------------------------------- documents, sources, état
@@ -771,5 +811,89 @@ mod tests {
     fn limit_has_a_default() {
         let r: SearchRequest = serde_json::from_str(r#"{"query":"actu paris"}"#).unwrap();
         assert_eq!(r.limit, 20);
+    }
+
+    #[test]
+    fn variety_defaults_to_normal() {
+        let r: SearchRequest = serde_json::from_str(r#"{"query":"actu paris"}"#).unwrap();
+        assert_eq!(r.variety, Variety::Normal);
+        assert_eq!(Variety::default(), Variety::Normal);
+    }
+
+    #[test]
+    fn variety_reads_strict_and_diverse() {
+        let strict: SearchRequest =
+            serde_json::from_str(r#"{"query":"x","variety":"strict"}"#).unwrap();
+        let normal: SearchRequest =
+            serde_json::from_str(r#"{"query":"x","variety":"normal"}"#).unwrap();
+        let diverse: SearchRequest =
+            serde_json::from_str(r#"{"query":"x","variety":"diverse"}"#).unwrap();
+        assert_eq!(strict.variety, Variety::Strict);
+        assert_eq!(normal.variety, Variety::Normal);
+        assert_eq!(diverse.variety, Variety::Diverse);
+        assert_eq!(
+            serde_json::to_string(&diverse).unwrap(),
+            r#"{"query":"x","limit":20,"variety":"diverse"}"#
+        );
+    }
+
+    #[test]
+    fn old_search_body_still_deserializes() {
+        let old: SearchRequest = serde_json::from_str(r#"{"query":"ancien","limit":3}"#).unwrap();
+        assert_eq!(
+            old,
+            SearchRequest {
+                query: "ancien".into(),
+                limit: 3,
+                variety: Variety::Normal,
+            }
+        );
+    }
+
+    #[test]
+    fn old_hit_without_passage_text_still_deserializes() {
+        let old = r#"{
+            "doc": 1, "passage": 2, "title": "Titre", "source": "rss:x",
+            "source_kind": "feed", "url": null, "date": 0, "score": 1.0,
+            "relative": 1.0, "snippet": "extrait", "matched": ["mot"],
+            "is_code": false, "code_lang": null, "nature": "event",
+            "parts": {
+                "text": 1.0, "coverage": 1.0, "qualified": 1.0, "title": 1.0,
+                "nature": 1.0, "freshness": 1.0, "burst": 1.0, "graph": 1.0,
+                "authority": 1.0
+            }
+        }"#;
+        let h: Hit = serde_json::from_str(old).unwrap();
+        assert_eq!(h.passage_text, "");
+        // Un texte vide n'est pas envoyé : le champ reste absent du JSON produit.
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(!json.contains("passage_text"), "{json}");
+    }
+
+    #[test]
+    fn edge_view_id_is_the_canonical_identity() {
+        let e = Edge {
+            from: "q".into(),
+            to: "t1".into(),
+            kind: EdgeKind::QueryTerm,
+            weight: 1.0,
+        };
+        assert_eq!(e.view_id(), "q>t1:query_term");
+        assert_eq!(e.key().from, "q");
+        assert_eq!(e.key().to, "t1");
+    }
+
+    #[test]
+    fn edge_kind_names_match_the_wire_format() {
+        for kind in [
+            EdgeKind::QueryTerm,
+            EdgeKind::TermHit,
+            EdgeKind::Qualifies,
+            EdgeKind::HitSource,
+            EdgeKind::Similar,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()), "{kind:?}");
+        }
     }
 }

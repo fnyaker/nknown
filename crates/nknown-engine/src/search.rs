@@ -71,6 +71,46 @@ pub struct QueryTerm {
     pub related: Vec<(Lang, String, f32)>,
 }
 
+/// Niveau de variété de l'élargissement d'une requête.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Variety {
+    /// Liens très proches seulement, matching plus strict.
+    Strict,
+    /// Comportement historique.
+    #[default]
+    Normal,
+    /// Liens plus faibles, signatures et voisins de documents.
+    Diverse,
+}
+
+impl Variety {
+    /// Poids d'un mot lié de force 1 face au mot tapé.
+    pub fn related_share(self) -> f64 {
+        match self {
+            Variety::Strict => 0.35,
+            Variety::Normal => RELATED_SHARE,
+            Variety::Diverse => 0.60,
+        }
+    }
+
+    /// Mots liés retenus par mot de la requête, parmi ceux que la base contient.
+    pub fn related_kept(self) -> usize {
+        match self {
+            Variety::Strict => 4,
+            Variety::Normal => RELATED_KEPT,
+            Variety::Diverse => 16,
+        }
+    }
+
+    /// Part de couverture apportée par un mot lié (1 = comme le mot tapé).
+    pub fn related_coverage(self) -> f64 {
+        match self {
+            Variety::Strict => 0.5,
+            Variety::Normal | Variety::Diverse => 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Query {
     pub terms: Vec<QueryTerm>,
@@ -80,6 +120,8 @@ pub struct Query {
     pub recency: Option<f64>,
     /// Familles de sources retenues (codes de `DocRecord::kind`) ; vide : toutes.
     pub kinds: Vec<u8>,
+    /// Niveau d'élargissement ; [`Variety::Normal`] reproduit le comportement historique.
+    pub variety: Variety,
 }
 
 /// Modificateurs `@…` de la requête (sans l'arobase).
@@ -293,6 +335,8 @@ struct Candidate {
     /// Mot lié trouvé à la place de chaque mot de la requête (indice dans `related`).
     via: Vec<Option<usize>>,
     term_scores: Vec<f64>,
+    /// Somme des parts de couverture (1 par mot direct, `related_coverage` par mot lié).
+    coverage_units: f64,
     pairs: Vec<(usize, usize)>,
     in_title: usize,
     passage: PassageRecord,
@@ -398,11 +442,11 @@ impl<S: Storage> Engine<S> {
             // place d'un autre.
             let mut kept = 0usize;
             for (i, (lang, lemma, strength)) in term.related.iter().enumerate() {
-                if kept == RELATED_KEPT {
+                if kept == q.variety.related_kept() {
                     break;
                 }
                 let before = found.len();
-                let weight = RELATED_SHARE * f64::from(strength.clamp(0.0, 1.0));
+                let weight = q.variety.related_share() * f64::from(strength.clamp(0.0, 1.0));
                 // Le lemme exact, sous chaque catégorie : par sa racine, « logis » ramènerait
                 // « log ».
                 for pos in [Pos::Noun, Pos::Propn, Pos::Verb, Pos::Adj, Pos::X] {
@@ -559,12 +603,24 @@ impl<S: Storage> Engine<S> {
                 .iter()
                 .filter(|rs| rs.iter().any(|r| doc.title_lemmas.contains(&r.id.0)))
                 .count();
+            let via_t = via.remove(&pid).unwrap_or_default();
+            let coverage_units: f64 = (0..scores.len())
+                .filter(|&t| scores[t] > 0.0)
+                .map(|t| {
+                    if via_t.get(t).copied().flatten().is_some() {
+                        q.variety.related_coverage()
+                    } else {
+                        1.0
+                    }
+                })
+                .sum();
             cands.push(Candidate {
                 pid,
                 text: scores.iter().sum(),
                 matched: (0..scores.len()).filter(|&t| scores[t] > 0.0).collect(),
-                via: via.remove(&pid).unwrap_or_default(),
+                via: via_t,
                 term_scores: scores.clone(),
+                coverage_units,
                 pairs: qualified.get(&pid).cloned().unwrap_or_default(),
                 in_title,
                 passage,
@@ -611,7 +667,7 @@ impl<S: Storage> Engine<S> {
         for c in cands {
             let mut parts = ScoreParts {
                 text: c.text,
-                coverage: (c.matched.len() as f64 / terms as f64).powi(coverage_exp),
+                coverage: (c.coverage_units / terms as f64).powi(coverage_exp),
                 qualified: QUALIFIED_BONUS.powi(c.pairs.len() as i32),
                 title: 1.0 + TITLE_BOOST * c.in_title as f64 / terms as f64,
                 ..ScoreParts::default()

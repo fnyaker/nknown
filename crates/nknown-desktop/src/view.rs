@@ -1,7 +1,7 @@
 //! Ce que reçoit le QML : la carte disposée (positions calculées ici, l'interface n'a plus qu'à
 //! animer) et la liste des résultats.
 
-use nknown_api::{self as api, EdgeKind, Graph, NodeKind};
+use nknown_api::{self as api, Graph, NodeKind};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -50,16 +50,6 @@ pub fn node_kind(k: NodeKind) -> &'static str {
     }
 }
 
-fn edge_kind(k: EdgeKind) -> &'static str {
-    match k {
-        EdgeKind::QueryTerm => "query_term",
-        EdgeKind::TermHit => "term_hit",
-        EdgeKind::Qualifies => "qualifies",
-        EdgeKind::HitSource => "hit_source",
-        EdgeKind::Similar => "similar",
-    }
-}
-
 pub fn map(graph: &Graph) -> MapView {
     let placed = nknown_graph::layout(graph);
     let at = |id: &str| placed.get(id).map_or((0.0, 0.0), |p| (p.x, p.y));
@@ -88,10 +78,10 @@ pub fn map(graph: &Graph) -> MapView {
             .map(|e| {
                 let ((x1, y1), (x2, y2)) = (at(&e.from), at(&e.to));
                 EdgeView {
-                    id: format!("{}>{}:{}", e.from, e.to, edge_kind(e.kind)),
+                    id: e.view_id(),
                     from: e.from.clone(),
                     to: e.to.clone(),
-                    kind: edge_kind(e.kind),
+                    kind: e.kind.as_str(),
                     weight: e.weight,
                     x1,
                     y1,
@@ -117,6 +107,9 @@ pub struct HitView {
     pub date: i64,
     pub relative: f32,
     pub snippet: String,
+    /// Texte du passage trouvé, pour la carte défilante : espaces et retours à la ligne
+    /// conservés. Vide si le serveur ne l'envoie pas (carte provisoire, flux d'info).
+    pub passage_text: String,
     pub matched: Vec<String>,
     pub is_code: bool,
     pub code_lang: Option<String>,
@@ -172,6 +165,7 @@ pub fn hit_views(hits: &[api::Hit]) -> Vec<HitView> {
             date: h.date,
             relative: h.relative,
             snippet: h.snippet.clone(),
+            passage_text: h.passage_text.clone(),
             matched: h.matched.clone(),
             is_code: h.is_code,
             code_lang: h.code_lang.clone(),
@@ -264,6 +258,59 @@ mod tests {
         use super::path_tail;
         assert_eq!(path_tail("/home/a/dev/x/src/lib.rs", 3), "…/x/src/lib.rs");
         assert_eq!(path_tail("/a/b.txt", 3), "/a/b.txt");
+    }
+
+    #[test]
+    fn hits_expose_the_full_passage_and_canonical_edges() {
+        use nknown_api as api;
+        let hit = api::Hit {
+            doc: 4,
+            passage: 40,
+            title: Some("Titre".into()),
+            source: "x".into(),
+            source_kind: api::SourceKind::File,
+            url: None,
+            path: None,
+            date: 0,
+            score: 1.0,
+            relative: 1.0,
+            snippet: "extrait".into(),
+            passage_text: "passage\ncomplet".into(),
+            matched: vec!["mot".into()],
+            is_code: false,
+            code_lang: None,
+            nature: api::Nature::Reference,
+            parts: api::ScoreParts::default(),
+            translated_from: None,
+        };
+        let views = super::hit_views(&[hit]);
+        assert_eq!(views[0].snippet, "extrait");
+        assert_eq!(views[0].passage_text, "passage\ncomplet");
+
+        let node = |id: &str, kind: api::NodeKind| api::Node {
+            id: id.into(),
+            kind,
+            label: id.into(),
+            weight: 1.0,
+            hit: None,
+            doc: None,
+            source_kind: None,
+        };
+        let graph = api::Graph {
+            nodes: vec![
+                node("q", api::NodeKind::Query),
+                node("t0", api::NodeKind::Term),
+            ],
+            edges: vec![api::Edge {
+                from: "q".into(),
+                to: "t0".into(),
+                kind: api::EdgeKind::QueryTerm,
+                weight: 1.0,
+            }],
+        };
+        let view = super::map(&graph);
+        assert_eq!(view.edges[0].id, "q>t0:query_term");
+        assert_eq!(view.edges[0].kind, "query_term");
     }
 
     #[test]

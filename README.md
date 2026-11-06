@@ -117,7 +117,19 @@ nknown index base.redb data/fr.lex "wiki:fr:Paris|Lyon" data/fr.tag
 nknown index base.redb data/fr.lex <dossier> data/fr.tag
 nknown search base.redb data/fr.lex "@actu paris"
 nknown search base.redb data/fr.lex "paris sportifs"         # bonus si « sportifs » qualifie « paris »
+nknown search base.redb data/fr.lex "php flaw" --variety=diverse --explain
 ```
+
+Variété de l'élargissement (`--variety`, aussi `--variety <niveau>`) :
+
+| Niveau | Effet |
+|---|---|
+| `strict` | liens de sens très proches uniquement (dictionnaire ≥ 0,55 et soutenu par le contexte) ; moins de résultats, plus précis |
+| `normal` (défaut) | élargissement habituel |
+| `diverse` | liens plus faibles, signatures de définitions validées, second pas et liens appris thématiques ; plus de résultats, plus de bruit possible |
+
+Le niveau ne change ni PageRank, ni l'autorité, ni les seuils de doublons : seuls les mots
+liés et leur poids varient. `--explain` affiche le niveau retenu et les mots liés.
 
 Variantes d'un mot : chaque lemme indexé est rangé sous sa racine (Snowball pour les langues qui en
 ont une) ; une requête cherche aussi les lemmes de même racine (« midterm » trouve « Midterms »

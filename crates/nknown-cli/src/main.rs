@@ -21,7 +21,8 @@ usage :
                                                  dossier des modèles de la configuration)
   nknown ingest <dossier> [lexique.lex]
   nknown index <base.redb> <lexique.lex> <source> [modèle]...
-  nknown search <base.redb> <lexique.lex> <requête> [nombre] [--explain]
+  nknown search <base.redb> <lexique.lex> <requête> [nombre]
+                 [--variety=strict|normal|diverse] [--explain]
   nknown rank <base.redb>                         (autorité des documents, PageRank)
   nknown stats <base.redb>                        (occupation de la base, par type de donnée)
   nknown learn <base.redb> [lexiques/] [mot]...  (liens appris des documents ; démon arrêté)
@@ -119,14 +120,15 @@ fn main() -> ExitCode {
         ["watch", base, lexicon, spec, every, models @ ..] => {
             watch(base, lexicon, spec, every, models)
         }
-        ["search", base, lexicon, query, rest @ ..] if rest.len() <= 2 => {
-            let explain = rest.contains(&"--explain");
-            let limit = rest
-                .iter()
-                .find(|a| **a != "--explain")
-                .copied()
-                .unwrap_or("5");
-            search(base, lexicon, query, limit, explain)
+        ["search", base, lexicon, query, rest @ ..] if rest.len() <= 4 => {
+            let (limit, explain, variety) = match search_options(rest) {
+                Ok(options) => options,
+                Err(e) => {
+                    eprintln!("erreur : {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            search(base, lexicon, query, &limit, explain, variety)
         }
         ["rank", base] => rank(base),
         ["stats", base] => stats(base),
@@ -926,7 +928,66 @@ fn rank(base: &str) -> Res {
     Ok(())
 }
 
-fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) -> Res {
+/// Niveau de variété tapé en ligne de commande.
+fn parse_variety(value: &str) -> Result<nknown_engine::Variety, String> {
+    match value {
+        "strict" => Ok(nknown_engine::Variety::Strict),
+        "normal" | "" => Ok(nknown_engine::Variety::Normal),
+        "diverse" => Ok(nknown_engine::Variety::Diverse),
+        _ => Err(format!(
+            "niveau inconnu : {value} (strict, normal ou diverse)"
+        )),
+    }
+}
+
+fn variety_label(variety: nknown_engine::Variety) -> &'static str {
+    match variety {
+        nknown_engine::Variety::Strict => "strict",
+        nknown_engine::Variety::Normal => "normal",
+        nknown_engine::Variety::Diverse => "diversifié",
+    }
+}
+
+/// Options de `nknown search` : nombre de résultats, explication, niveau de variété.
+fn search_options(rest: &[&str]) -> Result<(String, bool, nknown_engine::Variety), String> {
+    let mut limit: Option<&str> = None;
+    let mut explain = false;
+    let mut variety = nknown_engine::Variety::Normal;
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i];
+        if arg == "--explain" {
+            explain = true;
+            i += 1;
+        } else if let Some(value) = arg.strip_prefix("--variety=") {
+            variety = parse_variety(value)?;
+            i += 1;
+        } else if arg == "--variety" {
+            let Some(value) = rest.get(i + 1) else {
+                return Err("--variety attend une valeur".into());
+            };
+            variety = parse_variety(value)?;
+            i += 2;
+        } else if arg.starts_with("--") {
+            return Err(format!("option inconnue : {arg}"));
+        } else if limit.is_none() {
+            limit = Some(arg);
+            i += 1;
+        } else {
+            return Err(format!("argument en trop : {arg}"));
+        }
+    }
+    Ok((limit.unwrap_or("5").to_owned(), explain, variety))
+}
+
+fn search(
+    base: &str,
+    lexicon: &str,
+    query: &str,
+    limit: &str,
+    explain: bool,
+    variety: nknown_engine::Variety,
+) -> Res {
     use nknown_core::time::Timestamp;
     use nknown_engine::{Engine, RedbStorage};
     let limit: usize = limit
@@ -938,13 +999,18 @@ fn search(base: &str, lexicon: &str, query: &str, limit: &str, explain: bool) ->
         eprintln!("base mise à jour : {note}");
     }
     // Comme le démon : langue détectée, mots étiquetés en contexte.
-    let mut q =
-        nknown_service::query::build_query_with(&pipeline, Some(&LangDetector::new()), query);
+    let mut q = nknown_service::query::build_query_with_variety(
+        &pipeline,
+        Some(&LangDetector::new()),
+        query,
+        variety,
+    );
     if let Some(i) = &q.intent {
         println!("intention : {}", i.name);
     }
     let notes = nknown_service::query::add_learned(&pipeline, &engine, &mut q);
     if explain {
+        println!("variété : {}", variety_label(q.variety));
         for n in &notes {
             println!(
                 "{} « {} » : {} {:.2}",

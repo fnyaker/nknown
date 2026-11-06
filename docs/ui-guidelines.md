@@ -110,8 +110,9 @@ déterministe.
 
 ## 6. Vues et transitions
 
-**Accueil.** Seul le champ de recherche, centré, avec le logo au-dessus. En bas, un point
-d'état discret (vert : à jour ; animé : collecte en cours ; rouge : moteur injoignable).
+**Accueil.** Seul le champ de recherche, centré, avec le logo au-dessus ; sous son trait, le
+curseur de variété, discret. En bas, un point d'état discret (vert : à jour ; animé : collecte
+en cours ; rouge : moteur injoignable).
 
 **Recherche lancée.** Le champ glisse vers le haut (`motion.emphasis`) et rétrécit ; la zone
 libérée accueille la carte (≈ 62 % de la largeur) et la liste des résultats (≈ 38 %). La
@@ -137,6 +138,14 @@ mot). `Échap` referme, puis désélectionne, puis revient à l'accueil.
 
 - **Champ de recherche** : sans bordure, trait inférieur seulement ; l'intention reconnue
   (`actu`, `code`…) devient une pastille colorée dans le champ.
+- **Curseur de variété** : trois positions (Strict, Normal, Diversifié), une piste de 72 px,
+  trois repères de 4 px et un bouton de 12 px à la couleur d'accent ; à droite, le libellé de
+  la position courante (11 px, largeur fixe 64 px). Sous le trait du champ, centré, à
+  l'accueil comme en recherche ; ni fond ni panneau. Le bouton glisse en `motion.quick` ;
+  `Normal` par défaut, le choix est mémorisé. `Tab` l'atteint, les flèches et `Origine`/`Fin`
+  le règlent ; dans l'app, le clic ne prend pas le focus, le champ reste prioritaire.
+  Infobulle avec l'explication du niveau ; le rôle annoncé est celui d'un curseur, valeur
+  lue en toutes lettres.
 - **Carte de résultat** : icône de nature, titre, source et date relative, extrait de deux
   lignes ; à gauche, une barre verticale dont la hauteur est le score relatif au meilleur.
 - **Pastille** : 22 px de haut, rayon complet, fond à 12 % de sa couleur.
@@ -149,7 +158,8 @@ mot). `Échap` referme, puis désélectionne, puis revient à l'accueil.
 Contraste AA minimum pour tout texte ; une nature ne se distingue jamais par la couleur seule
 (la forme la porte aussi) ; tout est atteignable au clavier (`Tab` parcourt les résultats, les
 flèches parcourent les voisins d'un nœud dans la carte) ; libellés accessibles sur chaque
-icône.
+icône. Le curseur de variété est un seul arrêt de tabulation, réglable aux flèches et à
+`Origine`/`Fin`, annoncé avec sa valeur (« Variété de recherche : Normal »).
 
 ## 9. Avant d'ajouter quoi que ce soit
 

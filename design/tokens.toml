@@ -45,6 +45,11 @@ panel_margin = 24
 node_min = 6
 node_max = 28
 dim_opacity = 0.25
+# Curseur de variété (charte, section 7) : trois positions sous le trait du champ.
+variety_track = 72
+variety_knob = 12
+variety_tick = 4
+variety_label = 64
 
 [motion]
 quick_ms = 120

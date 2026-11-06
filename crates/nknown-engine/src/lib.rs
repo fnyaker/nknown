@@ -26,7 +26,7 @@ pub use learn::{LearnOptions, LearnStats, Learned, LearnedLink, LearnedSummary, 
 pub use rank::RankStats;
 pub use search::{
     Hit, Intent, Modifier, Query, QueryTerm, RECENT_HALF_LIFE_DAYS, Related, ScoreParts,
-    SearchResult, Stage, Thresholds, intent_for, modifier_for,
+    SearchResult, Stage, Thresholds, Variety, intent_for, modifier_for,
 };
 pub use storage::{MemStorage, Op, RedbStorage, Storage, StorageReport};
 
@@ -1220,5 +1220,70 @@ mod tests {
         let r = explained(&e, &[("réseau", &[(Pos::Noun, "réseau")])], None, 5);
         let h = r.hits.iter().find(|h| h.doc_id == hub).unwrap();
         assert!(h.parts.authority > 1.0, "{:?}", h.parts);
+    }
+
+    #[test]
+    fn variety_scales_expansion_constants() {
+        assert_eq!(Variety::default(), Variety::Normal);
+        assert_eq!(Variety::Strict.related_share(), 0.35);
+        assert_eq!(Variety::Normal.related_share(), 0.5);
+        assert_eq!(Variety::Diverse.related_share(), 0.60);
+        assert_eq!(Variety::Strict.related_kept(), 4);
+        assert_eq!(Variety::Normal.related_kept(), 8);
+        assert_eq!(Variety::Diverse.related_kept(), 16);
+        assert_eq!(Variety::Strict.related_coverage(), 0.5);
+        assert_eq!(Variety::Normal.related_coverage(), 1.0);
+        assert_eq!(Variety::Diverse.related_coverage(), 1.0);
+    }
+
+    /// Un mot lié seul compte pour un demi-mot en Strict, pour un mot entier ailleurs ;
+    /// Normal garde exactement l'ancienne couverture (`matched.len() / terms`).
+    #[test]
+    fn variety_changes_coverage_of_related_matches() {
+        let mut e = Engine::new(MemStorage::default());
+        add_from(&mut e, "direct", 0, "alpha/N gamma/N");
+        add_from(&mut e, "via", 0, "beta/N gamma/N");
+        add_from(&mut e, "partiel", 0, "alpha/N");
+        let query = |variety| Query {
+            terms: vec![
+                QueryTerm {
+                    text: "alpha".into(),
+                    readings: vec![(Lang::FRA, schema::TermKind::Word(Pos::Noun), "alpha".into())],
+                    related: vec![(Lang::FRA, "beta".into(), 1.0)],
+                },
+                QueryTerm {
+                    text: "gamma".into(),
+                    readings: vec![(Lang::FRA, schema::TermKind::Word(Pos::Noun), "gamma".into())],
+                    related: Vec::new(),
+                },
+            ],
+            variety,
+            ..Query::default()
+        };
+        let search = |variety| e.search_explained(&query(variety), NOW, 10).unwrap();
+        let coverage = |r: &SearchResult, source: &str| {
+            r.hits
+                .iter()
+                .find(|h| h.doc.source == source)
+                .map(|h| h.parts.coverage)
+                .unwrap_or_else(|| panic!("document {source} absent"))
+        };
+
+        let normal = search(Variety::Normal);
+        let exp = normal.thresholds.coverage_exponent;
+        assert_eq!(coverage(&normal, "via"), 1.0);
+        assert_eq!(coverage(&normal, "partiel"), (1.0f64 / 2.0).powi(exp));
+        for h in &normal.hits {
+            let expected = (h.matched.len() as f64 / 2.0).powi(exp);
+            assert!((h.parts.coverage - expected).abs() < 1e-12);
+        }
+
+        let strict = search(Variety::Strict);
+        let exp = strict.thresholds.coverage_exponent;
+        assert_eq!(coverage(&strict, "via"), (0.75f64).powi(exp));
+        assert_eq!(coverage(&strict, "direct"), 1.0);
+
+        let diverse = search(Variety::Diverse);
+        assert_eq!(coverage(&diverse, "via"), 1.0);
     }
 }

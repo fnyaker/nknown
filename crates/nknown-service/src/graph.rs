@@ -256,6 +256,7 @@ mod tests {
             score: relative as f64,
             relative,
             snippet: String::new(),
+            passage_text: String::new(),
             matched: vec![],
             is_code: doc == 2,
             code_lang: None,

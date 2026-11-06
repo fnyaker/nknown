@@ -1,0 +1,43 @@
+# Élargissement de requête par les mots liés : jeu de développement.
+# Ne jamais régler sur eval/expansion-heldout.tsv.
+#
+# Trois documents contrôlés sont construits par ligne :
+#   positif   : la phrase correcte, qui ne contient pas le mot tapé (sauf l'ancre commune) ;
+#   négatif   : un lien voisin mais faux (contraire, homonyme, terme trop général) ;
+#   distrayant: aucun mot de la requête ni lien attendu (test d'emballement).
+# La requête contient en général une ancre commune aux deux premiers documents
+# (« php », « souris »...) pour que le classement dépende de l'élargissement.
+#
+# lang	query	positif	négatif	distrayant	catégorie	note
+eng	php flaw	php vulnerability	php strength	The system update was applied to the device.	synonym	flaw→vulnerability absent du .rel (signature seulement)
+eng	php vulnerability	php flaw	php strength	The system update was applied to the device.	synonym	sens inverse présent (0.73)
+eng	php flaw	php defect	php perfection	The system update was applied to the device.	synonym	voie actuelle par flaw→defect (0.45)
+eng	car	automobile	bicycle	The weather was mild in the valley.	synonym	car→automobile 0.76
+eng	doctor	physician	nurse	The weather was mild in the valley.	synonym	doctor→physician 0.95
+eng	purchase	buy	sell	The weather was mild in the valley.	synonym	purchase→buy 0.84
+eng	quick	fast	slow	The weather was mild in the valley.	synonym	quick→fast 0.94
+eng	security	safety	danger	The weather was mild in the valley.	synonym	security→safety 0.96
+eng	error	mistake	correct	The weather was mild in the valley.	synonym	error→mistake 0.76
+eng	computer mouse	computer touchpad	computer rodent	The weather was mild in the valley.	homonym	contexte « computer » doit choisir touchpad
+eng	bank account	account banker	account mound	The weather was mild in the valley.	homonym	contexte financier
+eng	river bank	river mound	river banker	The weather was mild in the valley.	homonym	contexte fluvial
+eng	spring flowers	flowers springtime	flowers geyser	The weather was mild in the valley.	homonym	saison contre source
+eng	hot spring water	water geyser	water springtime	The weather was mild in the valley.	homonym	source contre saison
+eng	heron	bird	fish	The weather was mild in the valley.	broader	hyponyme : attendu seulement en Diverse
+eng	zero-day	exploit	patch	The system update was applied to the device.	jargon	lien de jargon
+eng	vulnerability	flaw	invulnerability	The system update was applied to the device.	synonym	le contraire ne doit pas sortir
+eng	authentication flaw	authentication vulnerability	authentication strength	The system update was applied to the device.	synonym	même asymétrie que php flaw
+eng	software bug	software glitch	software insect	The weather was mild in the valley.	homonym	logiciel contre insecte
+fra	voiture	automobile	vélo	La météo était douce dans la vallée.	synonym	voiture→automobile 0.71
+fra	élection	scrutin	nomination	La météo était douce dans la vallée.	synonym	élection→scrutin 0.61
+fra	maladie	pathologie	santé	La météo était douce dans la vallée.	synonym	maladie→pathologie 0.84
+fra	médecin	docteur	patient	La météo était douce dans la vallée.	synonym	médecin→docteur 0.96
+fra	faille php	vulnérabilité php	solidité php	La météo était douce dans la vallée.	synonym	lien absent du .rel fr (échec attendu)
+fra	avocat guacamole	guacamole avocatier	guacamole procureur	La météo était douce dans la vallée.	homonym	fruit contre juriste
+fra	avocat tribunal	tribunal procureur	tribunal avocatier	La météo était douce dans la vallée.	homonym	juriste contre fruit
+fra	souris ordinateur	ordinateur pointeur	ordinateur mulot	La météo était douce dans la vallée.	homonym	contexte informatique
+fra	livre sterling	livre pound	livre bouquin	La météo était douce dans la vallée.	homonym	monnaie contre ouvrage
+rus	мышь компьютер	компьютер указатель	компьютер мышка	Погода была мягкой в долине.	homonym	contexte informatique
+rus	банк	банкир	берег	Погода была мягкой в долине.	homonym	banque contre rivage
+rus	зелёный лук овощ	овощ лук-порей	овощ стрела	Погода была мягкой в долине.	homonym	poireau contre arc
+zho	公司	企业	银行	天气温和。	synonym	公司→企业 0.76

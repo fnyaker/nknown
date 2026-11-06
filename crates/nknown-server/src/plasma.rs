@@ -65,6 +65,7 @@ impl Runner {
         let req = api::SearchRequest {
             query: query.clone(),
             limit: MATCHES,
+            variety: api::Variety::Normal,
         };
         let Ok(Ok(resp)) = tokio::task::spawn_blocking(move || service.search(&req, |_| {})).await
         else {

@@ -15,6 +15,63 @@ use wasm_bindgen::prelude::*;
 
 use map::{Map, MapState, kind_label};
 
+/// Clé du niveau de variété dans le stockage local du navigateur.
+const VARIETY_KEY: &str = "nknown.variety";
+
+fn variety_key(v: a::Variety) -> &'static str {
+    match v {
+        a::Variety::Strict => "strict",
+        a::Variety::Normal => "normal",
+        a::Variety::Diverse => "diverse",
+    }
+}
+
+fn variety_from_key(value: &str) -> a::Variety {
+    match value {
+        "strict" => a::Variety::Strict,
+        "diverse" => a::Variety::Diverse,
+        _ => a::Variety::Normal,
+    }
+}
+
+fn variety_label(v: a::Variety) -> &'static str {
+    match v {
+        a::Variety::Strict => "Strict",
+        a::Variety::Normal => "Normal",
+        a::Variety::Diverse => "Diversifié",
+    }
+}
+
+fn variety_hint(v: a::Variety) -> &'static str {
+    match v {
+        a::Variety::Strict => {
+            "Liens de sens très proches uniquement ; moins de résultats, plus précis."
+        }
+        a::Variety::Normal => "Élargissement habituel.",
+        a::Variety::Diverse => {
+            "Liens plus larges, définitions et textes liés ; plus de résultats, plus de bruit possible."
+        }
+    }
+}
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+/// Dernier niveau choisi, `Normal` si le stockage local est indisponible.
+fn load_variety() -> a::Variety {
+    storage()
+        .and_then(|s| s.get_item(VARIETY_KEY).ok().flatten())
+        .map(|v| variety_from_key(&v))
+        .unwrap_or_default()
+}
+
+fn save_variety(v: a::Variety) {
+    if let Some(s) = storage() {
+        let _ = s.set_item(VARIETY_KEY, variety_key(v));
+    }
+}
+
 #[wasm_bindgen(start)]
 pub fn start() {
     leptos::mount::mount_to_body(App);
@@ -36,6 +93,40 @@ fn step(phase: a::Phase) -> u8 {
     }
 }
 
+/// Curseur de variété (charte, section 7) : trois positions sous le trait du champ.
+#[component]
+fn VarietyControl(value: RwSignal<a::Variety>, on_change: Callback<a::Variety>) -> impl IntoView {
+    let index = move || match value.get() {
+        a::Variety::Strict => 0u8,
+        a::Variety::Normal => 1,
+        a::Variety::Diverse => 2,
+    };
+    view! {
+        <div class="variety" title=move || variety_hint(value.get())>
+            <div class="variety-track">
+                <span class="variety-ticks" aria-hidden="true"><i></i><i></i><i></i></span>
+                <input
+                    type="range" class="variety-range" min="0" max="2" step="1"
+                    aria-label="Variété de recherche"
+                    aria-valuetext=move || variety_label(value.get())
+                    aria-describedby="variety-hint"
+                    prop:value=move || index().to_string()
+                    on:input=move |ev| {
+                        let i = event_target_value(&ev).parse::<u8>().unwrap_or(1);
+                        on_change.run(match i {
+                            0 => a::Variety::Strict,
+                            2 => a::Variety::Diverse,
+                            _ => a::Variety::Normal,
+                        });
+                    }
+                />
+            </div>
+            <span class="variety-label">{move || variety_label(value.get())}</span>
+            <span id="variety-hint" class="sr-only">{move || variety_hint(value.get())}</span>
+        </div>
+    }
+}
+
 #[component]
 fn App() -> impl IntoView {
     let auth = RwSignal::new(Auth::Checking);
@@ -51,6 +142,11 @@ fn App() -> impl IntoView {
     let inspected = RwSignal::new(String::new());
     let generation = StoredValue::new(0u64);
     let translation = RwSignal::new(None::<a::TranslationView>);
+    let variety = RwSignal::new(load_variety());
+    let set_variety = Callback::new(move |v: a::Variety| {
+        variety.set(v);
+        save_variety(v);
+    });
 
     let refresh = move || {
         spawn_local(async move {
@@ -85,10 +181,11 @@ fn App() -> impl IntoView {
         map.set(MapState::default());
         searching.set(true);
         stage.set(1);
+        let level = variety.get_untracked();
         spawn_local(async move {
             let mut graph = Graph::default();
             let current = move || generation.get_value() == mine;
-            let result = api::search(&q, |event| {
+            let result = api::search(&q, level, |event| {
                 if !current() {
                     return;
                 }
@@ -168,6 +265,7 @@ fn App() -> impl IntoView {
                             <span class:on={move || stage.get() >= i}><i></i></span>
                         }).collect_view()}
                     </div>
+                    <VarietyControl value=variety on_change=set_variety />
                     <Show when=move || !error.get().is_empty()>
                         <div class="error">{move || error.get()}</div>
                     </Show>
@@ -486,6 +584,8 @@ fn highlight(text: &str, words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::highlight;
+    use super::{variety_from_key, variety_key, variety_label};
+    use nknown_api::Variety;
 
     #[test]
     fn highlight_escapes_then_marks() {
@@ -495,5 +595,16 @@ mod tests {
         );
         // Un mot d'une lettre n'est pas surligné.
         assert_eq!(highlight("a b", &["a".into()]), "a b");
+    }
+
+    #[test]
+    fn variety_keys_roundtrip() {
+        for v in [Variety::Strict, Variety::Normal, Variety::Diverse] {
+            assert_eq!(variety_from_key(variety_key(v)), v);
+            assert!(!variety_label(v).is_empty());
+        }
+        // Valeur inconnue ou ancienne : le comportement historique.
+        assert_eq!(variety_from_key("inconnu"), Variety::Normal);
+        assert_eq!(variety_label(Variety::Diverse), "Diversifié");
     }
 }

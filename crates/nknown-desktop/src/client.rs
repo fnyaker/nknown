@@ -352,10 +352,16 @@ impl Engine {
     }
 
     /// Recherche ; `on_event` reçoit chaque évènement du flux (progression, carte, résultat).
-    pub fn search(&self, query: &str, on_event: &mut dyn FnMut(api::SearchEvent)) -> Result<()> {
+    pub fn search(
+        &self,
+        query: &str,
+        variety: api::Variety,
+        on_event: &mut dyn FnMut(api::SearchEvent),
+    ) -> Result<()> {
         let req = api::SearchRequest {
             query: query.to_owned(),
             limit: 20,
+            variety,
         };
         let body = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
         let mut lines: Box<dyn BufRead> = match self {
@@ -624,7 +630,7 @@ mod tests {
         ]);
         let mut events = Vec::new();
         Engine::Daemon(path)
-            .search("chat", &mut |e| events.push(e))
+            .search("chat", api::Variety::Normal, &mut |e| events.push(e))
             .unwrap();
         assert_eq!(
             events,

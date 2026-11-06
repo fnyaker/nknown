@@ -1,0 +1,20 @@
+# Élargissement de requête : jeu tenu à l'écart (vérification finale uniquement).
+# Même format que eval/expansion.tsv. Ne pas utiliser pour régler les constantes.
+#
+# lang	query	positif	négatif	distrayant	catégorie	note
+eng	software bug	software glitch	software insect	The weather was mild in the valley.	homonym	logiciel contre insecte
+eng	security	protection	danger	The weather was mild in the valley.	synonym	security→protection 0.72
+eng	physician	doctor	quack	The weather was mild in the valley.	synonym	physician→doctor 0.94
+eng	buy	purchase	sell	The weather was mild in the valley.	synonym	buy→purchase 0.97
+eng	fast	quick	slow	The weather was mild in the valley.	synonym	fast→quick 0.83
+eng	crane bird	bird heron	bird derrick	The weather was mild in the valley.	homonym	oiseau contre engin
+eng	bass fishing	fishing barse	fishing bassist	The weather was mild in the valley.	homonym	poisson contre musicien
+fra	maladie	affection	santé	La météo était douce dans la vallée.	synonym	maladie→affection 0.82
+fra	élection	suffrage	nomination	La météo était douce dans la vallée.	synonym	élection→suffrage 0.49
+fra	voiture	auto	vélo	La météo était douce dans la vallée.	synonym	voiture→auto 0.40
+fra	chat en ligne	ligne clavardage	ligne matou	La météo était douce dans la vallée.	homonym	contexte informatique
+rus	холодный ключ вода	вода родник	вода замок	Погода была мягкой в долине.	homonym	source contre serrure
+rus	серая мышь кошка	кошка мышастый	кошка указатель	Погода была мягкой в долине.	homonym	animal contre informatique
+zho	公司	企业	集团	天气温和。	synonym	proche contre hyperonyme
+zho	银行	金融	河岸	天气温和。	synonym	lien absent du .rel zh (échec attendu)
+eng	vulnerability	weakness	strength	The system update was applied to the device.	synonym	faiblesse contre force

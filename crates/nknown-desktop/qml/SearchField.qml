@@ -11,9 +11,12 @@ Item {
     property string phase: ""
     property string intent: ""
     property alias text: input.text
+    /// "strict", "normal" ou "diverse" : niveau d'élargissement de la recherche.
+    property string variety: "normal"
     signal submitted(string query)
+    signal varietyPicked(string value)
 
-    implicitHeight: input.implicitHeight + 14
+    implicitHeight: input.implicitHeight + 42
     readonly property int step: ({ "": 0, "analyze": 1, "search": 2, "graph": 3, "done": 3 })[phase] ?? 0
     readonly property bool running: phase !== "" && phase !== "done"
 
@@ -102,7 +105,8 @@ Item {
         id: gauge
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: parent.bottom
+        anchors.top: input.bottom
+        anchors.topMargin: 12
         height: 2
         // Un trait continu au repos ; trois segments (les étapes) pendant la recherche.
         spacing: root.running ? 4 : 0
@@ -138,10 +142,22 @@ Item {
         }
     }
 
+    // Variété de l'élargissement, collée sous le trait. Toujours visible : aucun saut de mise
+    // en page à l'ouverture d'une recherche ; le champ reste le seul élément qui prend le focus
+    // à l'accueil.
+    VarietySlider {
+        id: varietySlider
+        anchors.top: gauge.bottom
+        anchors.topMargin: 8
+        anchors.horizontalCenter: parent.horizontalCenter
+        value: root.variety
+        onPicked: (value) => root.varietyPicked(value)
+    }
+
     // Propositions de modificateurs, sous le champ.
     Row {
-        anchors.top: parent.bottom
-        anchors.topMargin: 10
+        anchors.top: varietySlider.bottom
+        anchors.topMargin: 6
         anchors.horizontalCenter: root.compact ? undefined : parent.horizontalCenter
         anchors.left: root.compact ? parent.left : undefined
         spacing: 6
