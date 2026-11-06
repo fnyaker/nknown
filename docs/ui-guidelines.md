@@ -43,8 +43,9 @@ Sombre par défaut (encre profonde, pas de noir pur), thème clair dérivé. Une
 | `danger` | `#FF6B81` | `#D63352` | erreurs uniquement |
 
 Règles : jamais plus de 5 teintes de nœuds à l'écran ; la saturation est réservée aux
-éléments actifs ; un élément inactif ou hors sélection descend à 25 % d'opacité, il ne change
-pas de couleur. La lueur (`glow`) ne sert qu'au focus et à la progression.
+éléments actifs ; un élément inactif ou hors sélection voit son opacité multipliée par 0,25,
+il ne change pas de couleur. Le contact est exempté de cette réduction. La lueur (`glow`) ne
+sert qu'au focus et à la progression.
 
 ## 3. Typographie
 
@@ -76,13 +77,21 @@ Rayon : de 6 px (minimum lisible) à 28 px ; l'échelle est en racine (aire ∝ 
 
 ### Liens
 
-| Lien | Trait | Épaisseur / intensité code… |
+| Lien | Trait | Épaisseur / intensité |
 |---|---|---|
-| Requête → mot | plein, fin | — (structure) |
-| Mot → résultat | plein, dégradé couleur du mot → couleur du résultat | **part du mot dans le score du résultat** (épaisseur 0,5–4 px, opacité 30–100 %) |
-| Qualifiant → mot | arc court `node.qualifier` | présent dans le résultat ou non |
-| Résultat → source | pointillé fin `node.source` | — |
-| Résultat ↔ apparenté | tirets | similarité |
+| Requête → mot | plein, fin | 1,2 px, 70 % (structure) |
+| Mot → résultat | plein, dégradé couleur du mot → couleur du résultat | **0,5 + 3,5 × poids px, opacité 30 + 70 × poids %** |
+| Qualifiant → mot | arc court `node.qualifier` | **0,5 + 3,5 × poids px, opacité 30 + 70 × poids %** |
+| Résultat → source | pointillé fin `node.source` | 1 px, 30 % (structure) |
+| Résultat ↔ apparenté | tirets | **0,5 + 3,5 × poids px, opacité 30 + 70 × poids %** |
+
+Le poids est dans `[0, 1]`. L'épaisseur ne change **jamais** au survol ni à la sélection : seules
+l'opacité et le détourage changent. Les liens mot → résultat sous 0,12 ne sont pas tracés.
+
+Au contact, l'opacité augmente de 0,30 (plafond 100 %) et le lien exact est détouré par 3 px
+de `bg.base` ; son épaisseur reste celle de son poids. Un nœud survolé allume tous ses liens et
+ses voisins directs. La sélection multiplie l'opacité des éléments hors sélection par 0,25 ; un
+élément au contact est exempté de cette réduction.
 
 Le sens de lecture est requête → résultats : pendant la recherche et au survol, des particules
 glissent le long des liens dans ce sens, d'autant plus vite que le lien pèse lourd. Hors
@@ -126,13 +135,20 @@ progression se voit à deux endroits, sans jamais de barre de chargement :
    l'animation : on ne la ralentit pas, on enchaîne.
 
 **Sélection.** Cliquer un résultat le met en valeur dans la carte : la caméra s'y rend
-(`motion.spring`), le nœud et les chemins qui y mènent s'allument, le reste passe à 25 %.
+(`motion.spring`), le nœud et les chemins qui y mènent s'allument, le reste voit son opacité
+multipliée par 0,25 (le contact est exempté).
 Cliquer un nœud ouvre l'**inspecteur** par-dessus la liste : ce qu'il est (forme et couleur
 reprises en en-tête), ses liens triés par poids (barres), ses actions (ouvrir, chercher ce
 mot). `Échap` referme, puis désélectionne, puis revient à l'accueil.
 
 **Interactions de carte.** Survol : voisinage allumé. Glisser : déplace la carte ou un nœud
 (qui revient doucement). Molette : zoom centré sur le pointeur. Double-clic : recentrer.
+
+Le **contact** est unique : le pointeur l'emporte sur le focus clavier, qui reprend quand le
+pointeur sort. Un lien survolé s'allume seul et nomme ses extrémités ; un nœud survolé allume
+ses liens et ses voisins. Une carte de résultat, une ligne de lien ou une occurrence du passage
+produit le même contact que le nœud ou le lien correspondant, dans les deux sens. Le survol ne
+déplace jamais la caméra ni le contenu.
 
 ## 7. Composants
 
@@ -148,6 +164,16 @@ mot). `Échap` referme, puis désélectionne, puis revient à l'accueil.
   lue en toutes lettres.
 - **Carte de résultat** : icône de nature, titre, source et date relative, extrait de deux
   lignes ; à gauche, une barre verticale dont la hauteur est le score relatif au meilleur.
+- **Carte de passage** (inspecteur d'un résultat) : la ligne source · date, puis le passage
+  trouvé (`passage_text`, repli sur l'extrait) sur fond `bg.base`, 13 px, interligne 1,45 ;
+  hauteur 96–260 px, défilement vertical avec barre fine ; ouverture sur la première
+  correspondance. Mots de la requête en `node.term`, sans gras ni fond ; au contact, les
+  occurrences liées sont soulignées d'un trait de 1 px, sur le mot seul (pas la ponctuation).
+  La prose normalise les espaces, le code garde ses espaces et retours (`pre-wrap`,
+  monospace 12,5 px côté web, 12 px dans l'app car QML attend un pixel entier). Le titre reste
+  dans l'en-tête de l'inspecteur. Le survol par occurrence est réservé à la prose ; dans le
+  code, le couplage passe par les lignes de lien. Le code s'ouvre en tête : le repérage de la
+  première correspondance est réservé à la prose.
 - **Pastille** : 22 px de haut, rayon complet, fond à 12 % de sa couleur.
 - **Infobulle** : apparaît après 400 ms, une ligne, jamais d'information indispensable.
 - Coins : 10 px (cartes), 14 px (panneaux), complet (pastilles, champ).
@@ -160,6 +186,10 @@ Contraste AA minimum pour tout texte ; une nature ne se distingue jamais par la 
 flèches parcourent les voisins d'un nœud dans la carte) ; libellés accessibles sur chaque
 icône. Le curseur de variété est un seul arrêt de tabulation, réglable aux flèches et à
 `Origine`/`Fin`, annoncé avec sa valeur (« Variété de recherche : Normal »).
+Les cartes de résultat et les lignes de lien sont focusables ; le focus et le survol produisent
+le même contact, et `Entrée` ouvre. `Échap` conserve son ordre : inspecteur, sélection, accueil.
+Quand l'inspecteur est ouvert, la liste des résultats est inerte (`inert`), masquée pour les
+lecteurs d'écran (`aria-hidden`) et retirée du parcours `Tab`, même si son fondu reste visible.
 
 ## 9. Avant d'ajouter quoi que ce soit
 

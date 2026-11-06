@@ -39,6 +39,8 @@ et `SHA256SUMS`. Un seul binaire : `nknown` (ligne de commande), `nknownd` ou `n
 `nknown-app` (Qt6/QML via cxx-qt) : un champ de recherche, puis la carte des chemins qui mènent
 aux résultats, construite en direct, et la liste. Cliquer un nœud ouvre l'inspecteur (ses liens
 par poids) ; cliquer un résultat le met en valeur dans la carte ; Échap revient en arrière.
+Survoler un lien l'allume, survoler un nœud allume ses liens ; l'inspecteur montre le passage
+trouvé dans une carte défilante, et les éléments de la fiche répondent au survol de la carte.
 Le moteur est le démon local, ou le cœur embarqué si le démon est arrêté. Règles visuelles :
 [`docs/ui-guidelines.md`](docs/ui-guidelines.md).
 

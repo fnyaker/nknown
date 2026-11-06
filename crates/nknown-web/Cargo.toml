@@ -22,7 +22,7 @@ web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlInputElement", "Request", "RequestInit",
     "RequestCredentials", "Response", "Headers", "ReadableStream",
     "ReadableStreamDefaultReader", "KeyboardEvent", "MouseEvent", "WheelEvent",
-    "Storage",
+    "Storage", "HtmlElement",
 ] }
 
 [lints]

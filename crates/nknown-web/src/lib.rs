@@ -13,7 +13,7 @@ use leptos::task::spawn_local;
 use nknown_api::{self as a, Graph, Hit, SearchEvent};
 use wasm_bindgen::prelude::*;
 
-use map::{Map, MapState, kind_label};
+use map::{Contact, LinkView, Map, MapState, kind_label};
 
 /// Clé du niveau de variété dans le stockage local du navigateur.
 const VARIETY_KEY: &str = "nknown.variety";
@@ -49,7 +49,7 @@ fn variety_hint(v: a::Variety) -> &'static str {
         }
         a::Variety::Normal => "Élargissement habituel.",
         a::Variety::Diverse => {
-            "Liens plus larges, définitions et textes liés ; plus de résultats, plus de bruit possible."
+            "Liens plus larges, définitions et voisins de mots ; plus de résultats, plus de bruit possible."
         }
     }
 }
@@ -140,6 +140,7 @@ fn App() -> impl IntoView {
     let map = RwSignal::new(MapState::default());
     let selected = RwSignal::new(String::new());
     let inspected = RwSignal::new(String::new());
+    let contact = RwSignal::new(Contact::default());
     let generation = StoredValue::new(0u64);
     let translation = RwSignal::new(None::<a::TranslationView>);
     let variety = RwSignal::new(load_variety());
@@ -178,6 +179,7 @@ fn App() -> impl IntoView {
         hits.set(Vec::new());
         selected.set(String::new());
         inspected.set(String::new());
+        contact.set(Contact::default());
         map.set(MapState::default());
         searching.set(true);
         stage.set(1);
@@ -227,6 +229,16 @@ fn App() -> impl IntoView {
         inspected.set(id);
     });
 
+    // Changement de nœud inspecté : aucun contact de l'ancienne fiche ne doit survivre.
+    Effect::new(move |_| {
+        inspected.get();
+        contact.set(Contact::default());
+    });
+    // Une cible disparue de la carte ne garde pas le contact.
+    Effect::new(move |_| {
+        map.with(|s| contact.update(|c| c.prune(s)));
+    });
+
     // Échap : referme l'inspecteur, puis désélectionne, puis revient à l'accueil.
     window_event_listener(leptos::ev::keydown, move |ev| {
         if ev.key() != "Escape" {
@@ -273,7 +285,7 @@ fn App() -> impl IntoView {
                 </div>
                 <div class="content">
                     <div class="map" on:click=move |_| inspected.set(String::new())>
-                        <Map state=map selected=selected busy=busy on_pick=pick />
+                        <Map state=map selected=selected contact=contact busy=busy on_pick=pick />
                     </div>
                     <div class="side">
                         <div class="meta">
@@ -284,10 +296,12 @@ fn App() -> impl IntoView {
                                     if ms < 1.0 { "< 1".to_owned() } else { format!("{}", ms.round()) })
                             })}
                         </div>
-                        <div class="list" class:hidden=move || !inspected.get().is_empty()>
+                        <div class="list" class:hidden=move || !inspected.get().is_empty()
+                            inert=move || (!inspected.get().is_empty()).then_some("")
+                            aria-hidden=move || if inspected.get().is_empty() { "false" } else { "true" }>
                             <For each={move || hits.get().into_iter().enumerate().collect::<Vec<_>>()}
                                 key={|(_, h): &(usize, Hit)| h.doc}
-                                children={move |(i, h): (usize, Hit)| view! { <Card hit=h index=i selected=selected on_pick=pick /> }}
+                                children={move |(i, h): (usize, Hit)| view! { <Card hit=h index=i selected=selected contact=contact map=map on_pick=pick /> }}
                             />
                             <Show when=move || stage.get() == 4 && hits.with(Vec::is_empty) && error.get().is_empty()>
                                 <div class="empty">"Rien de trouvé"</div>
@@ -295,6 +309,7 @@ fn App() -> impl IntoView {
                         </div>
                         <Show when=move || !inspected.get().is_empty()>
                             <Inspector map=map hits=hits inspected=inspected selected=selected
+                                contact=contact
                                 on_search=Callback::new(move |w: String| { query.set(w.clone()); launch(w) }) />
                         </Show>
                     </div>
@@ -375,11 +390,19 @@ fn Card(
     hit: Hit,
     index: usize,
     selected: RwSignal<String>,
+    contact: RwSignal<Contact>,
+    map: RwSignal<MapState>,
     on_pick: Callback<String>,
 ) -> impl IntoView {
     let node = format!("d{}", hit.doc);
     let kind = if hit.is_code { "code" } else { "prose" };
     let node_sel = node.clone();
+    let node_contact = node.clone();
+    let node_focus = node.clone();
+    let node_focus_out = node.clone();
+    let node_hover = node.clone();
+    let node_hover_out = node.clone();
+    let node_key = node.clone();
     let bar = format!(
         "height: calc((100% - 24px) * {:.3}); background: var(--{kind}); animation-delay: {}ms",
         hit.relative.max(0.08),
@@ -403,10 +426,24 @@ fn Card(
             .unwrap_or_default()
     );
     let snippet = highlight(&hit.snippet, &hit.matched);
+    let title = hit.title.clone().unwrap_or_else(|| hit.source.clone());
+    let aria = format!("{title} — {}", hit.source);
     view! {
         <div class=format!("card {kind}") class:selected=move || selected.get() == node_sel
+            class:contact=move || contact.with(|c| map.with(|m| c.nodes(m).contains(&node_contact)))
+            tabindex="0" role="button" aria-label=aria
             style=format!("animation-delay: {}ms", (index * 30).min(300))
             on:click=move |_| on_pick.run(node.clone())
+            on:mouseenter=move |_| contact.update(|c| c.set_pointer_node(node_hover.clone()))
+            on:mouseleave=move |_| contact.update(|c| c.clear_pointer_node(&node_hover_out))
+            on:focus=move |_| contact.update(|c| c.set_focus_node(node_focus.clone()))
+            on:blur=move |_| contact.update(|c| c.clear_focus_node(&node_focus_out))
+            on:keydown=move |ev| {
+                if ev.key() == "Enter" || ev.key() == " " {
+                    ev.prevent_default();
+                    on_pick.run(node_key.clone());
+                }
+            }
             on:dblclick={
                 let url = hit.url.clone();
                 move |_| if let (Some(u), Some(w)) = (url.as_deref(), web_sys::window()) {
@@ -414,41 +451,242 @@ fn Card(
                 }
             }>
             <div class="bar" style=bar></div>
-            <h3><span class=format!("glyph {kind}")></span>{hit.title.clone().unwrap_or_else(|| hit.source.clone())}</h3>
+            <h3><span class=format!("glyph {kind}")></span>{title}</h3>
             <div class="src">{meta}</div>
             <p inner_html=snippet></p>
         </div>
     }
 }
 
-/// Inspecteur d'un nœud : nature, liens par poids, actions.
+/// Un morceau du passage : texte brut, ou mot de la requête.
+#[derive(Debug, PartialEq)]
+struct Segment {
+    text: String,
+    matched: bool,
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Découpe le passage aux limites de mot, en conservant exactement espaces et retours.
+fn passage_segments(text: &str, words: &[String]) -> Vec<Segment> {
+    let lower = text.to_lowercase();
+    // Minuscules d'une autre longueur : positions incomparables, pas de surlignage.
+    if lower.len() != text.len() {
+        return vec![Segment {
+            text: text.to_owned(),
+            matched: false,
+        }];
+    }
+    let mut terms: Vec<String> = words
+        .iter()
+        .filter(|w| w.chars().count() > 1)
+        .map(|w| w.to_lowercase())
+        .collect();
+    terms.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    terms.dedup();
+    if terms.is_empty() {
+        return vec![Segment {
+            text: text.to_owned(),
+            matched: false,
+        }];
+    }
+    let mut out = Vec::new();
+    let mut plain = String::new();
+    let mut i = 0;
+    while i < text.len() {
+        let previous_word = text[..i].chars().next_back().is_some_and(is_word_char);
+        let mut hit: Option<&String> = None;
+        if !previous_word {
+            for term in &terms {
+                let Some(tail) = lower.get(i..) else { continue };
+                if !tail.starts_with(term.as_str()) {
+                    continue;
+                }
+                let end = i + term.len();
+                if !text.is_char_boundary(end)
+                    || text[end..].chars().next().is_some_and(is_word_char)
+                {
+                    continue;
+                }
+                if hit.is_none_or(|h| term.len() > h.len()) {
+                    hit = Some(term);
+                }
+            }
+        }
+        if let Some(term) = hit {
+            if !plain.is_empty() {
+                out.push(Segment {
+                    text: std::mem::take(&mut plain),
+                    matched: false,
+                });
+            }
+            out.push(Segment {
+                text: text[i..i + term.len()].to_owned(),
+                matched: true,
+            });
+            i += term.len();
+        } else {
+            let c = text[i..].chars().next().unwrap_or(' ');
+            plain.push(c);
+            i += c.len_utf8();
+        }
+    }
+    if !plain.is_empty() {
+        out.push(Segment {
+            text: plain,
+            matched: false,
+        });
+    }
+    out
+}
+
+/// Lien `term_hit` correspondant à un mot du passage, le plus lourd s'il y a ambiguïté.
+fn link_for<'a>(links: &'a [LinkView], word: &str) -> Option<&'a LinkView> {
+    let word = word.to_lowercase();
+    links
+        .iter()
+        .filter(|l| l.kind == "term_hit" && l.other.label.to_lowercase() == word)
+        .max_by(|a, b| a.weight.total_cmp(&b.weight))
+}
+
+/// Carte de passage : texte trouvé, mots liés au contact, défilement et clavier.
+#[component]
+fn Passage(hit: Hit, links: Vec<LinkView>, contact: RwSignal<Contact>) -> impl IntoView {
+    let text = if hit.passage_text.is_empty() {
+        hit.snippet.clone()
+    } else {
+        hit.passage_text.clone()
+    };
+    let is_code = hit.is_code;
+    let meta = format!(
+        "{}{}{}{}",
+        hit.source,
+        if hit.date > 0 {
+            format!("  ·  {}", ago(hit.date))
+        } else {
+            String::new()
+        },
+        hit.code_lang
+            .as_deref()
+            .map(|l| format!("  ·  {l}"))
+            .unwrap_or_default(),
+        hit.translated_from
+            .as_deref()
+            .map(|l| format!("  ·  traduit de l'{}", lang_name(l)))
+            .unwrap_or_default()
+    );
+    let segments = passage_segments(&text, &hit.matched);
+    let interactive = !is_code;
+    let inner = segments
+        .into_iter()
+        .map(|seg| {
+            if !seg.matched {
+                return view! { <span>{seg.text}</span> }.into_any();
+            }
+            match link_for(&links, &seg.text) {
+                Some(link) if interactive => {
+                    let hot = link.clone();
+                    let edge_in = link.edge_id.clone();
+                    let edge_out = link.edge_id.clone();
+                    let word = seg.text;
+                    view! {
+                        <mark
+                            class=move || if contact.with(|c| c.hot_link(&hot)) { "linked hot" } else { "linked" }
+                            on:mouseenter=move |_| contact.update(|c| c.set_pointer_edge(edge_in.clone()))
+                            on:mouseleave=move |_| contact.update(|c| c.clear_pointer_edge(&edge_out))
+                        >{word}</mark>
+                    }
+                    .into_any()
+                }
+                _ => view! { <mark>{seg.text}</mark> }.into_any(),
+            }
+        })
+        .collect_view();
+    let content = if is_code {
+        view! { <pre class="passage-text code">{inner}</pre> }.into_any()
+    } else {
+        view! { <p class="passage-text">{inner}</p> }.into_any()
+    };
+    let body_ref = NodeRef::<leptos::html::Div>::new();
+    let body_effect = body_ref;
+    Effect::new(move |_| {
+        if is_code {
+            return;
+        }
+        let Some(el) = body_effect.get() else { return };
+        let Ok(scroller) = el.dyn_into::<web_sys::HtmlElement>() else {
+            return;
+        };
+        if let Ok(Some(first)) = scroller.query_selector("mark")
+            && let Ok(mark) = first.dyn_into::<web_sys::HtmlElement>()
+        {
+            let top = mark.offset_top() - scroller.client_height() / 3;
+            scroller.set_scroll_top(top.max(0));
+        }
+    });
+    let body_keys = body_ref;
+    view! {
+        <section class="passage" tabindex="0" role="region" aria-label="Passage trouvé"
+            on:keydown=move |ev| {
+                let Some(el) = body_keys.get() else { return };
+                let Ok(scroller) = el.dyn_into::<web_sys::HtmlElement>() else {
+                    return;
+                };
+                let page = scroller.client_height().max(48);
+                let max = (scroller.scroll_height() - scroller.client_height()).max(0);
+                let next = match ev.key().as_str() {
+                    "ArrowDown" => scroller.scroll_top() + 24,
+                    "ArrowUp" => scroller.scroll_top() - 24,
+                    "PageDown" => scroller.scroll_top() + page,
+                    "PageUp" => scroller.scroll_top() - page,
+                    "Home" => 0,
+                    "End" => max,
+                    _ => return,
+                };
+                ev.prevent_default();
+                scroller.set_scroll_top(next.clamp(0, max));
+            }>
+            <div class="passage-head">{meta}</div>
+            <div class="passage-body" node_ref=body_ref>
+                {content}
+            </div>
+        </section>
+    }
+}
+
+/// Inspecteur d'un nœud : nature, liens par poids, actions, passage du résultat.
 #[component]
 fn Inspector(
     map: RwSignal<MapState>,
     hits: RwSignal<Vec<Hit>>,
     inspected: RwSignal<String>,
     selected: RwSignal<String>,
+    contact: RwSignal<Contact>,
     on_search: Callback<String>,
 ) -> impl IntoView {
     let node = move || map.with(|m| m.nodes.get(&inspected.get()).cloned());
-    let url = move || {
+    let hit = move || {
         let id = inspected.get();
-        hits.with(|h| {
-            h.iter()
-                .find(|h| format!("d{}", h.doc) == id)
-                .and_then(|h| h.url.clone())
-        })
+        hits.with(|h| h.iter().find(|h| format!("d{}", h.doc) == id).cloned())
     };
+    let links = move || map.with(|m| m.links(&inspected.get()));
+    let url = move || hit().and_then(|h| h.url);
     view! {
         <div class="inspector">
             {move || node().map(|n| {
                 let kind = n.kind;
                 let label = if n.label.is_empty() { "requête".to_owned() } else { n.label.clone() };
                 let word = n.label.clone();
+                let hover_in = n.id.clone();
+                let hover_out = n.id.clone();
                 view! {
                     <header>
                         <span class=format!("glyph {kind}")></span>
-                        <div style="flex:1;min-width:0">
+                        <div class="insp-title"
+                            on:mouseenter=move |_| contact.update(|c| c.set_pointer_node(hover_in.clone()))
+                            on:mouseleave=move |_| contact.update(|c| c.clear_pointer_node(&hover_out))>
                             <h2>{label}</h2>
                             <div class="kind" style=format!("color: var(--{})", if kind == "query" { "accent" } else if kind == "related" { "prose" } else { kind })>{kind_label(kind)}</div>
                         </div>
@@ -466,16 +704,34 @@ fn Inspector(
                     </div>
                 }
             })}
+            {move || hit()
+                .filter(|h| !(h.passage_text.is_empty() && h.snippet.is_empty()))
+                .map(|h| view! { <Passage hit=h links=links() contact=contact /> })}
             <div class="links">
-                {move || map.with(|m| m.links(&inspected.get())).into_iter().map(|(other, w)| {
-                    let id = other.id.clone();
-                    let color = match other.kind { "query" => "accent", "related" => "prose", k => k };
+                {move || links().into_iter().map(|l| {
+                    let label = if l.other.label.is_empty() { "requête".to_owned() } else { l.other.label.clone() };
+                    let color = match l.other.kind { "query" => "accent", "related" => "prose", k => k };
+                    let hot = l.clone();
+                    let mouse_in = l.edge_id.clone();
+                    let mouse_out = l.edge_id.clone();
+                    let focus_in = l.edge_id.clone();
+                    let focus_out = l.edge_id.clone();
+                    let sel = l.other.id.clone();
+                    let insp = l.other.id.clone();
+                    let aria = format!("Lien vers {label}, {}, poids {} %",
+                        kind_label(l.other.kind), (l.weight * 100.0).round());
                     view! {
-                        <div class="link" on:click=move |_| { selected.set(id.clone()); inspected.set(id.clone()); }>
-                            <span class=format!("glyph {}", other.kind) style="flex:none"></span>
-                            <span>{if other.label.is_empty() { "requête".to_owned() } else { other.label.clone() }}</span>
-                            <div class="weight"><i style=format!("width: {:.0}%; background: var(--{color})", (w.max(0.04) * 100.0))></i></div>
-                        </div>
+                        <button type="button" class="link" class:hot=move || contact.with(|c| c.hot_link(&hot))
+                            aria-label=aria
+                            on:click=move |_| { selected.set(sel.clone()); inspected.set(insp.clone()); }
+                            on:mouseenter=move |_| contact.update(|c| c.set_pointer_edge(mouse_in.clone()))
+                            on:mouseleave=move |_| contact.update(|c| c.clear_pointer_edge(&mouse_out))
+                            on:focus=move |_| contact.update(|c| c.set_focus_edge(focus_in.clone()))
+                            on:blur=move |_| contact.update(|c| c.clear_focus_edge(&focus_out))>
+                            <span class=format!("glyph {}", l.other.kind) style="flex:none"></span>
+                            <span>{label}</span>
+                            <div class="weight"><i style=format!("width: {:.0}%; background: var(--{color})", (l.weight.max(0.04) * 100.0))></i></div>
+                        </button>
                     }
                 }).collect_view()}
             </div>
@@ -584,6 +840,7 @@ fn highlight(text: &str, words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::highlight;
+    use super::passage_segments;
     use super::{variety_from_key, variety_key, variety_label};
     use nknown_api::Variety;
 
@@ -595,6 +852,46 @@ mod tests {
         );
         // Un mot d'une lettre n'est pas surligné.
         assert_eq!(highlight("a b", &["a".into()]), "a b");
+    }
+
+    #[test]
+    fn passage_segments_preserve_text_and_word_boundaries() {
+        let split = |text: &str, words: &[&str]| {
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            let segments = passage_segments(text, &words);
+            let joined: String = segments.iter().map(|s| s.text.as_str()).collect();
+            assert_eq!(joined, text, "le texte doit être conservé à l'identique");
+            segments
+        };
+        let segments = split("Le <b>Jeton</b> du jeton", &["jeton"]);
+        assert_eq!(segments.iter().filter(|s| s.matched).count(), 2);
+
+        // Pas de correspondance partielle dans « part » ni dans « arts ».
+        let segments = split("part arts art, art.", &["art"]);
+        let hits: Vec<&str> = segments
+            .iter()
+            .filter(|s| s.matched)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(hits, ["art", "art"]);
+
+        // Accents et ponctuation.
+        let segments = split("Élection, élection !", &["élection"]);
+        assert_eq!(segments.iter().filter(|s| s.matched).count(), 2);
+
+        // Cyrillique et CJK : les limites de mot restent Unicode.
+        let segments = split("Привет, мир! 漢字 テスト", &["мир", "漢字"]);
+        let hits: Vec<&str> = segments
+            .iter()
+            .filter(|s| s.matched)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(hits, ["мир", "漢字"]);
+
+        // Code : retours, tabulations et espaces restent intacts.
+        let code = "fn main() {\n\tlet имя = \"漢字\";\n\tprintln!(\"{}\", имя);\n}";
+        let segments = split(code, &["имя", "漢字"]);
+        assert_eq!(segments.iter().filter(|s| s.matched).count(), 3);
     }
 
     #[test]

@@ -62,6 +62,58 @@ QtObject {
     readonly property int varietyKnob: 12
     readonly property int varietyTick: 4
     readonly property int varietyLabel: 64
+    readonly property int passageMin: 96
+    readonly property int passageMax: 260
+
+    // Liens (design/tokens.toml, section 4) : une seule formule pour l'app et le web.
+    readonly property real edgeWidthMin: 0.5
+    readonly property real edgeWidthMax: 4.0
+    readonly property real edgeWidthQuery: 1.2
+    readonly property real edgeWidthSource: 1.0
+    readonly property real edgeOpacityQuery: 0.70
+    readonly property real edgeOpacitySource: 0.30
+    readonly property real edgeCasing: 3.0
+    readonly property real edgeOpacityMin: 0.30
+    readonly property real edgeOpacityMax: 1.0
+    readonly property real edgeContactBoost: 0.30
+    readonly property real edgeHiddenBelow: 0.12
+
+    /// Même prédicat que le web : seuls les term_hit trop faibles sont masqués.
+    function edgeHidden(kind, weight) {
+        return kind === "term_hit" && weight < edgeHiddenBelow
+    }
+
+    /// Lettre ou chiffre Unicode (approximation des scripts courants) ou souligné. Les
+    /// propriétés Unicode `\p{…}` ne sont pas disponibles dans le moteur QML.
+    function isWordChar(c) {
+        if (!c) return false
+        const code = c.codePointAt(0)
+        if (code === 95 || (code >= 48 && code <= 57)) return true // _ et 0-9
+        if (c.toUpperCase() !== c.toLowerCase()) return true // latin, grec, cyrillique…
+        return (code >= 0x0590 && code <= 0x06FF) // hébreu, arabe
+            || (code >= 0x0900 && code <= 0x0DFF) // devanagari et proches
+            || (code >= 0x0E00 && code <= 0x0E7F) // thaï
+            || (code >= 0x3040 && code <= 0x30FF) // kana
+            || (code >= 0x3400 && code <= 0x9FFF) // CJK
+            || (code >= 0xAC00 && code <= 0xD7AF) // hangul
+            || (code >= 0xF900 && code <= 0xFAFF) // CJK compatibilité
+    }
+
+    function edgeWidth(kind, weight) {
+        if (kind === "query_term") return edgeWidthQuery
+        if (kind === "hit_source") return edgeWidthSource
+        return edgeWidthMin + (edgeWidthMax - edgeWidthMin) * Math.max(0, Math.min(1, weight))
+    }
+    function edgeOpacity(kind, weight) {
+        if (kind === "query_term") return edgeOpacityQuery
+        if (kind === "hit_source") return edgeOpacitySource
+        return edgeOpacityMin + (edgeOpacityMax - edgeOpacityMin) * Math.max(0, Math.min(1, weight))
+    }
+    function edgeRenderOpacity(kind, weight, contact, dimmed) {
+        const base = edgeOpacity(kind, weight)
+        if (contact) return Math.min(1, base + edgeContactBoost)
+        return dimmed ? base * dim : base
+    }
 
     /// Date relative courte (« il y a 3 h »).
     function ago(seconds) {

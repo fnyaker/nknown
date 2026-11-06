@@ -8,8 +8,10 @@ import org.nknown.app
 
 ApplicationWindow {
     id: win
-    width: 1360
-    height: 860
+    // --narrow : captures de vérification à la taille minimale.
+    readonly property bool narrowShot: Qt.application.arguments.indexOf("--narrow") >= 0
+    width: narrowShot ? 900 : 1360
+    height: narrowShot ? 560 : 860
     minimumWidth: 900
     minimumHeight: 560
     visible: true
@@ -58,7 +60,7 @@ ApplicationWindow {
 
     /// Met un nœud en valeur sur la carte et, si c'est un résultat, dans la liste.
     function select(nodeId) {
-        map.focusNode(nodeId)
+        map.focusOn(nodeId)
         const i = hitIndexOf(nodeId)
         if (i >= 0) list.positionViewAtIndex(i, ListView.Contain)
     }
@@ -255,8 +257,18 @@ ApplicationWindow {
                         hit: modelData
                         width: ListView.view.width
                         selected: map.selected === modelData.node
+                        contact: !!map.contactNodes[modelData.node]
                         onPicked: win.inspect(map.nodes[modelData.node])
                         onRead: win.read(modelData)
+                        onHoverContact: (on) => {
+                            if (on) map.setPointerNode(modelData.node)
+                            else if (map.pointerNode === modelData.node) map.pointerNode = ""
+                        }
+                        onFocusContact: (on) => {
+                            if (on) map.setFocusNode(modelData.node)
+                            else if (map.focusNode === modelData.node) map.focusNode = ""
+                        }
+                        onFocused: list.positionViewAtIndex(index, ListView.Contain)
                         // Entrées décalées de 30 ms, plafonnées à 300 ms.
                         opacity: 0
                         Component.onCompleted: appear.start()
@@ -289,16 +301,32 @@ ApplicationWindow {
                     node: win.inspected
                     links: win.inspected ? map.linksOf(win.inspected.id) : []
                     hit: win.hitOf(win.inspected)
+                    contactEdge: map.hoveredEdge
+                    contactNode: map.hoveredNode
                     opacity: win.inspected ? 1 : 0
                     visible: opacity > 0
                     scale: win.inspected ? 1 : 0.98
                     Behavior on opacity { NumberAnimation { duration: Theme.standard; easing.type: Easing.OutCubic } }
                     Behavior on scale { NumberAnimation { duration: Theme.standard; easing.type: Easing.OutCubic } }
+                    // Les lignes de l'ancien nœud ont disparu : leur contact aussi.
+                    onNodeChanged: map.clearContact()
                     onCloseRequested: win.inspected = null
                     onLinkPicked: (id) => win.inspect(map.nodes[id])
                     onSearchWord: (word) => { top.text = word; win.launch(word) }
                     onRead: win.read(inspector.hit)
                     onReveal: (path) => backend.revealFile(path)
+                    onHoverEdge: (edge, on) => {
+                        if (on) map.setPointerEdge(edge)
+                        else if (map.pointerEdge === edge) map.pointerEdge = ""
+                    }
+                    onFocusEdge: (edge, on) => {
+                        if (on) map.setFocusEdge(edge)
+                        else if (map.focusEdge === edge) map.focusEdge = ""
+                    }
+                    onHoverNode: (id, on) => {
+                        if (on) map.setPointerNode(id)
+                        else if (map.pointerNode === id) map.pointerNode = ""
+                    }
                 }
             }
 
@@ -616,6 +644,13 @@ ApplicationWindow {
         })
         if (!ok) console.warn("capture impossible :", name)
     }
+    /// Capture : le premier résultat texte (repli sur le premier résultat).
+    function passageHit() {
+        return hits.find(h => !h.is_code) || hits[0] || null
+    }
+    function codeHit() {
+        return hits.find(h => h.is_code) || null
+    }
     Timer {
         running: !!win.auto
         interval: 1800
@@ -626,20 +661,50 @@ ApplicationWindow {
             case 0: win.snap("1-accueil"); if (q) { top.text = q; win.launch(q) } break
             case 1: break
             case 2: win.snap("2-recherche"); break
-            case 3: if (win.hits.length > 0) win.inspect(map.nodes[win.hits[0].node]); break
-            case 4: win.snap("3-inspecteur"); if (win.hits.length > 0) win.read(win.hits[0]); break
-            case 5: win.snap("4-lecteur"); reader.open = false; break
-            case 6:
+            case 3: { const h = win.passageHit(); if (h) win.inspect(map.nodes[h.node]); map.probeEnabled = false } break
+            case 4: win.snap("3-inspecteur"); break
+            case 5: {
+                // Vérifie le test de survol analytique : point au milieu d'un lien term_hit du
+                // résultat inspecté.
+                const link = win.inspected
+                    ? map.linksOf(win.inspected.id).find(l => l.kind === "term_hit") : null
+                const e = link ? map.edges[link.edge] : null
+                if (e) {
+                    const mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2
+                    const bend = Math.min(0.45, Math.hypot(e.x2 - e.x1, e.y2 - e.y1) / 900)
+                    const mlen = Math.max(1, Math.hypot(mx, my))
+                    const cx = mlen > 30 ? mx * (1 + bend) : mx - (e.y2 - e.y1) * bend
+                    const cy = mlen > 30 ? my * (1 + bend) : my + (e.x2 - e.x1) * bend
+                    const qx = 0.25 * e.x1 + 0.5 * cx + 0.25 * e.x2
+                    const qy = 0.25 * e.y1 + 0.5 * cy + 0.25 * e.y2
+                    const hit = map.edgeAt(qx, qy)
+                    if (!hit || hit.uid !== link.edge)
+                        console.warn("sonde de lien : attendu", link.edge,
+                                     "obtenu", hit ? hit.uid : "aucun")
+                    if (hit) map.setPointerEdge(hit.uid)
+                    else map.clearPointer()
+                }
+                break
+            }
+            case 6: win.snap("3b-contact"); break
+            case 7: {
+                map.clearPointer()
+                const c = win.codeHit()
+                if (c) win.inspect(map.nodes[c.node])
+                break
+            }
+            case 8: win.snap("3c-code"); map.probeEnabled = true; { const h = win.passageHit(); if (h) win.read(h) } break
+            case 9: win.snap("4-lecteur"); reader.open = false; break
+            case 10:
                 win.inspected = null; settings.open = true
                 if (win.auto.source) backend.addSource(win.auto.source)
                 break
-            case 7: win.snap("5-reglages"); settings.open = false; importer.show("suivi"); break
-            case 8: win.snap("6-import-suivi"); importer.tab = "flux"; break
-            case 9: win.snap("7-import-flux"); importer.tab = "wiki"; break
-            case 10: win.snap("8-import-wiki"); importer.tab = "web"; break
-            case 11: win.snap("9-import-web"); importer.open = false; statsPanel.probeWord = q || ""; statsPanel.open = true; break
-            case 12: break
-            case 13: win.snap("10-stats"); break
+            case 11: win.snap("5-reglages"); settings.open = false; importer.show("suivi"); break
+            case 12: win.snap("6-import-suivi"); importer.tab = "flux"; break
+            case 13: win.snap("7-import-flux"); importer.tab = "wiki"; break
+            case 14: win.snap("8-import-wiki"); importer.tab = "web"; break
+            case 15: win.snap("9-import-web"); importer.open = false; statsPanel.probeWord = q || ""; statsPanel.open = true; break
+            case 16: win.snap("10-stats"); break
             default: Qt.quit()
             }
         }

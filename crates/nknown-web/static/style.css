@@ -46,7 +46,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root { --standard: 120ms; --emphasis: 120ms; }
-  * { animation-duration: 120ms !important; }
+  * { animation-duration: 120ms !important; transition-duration: 120ms !important; scroll-behavior: auto !important; }
 }
 
 * { box-sizing: border-box; }
@@ -178,8 +178,16 @@ body {
 .camera { transition: transform var(--emphasis) var(--ease); }
 .side { flex: 1; position: relative; padding: 0 24px 24px 0; min-width: 0; }
 .meta { color: var(--text-secondary); font-size: 11px; font-weight: 500; height: 20px; font-variant-numeric: tabular-nums; }
-.list { position: absolute; inset: 24px 24px 24px 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-subtle) transparent; display: flex; flex-direction: column; gap: 8px; transition: opacity var(--quick); }
-.list.hidden { opacity: 0; pointer-events: none; }
+.list {
+  position: absolute; inset: 24px 24px 24px 0; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-subtle) transparent;
+  display: flex; flex-direction: column; gap: 8px;
+  transition: opacity var(--quick), visibility 0s linear 0s;
+}
+.list.hidden {
+  opacity: 0; pointer-events: none; visibility: hidden;
+  transition: opacity var(--quick), visibility 0s linear var(--quick);
+}
 .empty { color: var(--text-secondary); text-align: center; margin-top: 40%; font-size: 13px; }
 
 .card {
@@ -193,7 +201,10 @@ body {
   animation: appear var(--standard) var(--ease) both;
 }
 .card:hover { background: var(--bg-hover); }
+.card.contact { background: var(--bg-hover); }
 .card.selected { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: var(--bg-hover); }
+.card:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+.card:focus:not(:focus-visible) { outline: none; }
 .card .bar { position: absolute; left: 8px; top: 50%; width: 3px; border-radius: 2px; transform: translateY(-50%); opacity: .85; }
 .card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; display: flex; gap: 8px; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .src { color: var(--text-secondary); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -219,14 +230,19 @@ mark { background: none; color: var(--term); }
 .glyph.related { border: 1.5px solid var(--prose); }
 
 /* ------------------------------------------------------------------ nœuds et liens (SVG) */
-.node { transition: transform var(--emphasis) var(--spring), opacity var(--standard); cursor: pointer; }
+.node { transition: transform var(--emphasis) var(--spring), opacity var(--quick); cursor: pointer; }
 .node > .shape { animation: hatch var(--emphasis) var(--spring) both; transform-box: fill-box; transform-origin: center; transition: transform var(--quick); }
-.node:hover > .shape { transform: scale(1.15); }
-.node.dim, .edge.dim { opacity: .25; }
+.node:hover > .shape, .node.hot > .shape { transform: scale(1.15); }
 @keyframes hatch { from { transform: scale(0); opacity: 0; } }
-.node .label { fill: var(--text-secondary); font-size: 11px; font-weight: 500; text-anchor: middle; paint-order: stroke; stroke: var(--bg-base); stroke-width: 3px; pointer-events: none; }
-.node.term .label, .node.qualifier .label { fill: var(--text-primary); font-size: 13px; font-weight: 600; }
+.node .label {
+  display: none; fill: var(--text-secondary); font-size: 11px; font-weight: 500;
+  text-anchor: middle; paint-order: stroke; stroke: var(--bg-base); stroke-width: 3px;
+  pointer-events: none;
+}
+.node.always .label, .node.hot .label,
+.node.endpoint .label { display: block; }
 .node.selected .label { fill: var(--text-primary); }
+.node.term .label, .node.qualifier .label { fill: var(--text-primary); font-size: 13px; font-weight: 600; }
 .node .halo { fill: none; stroke: color-mix(in srgb, var(--accent) 55%, transparent); stroke-width: 2; }
 .s-query { fill: var(--bg-base); stroke: var(--accent); }
 .s-term { fill: var(--term); }
@@ -239,7 +255,20 @@ mark { background: none; color: var(--term); }
 @keyframes pulse { 50% { transform: scale(1.12); } }
 .busy .node.query > .shape { animation: pulse 1.04s ease-in-out infinite; }
 
-.edge { fill: none; stroke-linecap: round; transition: d var(--emphasis) var(--spring), opacity var(--standard); animation: draw var(--emphasis) var(--ease) both; }
+.edge-hit {
+  fill: none; stroke: transparent; stroke-width: 12px; stroke-linecap: round;
+  vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: grab;
+  transition: d var(--emphasis) var(--spring);
+}
+.edge-casing {
+  fill: none; stroke: var(--bg-base); stroke-linecap: round; pointer-events: none;
+  transition: stroke-width var(--quick), d var(--emphasis) var(--spring);
+}
+.edge {
+  fill: none; stroke-linecap: round; pointer-events: none;
+  transition: stroke-opacity var(--quick), d var(--emphasis) var(--spring);
+  animation: draw var(--emphasis) var(--ease) both;
+}
 .edge.query_term { stroke: var(--accent); }
 .edge.term_hit { stroke: var(--term); }
 .edge.qualifies { stroke: var(--qualifier); }
@@ -249,15 +278,16 @@ mark { background: none; color: var(--term); }
 
 /* ------------------------------------------------------------------ inspecteur */
 .inspector {
-  position: absolute; inset: 0 24px 24px 0; scrollbar-width: thin; scrollbar-color: var(--line-subtle) transparent;
+  position: absolute; inset: 0 24px 24px 0;
   background: var(--bg-raised); border: 1px solid var(--line-subtle); border-radius: 14px;
-  padding: 24px; overflow-y: auto;
+  padding: 24px; display: flex; flex-direction: column; overflow: hidden;
   animation: appear var(--standard) var(--ease) both;
 }
 .inspector header { display: flex; gap: 14px; align-items: center; }
 .inspector header .glyph { width: 26px; height: 26px; }
 .inspector h2 { margin: 0; font-size: 17px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector .kind { font-size: 11px; font-weight: 500; }
+.insp-title { flex: 1; min-width: 0; }
 .actions { display: flex; gap: 8px; margin: 16px 0; }
 .pill {
   border: 0; border-radius: 15px; height: 30px; padding: 0 14px; cursor: pointer;
@@ -270,11 +300,55 @@ mark { background: none; color: var(--term); }
   color: var(--text-secondary); cursor: pointer; font-size: 13px;
 }
 .close:hover { background: var(--bg-hover); }
-.links { border-top: 1px solid var(--line-subtle); padding-top: 12px; display: flex; flex-direction: column; gap: 2px; }
-.link { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px; border-radius: 8px; cursor: pointer; }
-.link:hover { background: var(--bg-hover); }
+.close:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); }
+
+/* Carte de passage (charte, section 7). */
+.passage {
+  flex: none; display: flex; flex-direction: column; max-height: min(260px, 32vh);
+  background: var(--bg-base); border: 1px solid var(--line-subtle); border-radius: 10px;
+  overflow: hidden;
+}
+.passage:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+.passage-head {
+  padding: 12px 14px 8px; color: var(--text-secondary); font-size: 11px; font-weight: 500;
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.passage-body {
+  position: relative; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 14px 12px; scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-secondary) 45%, transparent) transparent;
+}
+.passage-text {
+  margin: 0; white-space: normal; overflow-wrap: anywhere;
+  color: var(--text-secondary); font-size: 13px; line-height: 1.45;
+}
+/* Le code garde ses espaces et retours ; la prose suit les espaces normaux. */
+.passage-text.code {
+  white-space: pre-wrap;
+  font: 12.5px/1.45 "JetBrains Mono", ui-monospace, monospace;
+}
+.passage mark.linked { cursor: default; }
+.passage mark.hot {
+  text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;
+}
+
+.links {
+  flex: 1; min-height: 0; overflow-y: auto; margin-top: 12px;
+  border-top: 1px solid var(--line-subtle); padding-top: 12px;
+  display: flex; flex-direction: column; gap: 2px;
+  scrollbar-width: thin; scrollbar-color: var(--line-subtle) transparent;
+}
+.link {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 8px;
+  border: 0; border-radius: 8px; background: none; color: inherit; font: inherit;
+  text-align: left; cursor: pointer; transition: background var(--quick);
+}
+.link.hot, .link:hover { background: var(--bg-hover); }
+.link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: -1px;
+}
 .link span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.weight { width: 64px; height: 4px; border-radius: 2px; background: var(--line-subtle); overflow: hidden; }
+.weight { width: 64px; height: 4px; border-radius: 2px; background: var(--line-subtle); overflow: hidden; flex: none; }
 .weight i { display: block; height: 100%; border-radius: 2px; }
 
 /* ------------------------------------------------------------------ connexion, état */

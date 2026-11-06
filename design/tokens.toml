@@ -45,11 +45,28 @@ panel_margin = 24
 node_min = 6
 node_max = 28
 dim_opacity = 0.25
+passage_min = 96
+passage_max = 260
 # Curseur de variété (charte, section 7) : trois positions sous le trait du champ.
 variety_track = 72
 variety_knob = 12
 variety_tick = 4
 variety_label = 64
+
+# Liens (charte, section 4) : le poids module l'épaisseur et l'opacité ; le contact ajoute
+# 0,30 d'opacité sans jamais changer l'épaisseur.
+[edge]
+width_min = 0.5
+width_max = 4.0
+width_query = 1.2
+width_source = 1.0
+opacity_query = 0.70
+opacity_source = 0.30
+casing = 3.0
+opacity_min = 0.30
+opacity_max = 1.00
+contact_boost = 0.30
+hidden_below = 0.12
 
 [motion]
 quick_ms = 120

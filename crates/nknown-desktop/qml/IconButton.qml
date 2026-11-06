@@ -12,8 +12,13 @@ Rectangle {
     width: 30
     height: 30
     radius: 15
+    activeFocusOnTab: true
     color: area.pressed ? Theme.lineSubtle : area.containsMouse ? Theme.bgHover : "transparent"
+    border.width: activeFocus ? 1 : 0
+    border.color: Qt.alpha(Theme.accent, 0.6)
     Behavior on color { ColorAnimation { duration: Theme.quick } }
+    Keys.onReturnPressed: button.clicked()
+    Keys.onEnterPressed: button.clicked()
     Text {
         anchors.centerIn: parent
         text: button.glyph

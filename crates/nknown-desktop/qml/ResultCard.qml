@@ -6,17 +6,43 @@ Rectangle {
     id: card
     required property var hit
     property bool selected: false
+    /// Nœud ou lien au contact (survol, focus ou sélection dans la carte).
+    property bool contact: false
     signal picked()
     /// Double clic : lire le document.
     signal read()
+    signal hoverContact(bool on)
+    signal focusContact(bool on)
+    /// Focus clavier obtenu : la liste peut amener la carte en vue.
+    signal focused()
 
     implicitHeight: body.implicitHeight + 24
     radius: Theme.radiusCard
-    color: selected ? Theme.bgHover : hover.containsMouse ? Qt.alpha(Theme.bgHover, 0.7) : Theme.bgRaised
+    color: selected || contact ? Theme.bgHover
+         : hover.containsMouse ? Qt.alpha(Theme.bgHover, 0.7) : Theme.bgRaised
     border.color: selected ? Qt.alpha(Theme.accent, 0.6) : Theme.lineSubtle
     border.width: 1
+    activeFocusOnTab: true
     Behavior on color { ColorAnimation { duration: Theme.quick } }
     Behavior on border.color { ColorAnimation { duration: Theme.quick } }
+
+    // Anneau de focus : le survol et le focus produisent le même contact, seul le focus a un anneau.
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -2
+        radius: parent.radius + 2
+        color: "transparent"
+        border.width: 2
+        border.color: card.activeFocus ? Qt.alpha(Theme.accent, 0.7) : "transparent"
+        Behavior on border.color { ColorAnimation { duration: Theme.quick } }
+    }
+
+    Keys.onReturnPressed: card.picked()
+    Keys.onEnterPressed: card.picked()
+    onActiveFocusChanged: {
+        card.focusContact(activeFocus)
+        if (activeFocus) card.focused()
+    }
 
     // Score relatif au meilleur résultat.
     Rectangle {
@@ -90,9 +116,13 @@ Rectangle {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: card.picked()
+        onContainsMouseChanged: card.hoverContact(containsMouse)
+        onClicked: {
+            card.forceActiveFocus()
+            card.picked()
+        }
         onDoubleClicked: card.read()
     }
     Accessible.role: Accessible.ListItem
-    Accessible.name: hit.title
+    Accessible.name: hit.title + (hit.source ? " — " + hit.source : "")
 }
