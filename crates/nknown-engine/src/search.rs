@@ -79,7 +79,7 @@ pub enum Variety {
     /// Comportement historique.
     #[default]
     Normal,
-    /// Liens plus faibles, signatures et voisins de documents.
+    /// Liens plus faibles, signatures de définitions et voisins de mots.
     Diverse,
 }
 

@@ -15,7 +15,7 @@ Item {
     readonly property var hints: [
         "Liens de sens très proches uniquement ; moins de résultats, plus précis.",
         "Élargissement habituel.",
-        "Liens plus larges, définitions et textes liés ; plus de résultats, plus de bruit possible."
+        "Liens plus larges, définitions et voisins de mots ; plus de résultats, plus de bruit possible."
     ]
     readonly property int index: {
         const i = values.indexOf(value)
@@ -105,7 +105,7 @@ Item {
         height: root.height
         anchors.verticalCenter: parent.verticalCenter
         HoverHandler { cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: (event) => root.pickAt(event.point.position.x) }
+        TapHandler { onTapped: (eventPoint) => root.pickAt(eventPoint.position.x) }
         DragHandler {
             id: dragHandler
             xAxis.enabled: true

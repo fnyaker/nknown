@@ -949,6 +949,22 @@ fn word_end(text: &str, from: usize) -> usize {
         .map_or(text.len(), |(at, _)| from + at)
 }
 
+/// Texte replié en minuscules, avec l'index du caractère d'origine pour chaque caractère replié.
+///
+/// La casse peut changer le nombre de caractères (`İ` U+0130 devient `i` + point combinant) :
+/// garder la correspondance en caractères d'origine évite de décaler la fenêtre.
+fn folded_with_origin(text: &str) -> (String, Vec<usize>) {
+    let mut folded = String::with_capacity(text.len());
+    let mut origin = Vec::with_capacity(text.len());
+    for (char_index, (_, c)) in text.char_indices().enumerate() {
+        for lower in c.to_lowercase() {
+            folded.push(lower);
+            origin.push(char_index);
+        }
+    }
+    (folded, origin)
+}
+
 /// Texte du passage montré dans la fiche d'un résultat : fenêtre d'environ `width` caractères
 /// centrée sur la première correspondance, coupée aux limites de mots, espaces et retours à la
 /// ligne conservés (la fiche est pré-encadrée et défilante, contrairement à [`snippet`]).
@@ -960,8 +976,8 @@ pub fn passage_text(text: &str, words: &[String], width: usize) -> String {
     if width == 0 || total <= width {
         return text.to_owned();
     }
-    let lower = text.to_lowercase();
-    // Première correspondance : octet dans `lower`, longueur du motif en caractères.
+    let (folded, origin) = folded_with_origin(text);
+    // Première correspondance : caractère d'origine et longueur en caractères d'origine.
     let first = words
         .iter()
         .filter_map(|w| {
@@ -969,12 +985,17 @@ pub fn passage_text(text: &str, words: &[String], width: usize) -> String {
             if needle.is_empty() {
                 return None;
             }
-            lower.find(&needle).map(|at| (at, needle.chars().count()))
+            let at = folded.find(&needle)?;
+            let start = folded[..at].chars().count();
+            let end = start + needle.chars().count();
+            let start_char = origin.get(start).copied()?;
+            let end_char = origin.get(end).copied().unwrap_or(total);
+            // Un motif qui ne couvre qu'une partie d'un caractère replié (`i` dans `İ`)
+            // couvre tout de même ce caractère d'origine.
+            Some((start_char, (end_char - start_char).max(1)))
         })
         .min_by_key(|&(at, _)| at);
-    let (hit_chars, hit_len) = first.map_or((0, 0), |(at, n)| {
-        (lower[..at].chars().count().min(total), n)
-    });
+    let (hit_chars, hit_len) = first.map_or((0, 0), |(at, n)| (at.min(total), n));
     // Fenêtre centrée sur la correspondance ; sans correspondance, le début du texte.
     let start_char = match first {
         Some(_) => hit_chars.saturating_sub(width / 2).min(total - width),
@@ -1110,6 +1131,16 @@ mod tests {
     }
 
     #[test]
+    fn passage_text_keeps_alignment_when_lowercase_expands() {
+        // Chaque `İ` devient deux caractères en minuscules : la correspondance doit rester
+        // calculée sur les caractères d'origine, pas sur les octets repliés.
+        let text = format!("{}cible {}", "İ ".repeat(200), "fin ".repeat(200));
+        let s = passage_text(&text, &["cible".to_owned()], 60);
+        assert!(s.contains("cible"), "{s:?}");
+        assert!(s.starts_with('…') && s.ends_with('…'), "{s:?}");
+    }
+
+    #[test]
     fn passage_text_finds_a_match_beyond_the_start_window() {
         let text = format!("{} cible", "début ".repeat(100));
         let s = passage_text(&text, &["cible".to_owned()], 50);
@@ -1228,6 +1259,102 @@ mod tests {
             build_query_in_variety(&pipeline, None, "carte", &engine, Variety::Normal)
         );
         assert_eq!(build_query(&pipeline, "carte").variety, Variety::Normal);
+    }
+
+    /// Normal reste la référence sur une base synthétique : mêmes contenus et poids de liens
+    /// que le comportement historique, un document direct devant un document lié, et des
+    /// niveaux Strict / Diversifié qui resserrent ou élargissent dans le sens documenté.
+    #[test]
+    fn normal_variety_fixture_keeps_documented_weights() {
+        use nknown_core::item::RawItem;
+        use nknown_core::source::{SourceId, SourceKind};
+        use nknown_core::time::Timestamp;
+        use nknown_engine::{Document, Engine, MemStorage};
+        use nknown_nlp::relations::{BuildOptions, Evidence};
+
+        let mut r = nknown_nlp::RelationsBuilder::new();
+        r.link("alpha", "beta", Evidence::Synonym, 1.0);
+        r.link("alpha", "gamma", Evidence::Related, 1.0);
+        r.link("alpha", "delta", Evidence::Related, 0.5);
+        let rel = r
+            .build(
+                BuildOptions {
+                    per_lemma: 16,
+                    min_weight: 0.1,
+                },
+                |_| 1.0,
+            )
+            .unwrap();
+        let pipeline = Pipeline::default()
+            .with_lexicon(Lang::FRA, lexicon(&["alpha", "beta", "gamma", "delta"]))
+            .with_relations(Lang::FRA, rel);
+
+        let related = |variety| -> Vec<(String, f32)> {
+            build_query_with_variety(&pipeline, None, "alpha", variety).terms[0]
+                .related
+                .iter()
+                .map(|(_, w, p)| (w.clone(), *p))
+                .collect()
+        };
+        // Poids du constructeur : force du type (`Synonym` 0,9 ; `Related` 0,45) × force
+        // d'indice, puis quantifiés une seconde fois sur 255 par le fichier de relations.
+        let normal = related(Variety::Normal);
+        assert_eq!(
+            normal,
+            [
+                ("beta".to_owned(), 230.0 / 255.0),
+                ("gamma".to_owned(), 115.0 / 255.0),
+            ]
+        );
+        assert_eq!(
+            related(Variety::Strict),
+            [("beta".to_owned(), 230.0 / 255.0)]
+        );
+        let diverse = related(Variety::Diverse);
+        assert_eq!(
+            diverse,
+            [
+                ("beta".to_owned(), 230.0 / 255.0),
+                ("gamma".to_owned(), 115.0 / 255.0),
+                ("delta".to_owned(), 58.0 / 255.0),
+            ]
+        );
+
+        // Un document direct doit battre un document qui ne contient qu'un mot lié.
+        let mut engine = Engine::new(MemStorage::default()).with_stemmer(langid::stem);
+        let now = Timestamp::now();
+        for (external_id, text) in [
+            ("direct", "alpha sujet"),
+            ("related", "beta sujet"),
+            ("weak", "gamma sujet"),
+        ] {
+            let analysis = pipeline.analyze_light(Lang::FRA, text);
+            let item = RawItem {
+                external_id: Some(external_id.to_owned()),
+                ..RawItem::new(SourceId("test:normal".to_owned()), text.to_owned(), now)
+            };
+            engine
+                .ingest(Document {
+                    item: &item,
+                    kind: SourceKind::LocalFile,
+                    lang: Lang::FRA,
+                    analysis: &analysis,
+                    title: None,
+                })
+                .unwrap();
+        }
+        let q = build_query_with_variety(&pipeline, None, "alpha", Variety::Normal);
+        assert_eq!(q.terms.len(), 1);
+        assert_eq!(q.terms[0].text, "alpha");
+        let hits = engine.search(&q, now, 10).unwrap();
+        let score = |id: &str| {
+            hits.iter()
+                .find(|h| h.doc.external_id.as_deref() == Some(id))
+                .map(|h| h.score)
+        };
+        let direct = score("direct").expect("document direct trouvé");
+        let linked = score("related").expect("document lié trouvé");
+        assert!(direct > linked, "direct {direct} doit battre lié {linked}");
     }
 
     /// Strict ne garde que les liens forts du dictionnaire, et seulement s'ils résistent au

@@ -80,6 +80,17 @@ struct Found {
     score: f64,
 }
 
+/// Métriques du harnais Normal, pour des seuils explicites par jeu.
+#[derive(Debug, Clone, Copy)]
+struct Metrics {
+    positives: usize,
+    positive_total: usize,
+    hard_false_positives: usize,
+    negative_total: usize,
+    distractors: usize,
+    rows: usize,
+}
+
 fn find(hits: &[nknown_engine::Hit], external_id: &str) -> Found {
     hits.iter()
         .enumerate()
@@ -137,7 +148,7 @@ fn index_doc(
         .unwrap();
 }
 
-fn main_metrics(rows: &[Row], pipeline: &nknown_nlp::Pipeline, level: &str) {
+fn main_metrics(rows: &[Row], pipeline: &nknown_nlp::Pipeline, level: &str) -> Metrics {
     let detector = LangDetector::new();
     let now = Timestamp::now();
     let (mut pos_ok, mut pos_total) = (0usize, 0usize);
@@ -247,10 +258,18 @@ fn main_metrics(rows: &[Row], pipeline: &nknown_nlp::Pipeline, level: &str) {
         );
     }
     times.sort_by(f64::total_cmp);
+    let metrics = Metrics {
+        positives: pos_ok,
+        positive_total: pos_total,
+        hard_false_positives: neg_total - neg_ok,
+        negative_total: neg_total,
+        distractors: dist_hits,
+        rows: rows.len(),
+    };
     println!(
         "\nniveau={level} : positifs {pos_ok}/{pos_total} ; faux positifs durs {}/{neg_total} ; \
          distrayants retournés {dist_hits}/{dist_total} ; latence recherche médiane {:.2} ms, max {:.2} ms",
-        neg_total - neg_ok,
+        metrics.hard_false_positives,
         times.get(times.len() / 2).copied().unwrap_or(0.0),
         times.last().copied().unwrap_or(0.0)
     );
@@ -264,11 +283,7 @@ fn main_metrics(rows: &[Row], pipeline: &nknown_nlp::Pipeline, level: &str) {
         pos_total > 0,
         "jeu vide : aucun cas positif dans l'évaluation"
     );
-    assert!(
-        pos_ok * 2 >= pos_total,
-        "le harnais doit reproduire au moins la moitié des positifs du niveau Normal \
-         ({pos_ok}/{pos_total}) ; vérifier les modèles et le jeu"
-    );
+    metrics
 }
 
 #[test]
@@ -280,7 +295,25 @@ fn expansion_baseline_dev() {
     let pipeline = load_pipeline(&models, &[]).unwrap();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/expansion.tsv");
     let rows = read_rows(&path);
-    main_metrics(&rows, &pipeline, "normal");
+    let metrics = main_metrics(&rows, &pipeline, "normal");
+    // Seuils de non-régression du niveau Normal sur le jeu de développement.
+    assert!(
+        metrics.positives >= 14,
+        "Normal doit reproduire le comportement historique : {}/{}, attendu ≥ 14",
+        metrics.positives,
+        metrics.positive_total
+    );
+    assert!(
+        metrics.hard_false_positives <= 3,
+        "Normal : {} faux positifs durs, attendu ≤ 3 (sur {})",
+        metrics.hard_false_positives,
+        metrics.negative_total
+    );
+    assert_eq!(
+        metrics.distractors, 0,
+        "Normal ne doit retourner aucun distrayant (sur {})",
+        metrics.rows
+    );
 }
 
 #[test]
@@ -339,7 +372,7 @@ fn relations_probe() {
     for (lang, word) in [
         (Lang::from_code("eng").unwrap(), "flaw"),
         (Lang::from_code("eng").unwrap(), "vulnerability"),
-        (Lang::from_code("fr").unwrap(), "faille"),
+        (Lang::FRA, "faille"),
     ] {
         let Some(rel) = pipeline.relations(lang) else {
             continue;

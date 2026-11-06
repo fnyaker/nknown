@@ -929,13 +929,17 @@ fn rank(base: &str) -> Res {
 }
 
 /// Niveau de variété tapé en ligne de commande.
+///
+/// « diversifié » est le libellé affiché par `--explain` ; l'accepter évite d'exiger un mot
+/// différent de celui que la commande vient de montrer. « diversifie » reste toléré pour les
+/// claviers ou scripts qui l'écrivent sans accent.
 fn parse_variety(value: &str) -> Result<nknown_engine::Variety, String> {
     match value {
         "strict" => Ok(nknown_engine::Variety::Strict),
         "normal" | "" => Ok(nknown_engine::Variety::Normal),
-        "diverse" => Ok(nknown_engine::Variety::Diverse),
+        "diverse" | "diversifié" | "diversifie" => Ok(nknown_engine::Variety::Diverse),
         _ => Err(format!(
-            "niveau inconnu : {value} (strict, normal ou diverse)"
+            "niveau inconnu : {value} (strict, normal ou diversifié)"
         )),
     }
 }
@@ -1099,3 +1103,23 @@ fn search(
 }
 
 use nknown_service::query::{main_lang, snippet};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variety_accepts_the_label_and_its_unaccented_alias() {
+        for value in ["diverse", "diversifié", "diversifie"] {
+            assert_eq!(
+                parse_variety(value),
+                Ok(nknown_engine::Variety::Diverse),
+                "{value}"
+            );
+        }
+        assert_eq!(parse_variety("strict"), Ok(nknown_engine::Variety::Strict));
+        assert_eq!(parse_variety("normal"), Ok(nknown_engine::Variety::Normal));
+        assert_eq!(parse_variety(""), Ok(nknown_engine::Variety::Normal));
+        assert!(parse_variety("inconnu").is_err());
+    }
+}

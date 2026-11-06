@@ -42,7 +42,7 @@ pub enum Variety {
     /// Élargissement habituel.
     #[default]
     Normal,
-    /// Liens plus larges, signatures et voisins de documents.
+    /// Liens plus larges, signatures de définitions et voisins de mots.
     Diverse,
 }
 

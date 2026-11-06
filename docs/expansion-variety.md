@@ -1,9 +1,10 @@
 # Élargissement de requête : audit et niveaux de variété
 
-Statut : implémenté dans la source de production (moteur, façade, API, CLI). Les mesures
-ci-dessous ont été refaites avec les fonctions de production ; les écarts avec le prototype
-sont signalés. Le harnais de niveaux de production est
-`crates/nknown-service/tests/expansion_levels.rs`.
+Statut : implémenté dans la source de production (moteur, façade, API, CLI, application Qt
+et interface web). Les mesures ci-dessous ont été refaites avec les fonctions de production ;
+les écarts avec le prototype sont signalés. Le harnais de niveaux de production est
+`crates/nknown-service/tests/expansion_levels.rs`. L'injection des *textes liés* reste en
+phase 2 et n'est ni implémentée ni mesurée.
 
 ## Verdict
 
@@ -30,9 +31,11 @@ sont signalés. Le harnais de niveaux de production est
      3/13, 0/32 ; sur la base réelle, top 10 de `php flaw` : 0/5 → 5/5 documents PHP,
      latence release 3,4 → 5,6 ms (+62 %).
 4. Le jeu tenu à l'écart ne montre **ni gain ni régression** de Diversifié (9/10 positifs,
-   1/6 faux positifs durs, identique à Normal). Les échantillons sont petits : le gain
-   de 14/19 à 16/19 n'est pas significatif à lui seul ; la preuve forte est la mesure
-   sur la base réelle et le cas contrôlé `php flaw`.
+   0/6 faux positif dur, identique à Normal ; Strict 8/10). Le jeu a été remplacé après
+   revue : 10 de ses 16 lignes partageaient une requête ou un document avec le
+   développement. Les échantillons restent petits : le gain de 14/19 à 16/19 n'est pas
+   significatif à lui seul ; la preuve forte est la mesure sur la base réelle et le cas
+   contrôlé `php flaw`.
 5. Le français reste un échec de données : `faille` n'a aucun lien (appris ou non) vers
    `vulnérabilité` ; `php faille` ne renvoie qu'un résultat, quel que soit le niveau.
    Aucun slider ne corrige un lien absent ; il faut corriger la construction des
@@ -148,7 +151,7 @@ Effet attendu (avant mesure) :
 |---|---|---|---|
 | Strict | ↓ | ↑ sur le bruit de liens faibles | ≈ Normal |
 | Normal | référence | référence | référence |
-| Diversifié | ↑ | ↓ possible (liens plus larges, textes liés) | +50 à +150 % |
+| Diversifié | ↑ | ↓ possible (liens plus larges ; textes liés : phase 2, non mesuré) | +50 à +150 % |
 
 **Normal** doit rester bit-à-bit identique : mêmes constantes, mêmes fonctions,
 même ordre. `Query::variety` vaut `Normal` par défaut ; `build_query`, `build_query_with`,
@@ -159,7 +162,9 @@ même ordre. `Query::variety` vaut `Normal` par défaut ; `build_query`, `build_
   est ≥ 0,50 (écarte les liens non soutenus) ;
 - 12 liens au plus côté requête, 4 liens présents retenus par le moteur ;
 - part 0,35, couverture d'un lien lié 0,5 (deux liens liés ne valent qu'un mot direct) ;
-- pas de second pas, pas de signature, pas de `broader`, pas de lien appris seul ;
+- pas de second pas **ajouté** : le second pas reste utilisé pour le choix du sens, comme
+  en Normal (voir la note d'implémentation plus bas), mais ne crée aucun lien de requête ;
+  pas de signature, pas de `broader`, pas de lien appris seul ;
   les liens du dictionnaire confirmés par le corpus restent acceptés ;
 - coupure inchangée : la baisse de score suffit souvent à écarter les liens faibles.
 
@@ -181,9 +186,9 @@ même ordre. `Query::variety` vaut `Normal` par défaut ; `build_query`, `build_
   - `Topical` : cosinus ≥ 0,45, ≥ 15 passages partagés ;
   - poids `min(0,30 ; 0,60·cosinus)`, contraires écartés, réciprocité supposée acquise
     par `Engine::learned`.
-- **textes liés** (phase 2) : après le classement graphe et avant la coupure, prendre
-  les 10 meilleurs résultats, et pour chaque voisin `Similar` de similarité ≥ 0,45
-  absent des résultats, insérer son premier passage avec
+- **textes liés** (phase 2, non implémenté) : après le classement graphe et avant la
+  coupure, prendre les 10 meilleurs résultats, et pour chaque voisin `Similar` de
+  similarité ≥ 0,45 absent des résultats, insérer son premier passage avec
   `score = score_parent × similarité × 0,35`, au plus 5 par parent et 10 au total.
   Ne pas appliquer aux requêtes de code, ni changer PageRank/autorité. Chaque résultat
   inséré doit être marqué « texte lié » dans l'API et l'interface. Non mesuré dans ce
@@ -200,9 +205,10 @@ même ordre. `Query::variety` vaut `Normal` par défaut ; `build_query`, `build_
   (ou `--variety <niveau>`). `--explain` affiche le niveau retenu et les mots liés ;
   l'origine fine d'un lien (dictionnaire, appris, signature, second pas) n'est pas encore
   exposée.
-- Application Qt / web : curseur à 3 positions à faire par le designer ; valeur envoyée
-  dans le corps POST `variety` (jamais dans l'URL), défaut Normal. Le pont Qt expose déjà
-  la propriété `variety` (`"normal"` par défaut) et l'API web prend le niveau en argument.
+- Application Qt / web : curseur à 3 positions implémenté dans les deux interfaces, valeur
+  mémorisée et envoyée dans le corps POST `variety` (jamais dans l'URL), défaut Normal. Le
+  pont Qt expose la propriété `variety` (`"normal"` par défaut) et l'API web prend le niveau
+  en argument.
 
 ### Libellés français recommandés
 
@@ -210,7 +216,7 @@ même ordre. `Query::variety` vaut `Normal` par défaut ; `build_query`, `build_
 |---|---|---|
 | 1 | **Strict** | « Liens de sens très proches uniquement ; moins de résultats, plus précis. » |
 | 2 | **Normal** (défaut) | « Élargissement habituel. » |
-| 3 | **Diversifié** | « Liens plus larges, définitions et textes liés ; plus de résultats, plus de bruit possible. » |
+| 3 | **Diversifié** | « Liens plus larges et définitions validées ; plus de résultats, plus de bruit possible. » |
 
 Curseur : « Variété des résultats ». Recommandation : Strict et Normal ne changent que
 l'élargissement ; les textes liés (phase 2) ne sont pas implémentés dans cette première
@@ -264,19 +270,19 @@ Développement (32 lignes) :
 | Normal | 14/19 (74 %) | 3/13 (23 %) | 0/32 | 0,28 ms | 4,2 ms |
 | Diversifié | **16/19 (84 %)** | 3/13 (23 %) | 0/32 | 2,37 ms | 13,9 ms |
 
-Tenu à l'écart (16 lignes). Première exécution invalide : le mot de requête figurait
-dans les deux documents de trois lignes françaises ; le fixture a été corrigé avant
-l'exécution finale, sans changer aucune constante.
+Tenu à l'écart (16 lignes). Le jeu a été remplacé après revue : 10 des 16 lignes
+partageaient une requête ou un document avec le développement. Les 16 lignes actuelles
+n'ont aucune requête ni aucun document en commun avec `eval/expansion.tsv`.
 
-| Niveau | Positifs | Faux positifs durs | Distrayants | Latence médiane |
-|---|---:|---:|---:|---:|
-| Strict | 7/10 | 0/6 | 0/16 | 0,09 ms |
-| Normal | 9/10 | 1/6 | 0/16 | 0,06 ms |
-| Diversifié | 9/10 | 1/6 | 0/16 | 2,38 ms |
+| Niveau | Positifs | Faux positifs durs | Distrayants | Latence médiane | Max |
+|---|---:|---:|---:|---:|---:|
+| Strict | 8/10 | 0/6 | 0/16 | 0,12 ms | 2,18 ms |
+| Normal | 9/10 | 0/6 | 0/16 | 0,19 ms | 2,70 ms |
+| Diversifié | 9/10 | 0/6 | 0/16 | 1,66 ms | 8,57 ms |
 
-Le seul faux positif dur commun est `software bug` (le lien `glitch` est perdu par la
-pondération de sens). `chat en ligne` est à 1,6 % d'écart, sous le seuil de 5 %, donc
-non compté mais fragile.
+Une seule ligne positive échoue (non identifiée dans cette exécution sans
+`NKNOWN_VERBOSE`) ; aucune ne produit de faux positif dur. Le jeu reste un test de
+fumée : 10 positifs ne permettent pas de conclure à une absence de régression fine.
 
 Base réelle (release, 2,1 Go, 509/663 candidats) :
 
@@ -313,9 +319,9 @@ Tenu à l'écart (16 lignes) :
 
 | Niveau | Positifs | Faux positifs durs | Distrayants |
 |---|---:|---:|---:|
-| Strict | 7/10 | 0/6 | 0/16 |
-| Normal | 9/10 | 1/6 | 0/16 |
-| Diversifié | 9/10 | **0/6** | 0/16 |
+| Strict | 8/10 | 0/6 | 0/16 |
+| Normal | 9/10 | 0/6 | 0/16 |
+| Diversifié | 9/10 | 0/6 | 0/16 |
 
 Base réelle (`/tmp/opencode/base-audit.redb`, 2,1 Go) :
 
@@ -336,8 +342,9 @@ Base réelle (`/tmp/opencode/base-audit.redb`, 2,1 Go) :
   Diversifié, le contexte reste identique à l'existant ; Diversifié ajoute en plus les
   voisins validés.
 - **Plancher dictionnaire Diversifié à 0,20** : le prototype partait des liens Normal
-  (plancher 0,30) ; la production applique bien 0,20. Effet mesuré : faux positifs durs
-  2/13 en développement et 0/6 tenu à l'écart, au lieu de 3/13 et 1/6. Échantillons petits :
+  (plancher 0,30) ; la production applique bien 0,20. Effet mesuré en développement :
+  2/13 faux positifs durs au lieu de 3/13. Sur le jeu tenu à l'écart remplacé, les trois
+  niveaux sont à 0/6 : ce jeu ne permet pas de mesurer cet effet. Échantillons petits :
   à confirmer.
 - **Liens appris Diversifié** : union de la règle historique (dictionnaire silencieux +
   syntactique ≥ 0,45 / 8) et de la règle large (syntactique ≥ 0,55 / 12, thématique
